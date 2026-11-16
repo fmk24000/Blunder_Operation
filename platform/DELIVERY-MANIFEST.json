@@ -1,0 +1,320 @@
+{
+  "app": "hbd-game-platform",
+  "generatedAt": "2026-11-16T10:09:52.588Z",
+  "node": "v26.8.1",
+  "engines": ">=26 <27",
+  "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
+  "knownLimitations": [
+    "⑧ Cloudflare Access 場外實測：外部依賴（Tunnel hostname＋兩條 Access policy 要用戶 dashboard 做），程式已支援 ACCESS_REQUIRED=1／Cf-Access-Jwt-Assertion；RUNBOOK 有上線 flip 清單。",
+    "真 browser e2e（media deck 音訊同步／refresh 草稿／stage／host refresh）未自動化：server 協議與時序已測，需排練時真機手動一次。",
+    "真 ENOSPC 測試：沙盒冇細 volume／mount 權限，用 env-gated FAULT_ENOSPC 注入驗 error path（production 拒啟動 FAULT_*）。",
+    "規則頁編輯器仍 raw JSON blocks（8 種 block 專屬 UI／本地 1920×1080 預覽／beforeunload 未做）；server 限制／衝突／權限已齊。",
+    "stage autoAdvanceSeconds 自動翻頁前端未實作（四關預設 0＝手動；server payload 有值）。",
+    "Node patch：本機 v26.8.1、容器 v26.13.1（同 major，engines >=26 <27）。"
+  ],
+  "specClarifications": [
+    "§5.1 密封出價：bidding 階段 stage 唔會收到／顯示任何個別出價金額（StageView 只有 bidCount／eligibleCount）；bid.settle 之後先顯示得標者＋金額。",
+    "§3 競投走勢＝參與度（已出價人數／總人數），唔係逐筆金額走勢。",
+    "§8.2 播 15 秒＝真承諾：window 到期由 server tick（≤250ms）自動 pause，deck client 亦用 server 時鐘自行停。",
+    "§8.2 在線接管簡化（2026-11-16 lead 拍板）：實作即時 pause 舊 deck（<100ms）＋generation+1，冇等 2 秒 ACK；另 forceOnline 必須驗舊 host connection 在線（15s freshness），否則一律走失聯 margin。較規格更安全、唔會雙響。",
+    "§4 搗蛋鬼版本 A 冇『正解』可送：vote 卡冇 referenceAnswer，PlayerSelfView.roleInfo.saboteurAnswer 永遠 undefined（版本 A 唔適用；日後加解謎版才補）。",
+    "以上均為 2026-11-16 lead 拍板之規格澄清，M2-M4 review 以此為準；PLAN-v3.1 原文不變。"
+  ],
+  "files": [
+    {
+      "path": ".dockerignore",
+      "bytes": 61,
+      "sha256": "d52cc5e753a768af58656ee713d0f733af2a326fb146d5e2277c5b4e8d637201"
+    },
+    {
+      "path": ".env.example",
+      "bytes": 676,
+      "sha256": "17f7c199659e308b0196ff315a6559206280c752302764228345cc3e52463484"
+    },
+    {
+      "path": ".nvmrc",
+      "bytes": 3,
+      "sha256": "20d2add851bf39edcc6b5e830930f962db7e19dffa2cab8610eed551eda6c302"
+    },
+    {
+      "path": "Dockerfile",
+      "bytes": 990,
+      "sha256": "4bcca548c16ddbbd7edaa498c4dc3a7afab83b126686098723ba5ba7d8ddb0e6"
+    },
+    {
+      "path": "README.md",
+      "bytes": 1695,
+      "sha256": "dccfc6ec88ba3208fd7b8dcafaaff868740c8ae680c8cadaff421a3f1d95e18c"
+    },
+    {
+      "path": "RUNBOOK.md",
+      "bytes": 5626,
+      "sha256": "28a5713b438bb8c8c60031b808339699f92589b24ce6226f3e75caa8a0dce121"
+    },
+    {
+      "path": "bots/bots.mjs",
+      "bytes": 23788,
+      "sha256": "f03a7f6a9a01e8bbc98df123f025e82afd3a1fc063b505b56e149f7dcd00a1ce"
+    },
+    {
+      "path": "bots/fault.mjs",
+      "bytes": 20306,
+      "sha256": "e186e372430c277931193bccd547aa4a6902c92416ffa4c3f582e12a55c48400"
+    },
+    {
+      "path": "bots/m0-extra.mjs",
+      "bytes": 16746,
+      "sha256": "7bd711f77abce2329cfa0f5afd1bc26a8b9587a13efff0ee45e76217271c4d7b"
+    },
+    {
+      "path": "bots/m1.mjs",
+      "bytes": 29925,
+      "sha256": "45ea1f70f5d1a4fad4467f6b9fde4a6edb55a0a228e8f9908fce53e21f1581a8"
+    },
+    {
+      "path": "bots/m2.mjs",
+      "bytes": 19605,
+      "sha256": "c2708aae5e0e931ac147aacebe26654bb596b4adc22c26439d04f8fb8e56a4b7"
+    },
+    {
+      "path": "bots/m3.mjs",
+      "bytes": 12873,
+      "sha256": "d741296b1946c492a1196a717927d1cd2f1ec47bdade4f5fcaa822f595296d7b"
+    },
+    {
+      "path": "bots/m4.mjs",
+      "bytes": 14336,
+      "sha256": "935472df163327bc28d99f18be50b85f5df5cf71c75a38747214e0c1afa0f634"
+    },
+    {
+      "path": "bots/m5.mjs",
+      "bytes": 11005,
+      "sha256": "d5f77f8c9272ff5185f5be55f00376c0f564ccfd662595fd19073e5569b5374a"
+    },
+    {
+      "path": "bots/skew.mjs",
+      "bytes": 12590,
+      "sha256": "3b309b1360ab47f27f23eb84272edeae3721ba32da5d03c918ee34d5f1bf67b1"
+    },
+    {
+      "path": "data/quiz.seed.json",
+      "bytes": 7510,
+      "sha256": "ff85d079a39290cffbb8b919449887cde7a74481f6928acec246aa522f9e0bb1"
+    },
+    {
+      "path": "data/rulepages.seed.json",
+      "bytes": 3370,
+      "sha256": "56a547ba9e2b65993ffee990de773151b12611b156c20dade6d26f94806d2a32"
+    },
+    {
+      "path": "docker-compose.yml",
+      "bytes": 1024,
+      "sha256": "ec40de60af840dc1d4297b5b078abfdca7c342c10b15abdcc6032dcb42d22079"
+    },
+    {
+      "path": "package-lock.json",
+      "bytes": 72268,
+      "sha256": "1b03c71e2450c53e0579a0cb4063883ae189e82f2eacf4b536b5362dbe21d22b"
+    },
+    {
+      "path": "package.json",
+      "bytes": 972,
+      "sha256": "cec4551e23b7c95ff220a212150f583a9556fae7b4f06dec5c70c1a7b0ea3ef0"
+    },
+    {
+      "path": "public/app.css",
+      "bytes": 29423,
+      "sha256": "22d8a369a4e7957bb3149649ca6f5ef7f1f9710a0e9501e5258e221f400b8711"
+    },
+    {
+      "path": "public/host.html",
+      "bytes": 505,
+      "sha256": "ab0811a050a9dff5657cabaf89e76025746fcc9f1e46b4f6f2cac01f672c6b14"
+    },
+    {
+      "path": "public/icon.svg",
+      "bytes": 233,
+      "sha256": "e4dd4c33eca40c3b3debc2d1fdb32465abdec4d83ce0237913a2160fd5c8da3c"
+    },
+    {
+      "path": "public/index.html",
+      "bytes": 773,
+      "sha256": "d0694e2ead63aac2c7ac23532c789749199c2030d9c446443d4ec377e66afcca"
+    },
+    {
+      "path": "public/js/client/common.js",
+      "bytes": 11083,
+      "sha256": "9fb3a31c568c4106740e9c76e8ad54f25a6d53d7a8bffcdd60f08e79250e2129"
+    },
+    {
+      "path": "public/js/client/host.js",
+      "bytes": 67026,
+      "sha256": "7050b490ab9686dc58db3bff08c175e446c2db10d463ca80a0aac91a03164b81"
+    },
+    {
+      "path": "public/js/client/play.js",
+      "bytes": 19011,
+      "sha256": "308db9e99156fd5234abb57b05880d710501b6ce999308f4c363e09c75c40f79"
+    },
+    {
+      "path": "public/js/client/stage.js",
+      "bytes": 19362,
+      "sha256": "283c8f635b09ba5b0e765f9ca24318490a5387626c139345abcea1e18d487777"
+    },
+    {
+      "path": "public/js/shared/protocol.js",
+      "bytes": 775,
+      "sha256": "ee1d19153f0bca0092ad9155d1ebb40a009e685e322c010c610d9ed14cd83a3c"
+    },
+    {
+      "path": "public/js/shared/types.js",
+      "bytes": 200,
+      "sha256": "75e1f033b673d51218c85932a433c12347651e61d17f29855eb5f0b8a75a3d4d"
+    },
+    {
+      "path": "public/manifest.webmanifest",
+      "bytes": 316,
+      "sha256": "c2a638075fd320607877bc2d47321b2ae3d21ac0c2017cef6364188f5f6a3bfc"
+    },
+    {
+      "path": "public/play.html",
+      "bytes": 686,
+      "sha256": "98e4d8d9a02777fc5fd0d0122d3677633932f3903a38dddc1d4075c00416dde7"
+    },
+    {
+      "path": "public/quiz-legacy-mc.json",
+      "bytes": 5566,
+      "sha256": "fd25c7042660d9e42ecd6f3bd5ab6be9285601205f474744628f3260de5fb3ba"
+    },
+    {
+      "path": "public/stage.html",
+      "bytes": 520,
+      "sha256": "58055139a4003baf088126417476dc5649aec22225d046af2ed21f24937acf85"
+    },
+    {
+      "path": "scripts/make-manifest.mjs",
+      "bytes": 3779,
+      "sha256": "23c88cb39a51ba8c99753dec1b4d4e919e1d773de7606361aad8a13fd41fa891"
+    },
+    {
+      "path": "scripts/seed-room.mjs",
+      "bytes": 3646,
+      "sha256": "de221ac8cf7f5de7890da7827c103fae40f46ca341662832092dd8f98fc2f1bd"
+    },
+    {
+      "path": "scripts/sync-seed.mjs",
+      "bytes": 561,
+      "sha256": "04a1a8a63268261aa17bc7c7804203f591d4fdc86149b40e1895999043725a59"
+    },
+    {
+      "path": "seed/quiz.seed.json",
+      "bytes": 7510,
+      "sha256": "ff85d079a39290cffbb8b919449887cde7a74481f6928acec246aa522f9e0bb1"
+    },
+    {
+      "path": "seed/rulepages.seed.json",
+      "bytes": 3370,
+      "sha256": "56a547ba9e2b65993ffee990de773151b12611b156c20dade6d26f94806d2a32"
+    },
+    {
+      "path": "src/client/common.ts",
+      "bytes": 10759,
+      "sha256": "426f71de5e65bd97bcde97cba0cc93af172e92c6b87eeedaab52d8dc670e75e4"
+    },
+    {
+      "path": "src/client/host.ts",
+      "bytes": 64588,
+      "sha256": "8d4613c6985d26d67cef677418df27e3fd949e76b5ed93fbfd00313f940f7197"
+    },
+    {
+      "path": "src/client/play.ts",
+      "bytes": 18944,
+      "sha256": "83c964b908c1c8f7c0b8d51dc7acf4d7c3834b9f04f6a8206e92d7e71fc95c9f"
+    },
+    {
+      "path": "src/client/stage.ts",
+      "bytes": 19196,
+      "sha256": "6423b442bfac4f591d27342d65d476297c22d88385104b469df837d7e479b9b4"
+    },
+    {
+      "path": "src/server/auth.ts",
+      "bytes": 3514,
+      "sha256": "7ca812dddb0c1242009ee977760b0298b04924da5b7e4ddcd0b555710f8e9b99"
+    },
+    {
+      "path": "src/server/commands.ts",
+      "bytes": 89919,
+      "sha256": "ba2af3257cbd6e611e3f202f8ef838a34bd3a66ca0c615aec740d21c6ee2eb49"
+    },
+    {
+      "path": "src/server/env.ts",
+      "bytes": 5578,
+      "sha256": "9efb3ae2af094ab2255e6d360a760735451b1d2c4693f826e26b596ca6629123"
+    },
+    {
+      "path": "src/server/http.ts",
+      "bytes": 23516,
+      "sha256": "efa5e1969f6ace5c6dc50d6b629ccbe6659a3736237b213ebc934c115e75be32"
+    },
+    {
+      "path": "src/server/hub.ts",
+      "bytes": 13323,
+      "sha256": "54a2f88f6ab73288f012e7672a0154b6b3154badfadc8c09f2f556b695db30a1"
+    },
+    {
+      "path": "src/server/index.ts",
+      "bytes": 6233,
+      "sha256": "976e35303d4ea79b67269c7923b9289ef79648a9c477b6ebbc90f45ead3d7d8d"
+    },
+    {
+      "path": "src/server/journal.ts",
+      "bytes": 7448,
+      "sha256": "a11b264017aed738393505c9295de1244d1da0d44abf01576a3bc7c0ed56a525"
+    },
+    {
+      "path": "src/server/seed.ts",
+      "bytes": 4790,
+      "sha256": "e74359b10630cd0ae0994690f486504843d0d3e81598121bb1b6e70637e5ceb7"
+    },
+    {
+      "path": "src/server/store.ts",
+      "bytes": 20285,
+      "sha256": "0b13fc99496778c0bc281f88c677556ef708f40a406c8208d0e6b58a6ad7796e"
+    },
+    {
+      "path": "src/server/views.ts",
+      "bytes": 22046,
+      "sha256": "c38dfc71900313e736c5d818916e07676bad778e3b03449d0c6a7d4b6d93f0f7"
+    },
+    {
+      "path": "src/server/ws.ts",
+      "bytes": 15694,
+      "sha256": "389eb823e0b161f4b09ea2243c342dcec564ada11066c3e8030ae9dee919ac73"
+    },
+    {
+      "path": "src/shared/protocol.ts",
+      "bytes": 3337,
+      "sha256": "e98a4509ffbf3cd34a227c56be5b0d051328f031d0c10bc02ad5260f3c89be39"
+    },
+    {
+      "path": "src/shared/types.ts",
+      "bytes": 13591,
+      "sha256": "64a950d3fe5e3aad8c78a14633952d0c7095df951012cab086962eaa15fae7e9"
+    },
+    {
+      "path": "test/unit.test.mjs",
+      "bytes": 7510,
+      "sha256": "bcee96863eb27035ad4a92a1be5efad46df2e493f74a205c2eae606a88b63cab"
+    },
+    {
+      "path": "tsconfig.client.json",
+      "bytes": 496,
+      "sha256": "031e096520cf29aab474f6a8d85cc0af04d0fe729a233ce76002d2d73108cd5b"
+    },
+    {
+      "path": "tsconfig.json",
+      "bytes": 662,
+      "sha256": "1e79543139283569b7ee393dd086cd092ccdb119c22878e98548cefa505357db"
+    }
+  ]
+}

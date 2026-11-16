@@ -1,0 +1,1938 @@
+/**
+ * Host command envelope（PLAN-v3.1 §7）
+ * - commandId 冪等：同 ID 同 payload → 回原結果；同 ID 異 payload → W_CMD_PAYLOAD_MISMATCH
+ * - expectedRevision / expectedRoundId 對唔上 → W_STALE_COMMAND（回目前狀態）
+ * - command＋狀態＋分錄＋receipt 同一筆 journal transaction 落盤（fsync）之後才回 ACK
+ * - 破壞性動作靠 expectedRevision 互斥：兩個 host 同時撳只有一個成功
+ */
+import crypto from "node:crypto";
+import type { ErrorCode, HostCommand, ApiResult } from "../shared/protocol.js";
+import type {
+  AudioLease,
+  Award,
+  Card,
+  CommandReceipt,
+  MediaPlayback,
+  Player,
+  QuizQuestion,
+  Room,
+  Round,
+  RundownItem,
+  RulePage,
+  ScoreEvent,
+  Song,
+  StageMode,
+  StageState,
+  Submission,
+} from "../shared/types.js";
+import type { Mutation } from "./journal.js";
+import type { Store } from "./store.js";
+import { newId, uuidv4 } from "./store.js";
+import { questionToCard } from "./seed.js";
+
+export class CmdError extends Error {
+  constructor(
+    public code: ErrorCode,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+type Ctx = {
+  store: Store;
+  hostId: string;
+  hostName: string;
+  cmd: HostCommand;
+  muts: Mutation[];
+  result?: Record<string, unknown>;
+  isHostOnline?: (hostId: string) => boolean;
+};
+
+const MODES: StageMode[] = [
+  "idle",
+  "rules",
+  "scoreboard",
+  "question",
+  "tally",
+  "reveal",
+  "draw-wall",
+  "draw-focus",
+  "bid",
+  "vote",
+  "role-reveal",
+  "song",
+  "leaderboard",
+  "finale",
+  "award",
+  "timer",
+  "blackout",
+];
+
+function sha256(s: string): string {
+  return crypto.createHash("sha256").update(s).digest("hex");
+}
+
+function payloadHash(cmd: HostCommand): string {
+  return sha256(JSON.stringify({ kind: cmd.kind, targetId: cmd.targetId ?? null, payload: cmd.payload }));
+}
+
+export function commandPayloadHash(cmd: HostCommand): string {
+  return payloadHash(cmd);
+}
+
+function asObj(v: unknown): Record<string, unknown> {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+}
+function reqStr(p: Record<string, unknown>, key: string): string {
+  const v = p[key];
+  if (typeof v !== "string" || v.length === 0) throw new CmdError("W_BAD_SCHEMA", `缺 ${key}`);
+  return v;
+}
+function optStr(p: Record<string, unknown>, key: string): string | undefined {
+  const v = p[key];
+  return typeof v === "string" ? v : undefined;
+}
+function optNum(p: Record<string, unknown>, key: string): number | undefined {
+  const v = p[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+function reqNum(p: Record<string, unknown>, key: string): number {
+  const v = p[key];
+  if (typeof v !== "number" || !Number.isFinite(v)) throw new CmdError("W_BAD_SCHEMA", `缺 ${key}`);
+  return v;
+}
+
+function push(ctx: Ctx, m: Mutation): void {
+  ctx.muts.push(m);
+}
+
+function toast(ctx: Ctx, text: string): void {
+  push(ctx, {
+    t: "activity.add",
+    d: { toast: { id: newId("act"), ts: Date.now(), hostName: ctx.hostName, text } },
+  });
+}
+
+function stageSet(ctx: Ctx, stage: Partial<StageState>): void {
+  push(ctx, { t: "stage.set", d: { stage } });
+}
+
+function currentRoundOrThrow(store: Store): Round {
+  const r = store.currentRound();
+  if (!r) throw new CmdError("W_ALREADY_STATE", "而家冇開住嘅回合");
+  return r;
+}
+
+function ensurePlaying(store: Store): void {
+  if (store.state.room.phase !== "playing") throw new CmdError("W_WRONG_PHASE", "唔係 playing phase");
+}
+
+function cardReason(card: Card): string {
+  const m = /^q(\d+)$/.exec(card.id);
+  if (m) return `問答 Q${m[1]}`;
+  if (card.gameId === "auction") return `估歌 ${card.id}`;
+  if (card.gameId === "draw") return `畫畫 ${card.id}`;
+  return `主持 ${card.id}`;
+}
+
+function makeEvent(e: Omit<ScoreEvent, "id" | "ts">): ScoreEvent {
+  return { id: newId("ev"), ts: Date.now(), ...e };
+}
+
+/** 分數留返原組：void 舊 player 事件 + 一筆 group 補償事件（lineage 指返原事件） */
+function transferStay(ctx: Ctx, player: Player, oldGroupId: string): void {
+  const events = ctx.store.state.ledger.filter((e) => !e.voided && e.target.type === "player" && e.target.id === player.id);
+  if (events.length === 0) return;
+  const total = events.reduce((a, e) => a + e.delta, 0);
+  push(ctx, { t: "ledger.void", d: { eventIds: events.map((e) => e.id), by: "host" } });
+  if (total !== 0) {
+    push(ctx, {
+      t: "ledger.append",
+      d: {
+        events: [
+          makeEvent({
+            target: { type: "group", id: oldGroupId },
+            delta: total,
+            reason: `換組・分數留原組（${player.name}）`,
+            by: "host",
+            lineage: { sourceEventIds: events.map((e) => e.id) },
+          }),
+        ],
+      },
+    });
+  }
+}
+
+function rulesStageForItem(ctx: Ctx, target?: RundownItem): Partial<StageState> | null {
+  const store = ctx.store;
+  const item = target ?? store.currentItem();
+  if (!item) return null;
+  let page: RulePage | undefined;
+  if (item.rulePageId) page = store.state.room.rulePages.find((p) => p.id === item.rulePageId && p.enabled && !p.archived);
+  if (!page) page = store.activeRulePage(item.gameId);
+  const payload: Record<string, unknown> = {
+    itemId: item.id,
+    gameId: item.gameId,
+    gameIndex: item.index + 1,
+    title: item.title,
+    pageIndex: 0,
+    fallback: !page,
+    rulesText: item.rulesText ?? "",
+  };
+  if (page) {
+    const pag = store.rulePagination(page);
+    payload.rulePageId = page.id;
+    payload.totalPages = pag.totalPages;
+    payload.autoAdvanceSeconds = page.autoAdvanceSeconds;
+  } else {
+    payload.totalPages = 1;
+    payload.autoAdvanceSeconds = 0;
+  }
+  const prev = store.state.room.stage.mode === "rules" || store.state.room.stage.mode === "blackout" ? "idle" : store.state.room.stage.mode;
+  return { mode: "rules", payload, prevMode: prev as Exclude<StageMode, "blackout" | "rules"> };
+}
+
+function setStageIfUnlocked(ctx: Ctx, stage: Partial<StageState>): void {
+  if (ctx.store.state.room.stage.lock) return;
+  stageSet(ctx, stage);
+}
+
+/** 入關／轉關：自動出規則頁（lock=true 唔 override） */
+function advanceRundown(ctx: Ctx, targetIndex: number, mode: "next" | "prev" | "skip"): void {
+  const store = ctx.store;
+  const room = store.state.room;
+  if (room.rundown.length === 0) throw new CmdError("W_ALREADY_STATE", "rundown 係空");
+  const cur = store.currentItem();
+  const curIndex = cur ? cur.index : -1;
+  // 舊 item 狀態
+  const rundown = room.rundown.map((i) => ({ ...i }));
+  if (cur) {
+    const old = rundown.find((i) => i.id === cur.id);
+    if (old) {
+      old.state = mode === "skip" ? "skipped" : "done";
+      if (mode === "prev") old.state = "todo";
+    }
+  }
+  let nextIndex: number;
+  if (mode === "prev") nextIndex = Math.max(0, curIndex - 1);
+  else nextIndex = Math.min(rundown.length - 1, curIndex + 1);
+  const next = rundown.find((i) => i.index === nextIndex);
+  if (!next) throw new CmdError("W_ALREADY_STATE", "冇下一項");
+  next.state = "running";
+  const allDone = rundown.every((i) => i.state === "done" || i.state === "skipped");
+  // 未完 round 一律 void
+  const round = store.currentRound();
+  if (round && (round.state === "open" || round.state === "closed" || round.state === "tally")) {
+    push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "void" } } });
+    push(ctx, { t: "round.current", d: { currentRoundId: null } });
+  }
+  const newPhase = allDone ? "final" : "playing";
+  push(ctx, {
+    t: "rundown.set",
+    d: { rundown, currentItemId: next.id, phase: newPhase },
+  });
+  if (allDone) {
+    const awards = store.computeAwards();
+    push(ctx, { t: "award.set", d: { awards } });
+    setStageIfUnlocked(ctx, { mode: "finale", payload: {}, prevMode: "idle" });
+  } else {
+    // §6.1：轉去另一個 gameId 才自動出規則頁（同 game 連續 item 唔重彈）
+    const curGame = cur?.gameId;
+    if (!curGame || next.gameId !== curGame) {
+      const rs = rulesStageForItem(ctx, next);
+      if (rs) setStageIfUnlocked(ctx, rs);
+    } else if (!room.stage.lock) {
+      stageSet(ctx, { mode: "idle", payload: {} });
+    }
+  }
+  toast(ctx, `${mode === "skip" ? "Skip" : mode === "prev" ? "上一項" : "下一項"}：${next.title}`);
+}
+
+/** choices 卡揭曉時自動計分（同 round 只派一次） */
+function gradeChoiceRound(ctx: Ctx, round: Round, card: Card): void {
+  if (typeof card.correct !== "number") return;
+  const store = ctx.store;
+  const subIds = new Set(store.state.ledger.filter((e) => e.roundId === round.id && e.submissionId).map((e) => e.submissionId));
+  const events: ScoreEvent[] = [];
+  for (const s of store.submissionsForRound(round.id)) {
+    if (!s.confirmed) continue;
+    if (subIds.has(s.id)) continue;
+    if (s.choice !== card.correct) continue;
+    events.push(
+      makeEvent({
+        target: { type: "player", id: s.playerId },
+        gameId: "quiz",
+        roundId: round.id,
+        cardId: card.id,
+        submissionId: s.id,
+        delta: card.points,
+        reason: cardReason(card),
+        by: "auto",
+      }),
+    );
+  }
+  if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+}
+
+/** 畫畫關揭曉自動計分：人氣票 ×1 + 最高票作品額外 +2（並列都算） */
+function gradeDrawRound(ctx: Ctx, round: Round, card: Card): void {
+  const store = ctx.store;
+  const options = card.options ?? [];
+  const works = options.map((assetId) => store.state.assets.find((a) => a.id === assetId)).filter(Boolean);
+  const counts = new Map<string, number>(); // authorId -> votes（每張作品每票 +1 畀作者）
+  const perWork = new Map<string, number>(); // assetId -> votes
+  for (const s of store.submissionsForRound(round.id)) {
+    if (!s.confirmed || typeof s.choice !== "number") continue;
+    const asset = works[s.choice];
+    if (!asset || !asset.authorId) continue;
+    counts.set(asset.authorId, (counts.get(asset.authorId) ?? 0) + 1);
+    if (asset.id) perWork.set(asset.id, (perWork.get(asset.id) ?? 0) + 1);
+  }
+  // void 舊 auto 事件（重開／重揭曉）
+  const old = store.state.ledger.filter((e) => e.roundId === round.id && e.by === "auto" && !e.voided).map((e) => e.id);
+  if (old.length) push(ctx, { t: "ledger.void", d: { eventIds: old, by: "host" } });
+  const events: ScoreEvent[] = [];
+  for (const [authorId, votes] of counts) {
+    events.push(
+      makeEvent({
+        target: { type: "player", id: authorId },
+        gameId: "draw",
+        roundId: round.id,
+        cardId: card.id,
+        delta: votes,
+        reason: "畫畫・人氣票",
+        by: "auto",
+      }),
+    );
+  }
+  const maxVotes = Math.max(0, ...perWork.values());
+  if (maxVotes > 0) {
+    for (const [assetId, votes] of perWork) {
+      if (votes !== maxVotes) continue;
+      const asset = works.find((a) => a && a.id === assetId);
+      if (!asset?.authorId) continue;
+      events.push(
+        makeEvent({
+          target: { type: "player", id: asset.authorId },
+          gameId: "draw",
+          roundId: round.id,
+          cardId: card.id,
+          delta: 2,
+          reason: "畫畫・最似獎",
+          by: "auto",
+        }),
+      );
+    }
+  }
+  if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+}
+
+/** 估數字最接近者 +2（並列全部 +2）；綁 roundId，重開時由 reopen 嘅 auto-void 清走 */
+function gradeClosest(ctx: Ctx, round: Round, card: Card, actual: number): void {
+  const store = ctx.store;
+  const already = store.state.ledger.some((e) => e.roundId === round.id && e.by === "auto" && e.reason.includes("估數字"));
+  if (already) return;
+  const subs = store.submissionsForRound(round.id).filter((x) => x.confirmed && typeof x.amount === "number");
+  if (!subs.length) return;
+  const dist = (x: Submission): number => Math.abs((x.amount ?? 0) - actual);
+  const min = Math.min(...subs.map(dist));
+  const events = subs
+    .filter((x) => dist(x) === min)
+    .map((x) =>
+      makeEvent({
+        target: { type: "player", id: x.playerId },
+        gameId: "quiz",
+        roundId: round.id,
+        cardId: card.id,
+        submissionId: x.id,
+        delta: 2,
+        reason: `${cardReason(card)}・估數字`,
+        by: "auto",
+      }),
+    );
+  if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+}
+
+/** 估數字：收卷 transaction 固定 closedAt → 用 Asia/Hong_Kong 計到下一個 00:00 嘅完整分鐘 */
+export function minutesToMidnightHK(closedAt: number): number {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = fmt.formatToParts(new Date(closedAt));
+  const get = (t: string): number => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  const y = get("year");
+  const mo = get("month");
+  const d = get("day");
+  const hh = get("hour") === 24 ? 0 : get("hour");
+  const mm = get("minute");
+  const ss = get("second");
+  const consumedMs = ((hh * 3600 + mm * 60 + ss) * 1000 + (closedAt % 1000)) * 1;
+  const dayMs = 24 * 3600 * 1000;
+  return Math.floor((dayMs - consumedMs) / 60000);
+}
+
+function closeRoundMutations(ctx: Ctx, round: Round, card: Card | undefined, auto: boolean): void {
+  const closedAt = Date.now();
+  const patch: Partial<Round> = { state: "closed", closedAt };
+  if (auto) patch.autoClosed = true;
+  let actualAnswer: number | undefined;
+  if (card?.autoAnswer === "minutes-to-midnight") {
+    actualAnswer = minutesToMidnightHK(closedAt);
+    patch.actualAnswer = actualAnswer;
+    push(ctx, { t: "card.update", d: { cardId: card.id, patch: { actualAnswer } } });
+    gradeClosest(ctx, round, card, actualAnswer);
+  }
+  push(ctx, { t: "round.update", d: { roundId: round.id, patch } });
+  if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "closed" } } });
+  setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: card?.id ?? null } });
+  if (card && card.type === "choice") gradeChoiceRound(ctx, round, card);
+}
+
+
+/* ───────────── M2：media deck／AudioLease ／ M3：畫畫 ／ M4：搗蛋鬼 ───────────── */
+
+function leaseDeck(ctx: Ctx, deckIdRaw: string | undefined): string {
+  const deck = deckIdRaw || `${ctx.hostId}:deck`;
+  const lease = ctx.store.state.room.audioLease;
+  if (!lease) throw new CmdError("W_NO_AUDIO_LEASE", "未有音源 lease（先申請）");
+  if (lease.deckId !== deck) throw new CmdError("W_NO_AUDIO_LEASE", `而家由 ${lease.deckId} 出聲`);
+  if (lease.leaseUntil < Date.now()) throw new CmdError("W_NO_AUDIO_LEASE", "lease 已過期（請重新接管）");
+  return deck;
+}
+
+function ownerDeck(ctx: Ctx, deckIdRaw: string | undefined): string {
+  return deckIdRaw || `${ctx.hostId}:deck`;
+}
+
+function sourceKindOf(url: string): { kind: "youtube" | "apple" | "external"; url: string } {
+  const u = url.trim();
+  if (u.includes("youtu")) return { kind: "youtube", url: u };
+  if (u.includes("music.apple.com")) return { kind: "apple", url: u };
+  return { kind: "external", url: u };
+}
+
+function bidWinner(store: Store, roundId: string): { submission: Submission | undefined; second: Submission | undefined } {
+  const subs = store
+    .submissionsForRound(roundId)
+    .filter((x) => x.confirmed && typeof x.amount === "number")
+    .sort((a, b) => a.ts - b.ts);
+  const ranked = [...subs].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0) || a.ts - b.ts);
+  return { submission: ranked[0], second: ranked[1] };
+}
+
+function songIndex(store: Store, songId: string): number {
+  return store.state.songs.findIndex((s) => s.id === songId);
+}
+
+function saboteurState(store: Store): NonNullable<NonNullable<Room["gameState"]>["saboteur"]> {
+  const st = store.state.room.gameState?.saboteur;
+  if (!st) throw new CmdError("W_ALREADY_STATE", "未派身份（先 saboteur.assign）");
+  return st;
+}
+
+/** 深 copy 一份先改，commit（fsync）成功後記憶體先真正套用（§9.1.1：唔准改 live state 先過 journal） */
+function cloneSaboteur(store: Store): NonNullable<NonNullable<Room["gameState"]>["saboteur"]> {
+  return JSON.parse(JSON.stringify(saboteurState(store))) as NonNullable<NonNullable<Room["gameState"]>["saboteur"]>;
+}
+
+/** 淘汰一位玩家（只改傳入嘅 clone；caller 負責 push game.set）；搗蛋鬼被淘汰＝揪中 */
+function eliminateSaboteur(ctx: Ctx, st: NonNullable<NonNullable<Room["gameState"]>["saboteur"]>, targetId: string, decisiveRoundId: string): void {
+  const store = ctx.store;
+  const target = store.player(targetId);
+  if (!target) throw new CmdError("W_BAD_SCHEMA", "冇呢個玩家");
+  if (st.eliminatedIds.includes(targetId)) throw new CmdError("W_ALREADY_STATE", "已經淘汰咗");
+  const round = store.round(decisiveRoundId);
+  const roundOut = st.rounds.find((r) => r.roundId === decisiveRoundId);
+  st.eliminatedIds = [...st.eliminatedIds, targetId];
+  if (roundOut) {
+    roundOut.eliminatedId = targetId;
+    roundOut.state = "resolved";
+    roundOut.decision = "eliminated";
+  }
+  if (targetId === st.saboteurId) {
+    st.caught = true;
+    st.finished = true;
+    st.revealedRole = "saboteur";
+    const voters = store
+      .submissionsForRound(decisiveRoundId)
+      .filter((x) => x.confirmed && x.kind === "vote" && x.text === targetId);
+    for (const v of voters) {
+      push(ctx, {
+        t: "ledger.append",
+        d: {
+          events: [
+            makeEvent({
+              target: { type: "player", id: v.playerId },
+              gameId: "saboteur",
+              roundId: decisiveRoundId,
+              cardId: round?.cardId,
+              submissionId: v.id,
+              delta: 3,
+              reason: "搗蛋鬼・揪中",
+              by: "auto",
+            }),
+          ],
+        },
+      });
+    }
+    if (round) {
+      push(ctx, { t: "round.update", d: { roundId: decisiveRoundId, patch: { state: "revealed" } } });
+      push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "revealed" } } });
+    }
+    push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+    push(ctx, {
+      t: "stage.set",
+      d: { stage: { mode: "role-reveal", payload: { roundId: decisiveRoundId, caught: true, saboteurId: st.saboteurId }, prevMode: "vote" } },
+    });
+    toast(ctx, `揪中搗蛋鬼：${target.name}！投中者各 +3`);
+    ctx.result = { caught: true, saboteurId: st.saboteurId, voters: voters.length, mode: "eliminate" };
+    return;
+  }
+  if (round) push(ctx, { t: "round.update", d: { roundId: decisiveRoundId, patch: { state: "revealed" } } });
+  const roundsDone = st.rounds.filter((r) => r.state === "resolved").length;
+  if (roundsDone >= 2) {
+    st.finished = true;
+    st.revealedRole = "saboteur";
+    const sab = store.player(st.saboteurId ?? "");
+    if (sab) {
+      push(ctx, {
+        t: "ledger.append",
+        d: {
+          events: [
+            makeEvent({ target: { type: "player", id: sab.id }, gameId: "saboteur", delta: 5, reason: "搗蛋鬼・潛伏成功", by: "auto" }),
+          ],
+        },
+      });
+    }
+    push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+    push(ctx, { t: "stage.set", d: { stage: { mode: "role-reveal", payload: { caught: false, saboteurId: st.saboteurId }, prevMode: "vote" } } });
+    toast(ctx, `兩輪都揪唔中：搗蛋鬼 +5`);
+    ctx.result = { caught: false, finished: true, mode: "eliminate" };
+  } else {
+    push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+    toast(ctx, `淘汰咗 ${target.name}（唔係搗蛋鬼），仲有第 2 輪`);
+    ctx.result = { caught: false, finished: false, nextRound: 2, mode: "eliminate" };
+  }
+}
+
+/** lease 到期／ready timeout／window 到期：server 側自動處理（防雙響＋播 15 秒真承諾） */
+export function tickLeases(store: Store): boolean {
+  const lease = store.state.room.audioLease;
+  const muts: Mutation[] = [];
+  if (lease && !lease.releasedAt && lease.leaseUntil <= Date.now()) {
+    muts.push({ t: "lease.set", d: { lease: { ...lease, releasedAt: Date.now() } } });
+    const pb0 = store.state.playback;
+    if (pb0 && pb0.deckId === lease.deckId && (pb0.state === "playing" || pb0.state === "preparing")) {
+      const positionMs = pb0.positionMs + Math.max(0, Date.now() - pb0.playStartedAt);
+      muts.push({ t: "media.set", d: { playback: { ...pb0, state: "paused", positionMs, pausedAt: Date.now() } } });
+    }
+  }
+  const pb = store.state.playback;
+  if (pb && pb.state === "preparing" && typeof pb.readyDeadline === "number" && Date.now() > pb.readyDeadline) {
+    muts.push({ t: "media.set", d: { playback: { ...pb, state: "failed" } } });
+  }
+  if (pb && pb.state === "playing" && Array.isArray(pb.window) && Number.isFinite(pb.window[1])) {
+    const elapsed = pb.positionMs + Math.max(0, Date.now() - pb.playStartedAt);
+    if (elapsed >= pb.window[1]) {
+      muts.push({ t: "media.set", d: { playback: { ...pb, state: "paused", positionMs: pb.window[1], pausedAt: Date.now() } } });
+    }
+  }
+  if (!muts.length) return false;
+  store.commit(muts, { bumpRevision: true });
+  return true;
+}
+
+/* ───────────────────── 自動收卷 tick（伺服器權威 endsAt + auto-close） ───────────────────── */
+export function tickAutoClose(store: Store): boolean {
+  const round = store.currentRound();
+  if (!round || round.state !== "open") return false;
+  const card = store.card(round.cardId);
+  if (!card) return false;
+  const nowMs = Date.now();
+  // §3.1：auto-close 關咗就只可以主持手動收（時間到都唔自動收）
+  const timeUp = store.state.settings.autoClose && round.endsAt !== null && nowMs >= round.endsAt;
+  const stats = store.answerStats(round);
+  const allAnswered = store.state.settings.autoClose && stats.eligible > 0 && stats.answered >= stats.eligible;
+  if (!timeUp && !allAnswered) return false;
+  // 同一時間只有一個 tick 會執行（single-thread sync）
+  const muts: Mutation[] = [];
+  const ctx: Ctx = { store, hostId: "system", hostName: "系統", cmd: { commandId: "auto", kind: "auto.close", payload: {} }, muts };
+  push(ctx, { t: "activity.add", d: { toast: { id: newId("act"), ts: nowMs, hostName: "系統", text: timeUp ? "時間到，自動收卷" : "全員答完，自動收卷" } } });
+  closeRoundMutations(ctx, round, card, true);
+  store.commit(muts, { bumpRevision: true });
+  return true;
+}
+
+/* ───────────────────────────── execute ───────────────────────────── */
+
+export type ExecuteResult = ApiResult<unknown>;
+
+export function executeCommand(
+  store: Store,
+  hostId: string,
+  hostName: string,
+  cmd: HostCommand,
+  deps: { isHostOnline?: (hostId: string) => boolean } = {},
+): ExecuteResult {
+  if (!cmd || typeof cmd.commandId !== "string" || cmd.commandId.length < 4) {
+    throw new CmdError("W_BAD_SCHEMA", "commandId 唔合法");
+  }
+  if (typeof cmd.kind !== "string") throw new CmdError("W_BAD_SCHEMA", "kind 唔合法");
+  const ph = payloadHash(cmd);
+  const existing = store.receipt(cmd.commandId);
+  if (existing) {
+    if (existing.payloadHash !== ph) throw new CmdError("W_CMD_PAYLOAD_MISMATCH", "同 commandId 但 payload 唔同");
+    return { ok: true, revision: existing.revision, result: existing.result };
+  }
+  if (cmd.expectedRevision !== undefined && cmd.expectedRevision !== store.revision) {
+    return {
+      ok: false,
+      code: "W_STALE_COMMAND",
+      message: `revision 唔對：預期 ${cmd.expectedRevision}，實際 ${store.revision}`,
+      revision: store.revision,
+      latest: { phase: store.state.room.phase, mode: store.state.room.stage.mode, currentRoundId: store.state.room.currentRoundId },
+    };
+  }
+  if (cmd.expectedRoundId !== undefined && cmd.expectedRoundId !== (store.state.room.currentRoundId ?? null)) {
+    return {
+      ok: false,
+      code: "W_STALE_COMMAND",
+      message: `roundId 唔對：預期 ${cmd.expectedRoundId}，實際 ${store.state.room.currentRoundId ?? "null"}`,
+      revision: store.revision,
+    };
+  }
+
+  const ctx: Ctx = { store, hostId, hostName, cmd, muts: [], isHostOnline: deps.isHostOnline };
+  const p = asObj(cmd.payload);
+  const room = store.state.room;
+
+  switch (cmd.kind) {
+    /* ── 玩家 ── */
+    case "player.update":
+    case "player.approve":
+    case "player.kick": {
+      const targetId = cmd.targetId ?? optStr(p, "playerId");
+      if (!targetId) throw new CmdError("W_BAD_SCHEMA", "要 playerId");
+      const player = store.player(targetId);
+      if (!player) throw new CmdError("W_BAD_SCHEMA", "冇呢個玩家");
+      const patch: Partial<Player> = {};
+      if (cmd.kind === "player.approve") {
+        if (player.status === "approved") throw new CmdError("W_ALREADY_STATE", "已經 approved");
+        const approved = store.approvedPlayers().length;
+        if (approved >= 30) throw new CmdError("W_ROOM_FULL", "approved 名額已滿（30）");
+        patch.status = "approved";
+      } else if (cmd.kind === "player.kick") {
+        patch.status = "kicked";
+        patch.connected = false;
+        push(ctx, { t: "session.revoke", d: { playerId: targetId } });
+        toast(ctx, `踢走咗 ${player.name}`);
+      } else {
+        if (typeof p.name === "string") {
+          const name = p.name.trim();
+          if (name.length === 0 || name.length > 12) throw new CmdError("W_BAD_SCHEMA", "名要 1–12 字");
+          patch.name = name;
+        }
+        if (p.number !== undefined) {
+          const n = reqNum(p, "number");
+          if (!Number.isInteger(n) || n < 1 || n > 999) throw new CmdError("W_BAD_SCHEMA", "number 要 1–999 整數");
+          if (room.players.some((x) => x.id !== player.id && x.number === n && x.status !== "kicked"))
+            throw new CmdError("W_DUP_NUMBER", `編號 ${n} 已經有人用`);
+          patch.number = n;
+        }
+        if (p.status !== undefined) {
+          const st = p.status;
+          if (st !== "pending" && st !== "approved" && st !== "kicked") throw new CmdError("W_BAD_SCHEMA", "status 唔合法");
+          if (st === "approved" && player.status !== "approved" && store.approvedPlayers().length >= 30)
+            throw new CmdError("W_ROOM_FULL", "approved 名額已滿（30）");
+          patch.status = st;
+          if (st === "kicked") {
+            patch.connected = false;
+            push(ctx, { t: "session.revoke", d: { playerId: targetId } });
+          }
+        }
+        if (p.avatar !== undefined) patch.avatar = p.avatar as Player["avatar"];
+        if (p.groupId !== undefined) {
+          const gid = p.groupId === null ? null : String(p.groupId);
+          if (gid && !room.groups.some((g) => g.id === gid)) throw new CmdError("W_BAD_SCHEMA", "冇呢個組");
+          if (player.groupId && gid !== player.groupId && p.mode === "stay") transferStay(ctx, player, player.groupId);
+          patch.groupId = gid;
+        }
+      }
+      push(ctx, { t: "player.update", d: { playerId: targetId, patch } });
+      if (cmd.kind === "player.approve") toast(ctx, `批准咗 ${player.name} 入場`);
+      break;
+    }
+
+    /* ── 分組 ── */
+    case "groups.set": {
+      const palette = ["#ef4444", "#3b82f6", "#22c55e", "#f59e0b", "#a855f7", "#14b8a6", "#ec4899", "#84cc16", "#f97316", "#06b6d4"];
+      let groups = room.groups.map((g) => ({ ...g }));
+      if (p.groups !== undefined) {
+        const raw = p.groups as { id?: string; name?: string; color?: string }[];
+        groups = raw.map((g, i) => ({
+          id: g.id ?? `g${i + 1}`,
+          name: (g.name ?? `第 ${i + 1} 組`).slice(0, 12),
+          color: g.color ?? palette[i % palette.length] ?? "#3b82f6",
+          order: i,
+        }));
+      } else {
+        const count = reqNum(p, "count");
+        if (!Number.isInteger(count) || count < 0 || count > 30) throw new CmdError("W_BAD_SCHEMA", "count 要 0–30");
+        groups = Array.from({ length: count }, (_, i) => ({
+          id: `g${i + 1}`,
+          name: `第 ${i + 1} 組`,
+          color: palette[i % palette.length] ?? "#3b82f6",
+          order: i,
+        }));
+      }
+      if (groups.length > 30) throw new CmdError("W_BAD_SCHEMA", "最多 30 組");
+      push(ctx, { t: "groups.set", d: { groups } });
+      // 被刪組嘅人 → 個人戰
+      for (const pl of room.players) {
+        if (pl.groupId && !groups.some((g) => g.id === pl.groupId)) {
+          push(ctx, { t: "group.assign", d: { playerId: pl.id, groupId: null } });
+        }
+      }
+      toast(ctx, `設定咗 ${groups.length} 組`);
+      break;
+    }
+    case "groups.assign": {
+      const playerId = reqStr(p, "playerId");
+      const player = store.player(playerId);
+      if (!player) throw new CmdError("W_BAD_SCHEMA", "冇呢個玩家");
+      const gidRaw = p.groupId;
+      const gid = gidRaw === null || gidRaw === "" ? null : String(gidRaw);
+      if (gid && !room.groups.some((g) => g.id === gid)) throw new CmdError("W_BAD_SCHEMA", "冇呢個組");
+      const mode = optStr(p, "mode") ?? "follow";
+      if (mode !== "follow" && mode !== "stay") throw new CmdError("W_BAD_SCHEMA", "mode 要 follow／stay");
+      if (mode === "stay" && player.groupId && player.groupId !== gid) transferStay(ctx, player, player.groupId);
+      push(ctx, { t: "group.assign", d: { playerId, groupId: gid } });
+      toast(ctx, `${player.name} 搬去 ${gid ? (room.groups.find((g) => g.id === gid)?.name ?? gid) : "個人戰"}${mode === "stay" ? "（分數留原組）" : "（分數跟人走）"}`);
+      break;
+    }
+
+    /* ── 計分帳簿 ── */
+    case "score.add": {
+      const targetType = optStr(p, "targetType") ?? "player";
+      const targetId = cmd.targetId ?? optStr(p, "targetId");
+      if (!targetId) throw new CmdError("W_BAD_SCHEMA", "要 targetId");
+      if (targetType === "player" && !store.player(targetId)) throw new CmdError("W_BAD_SCHEMA", "冇呢個玩家");
+      if (targetType === "group" && !room.groups.some((g) => g.id === targetId)) throw new CmdError("W_BAD_SCHEMA", "冇呢個組");
+      const delta = reqNum(p, "delta");
+      if (!Number.isInteger(delta) || delta === 0 || Math.abs(delta) > 1000) throw new CmdError("W_BAD_SCHEMA", "delta 要非 0 整數（±1000）");
+      const reason = (optStr(p, "reason") ?? "主持加分").slice(0, 40);
+      const ev = makeEvent({
+        target: { type: targetType as "player" | "group", id: targetId },
+        delta,
+        reason,
+        by: "host",
+        gameId: optStr(p, "gameId"),
+        roundId: room.currentRoundId ?? undefined,
+      });
+      push(ctx, { t: "ledger.append", d: { events: [ev] } });
+      toast(ctx, `${delta > 0 ? "+" : ""}${delta}（${reason}）`);
+      break;
+    }
+    case "score.bulk": {
+      const delta = reqNum(p, "delta");
+      const reason = (optStr(p, "reason") ?? "全場加減分").slice(0, 40);
+      const events = store.approvedPlayers().map((pl) =>
+        makeEvent({ target: { type: "player", id: pl.id }, delta, reason, by: "host" }),
+      );
+      if (events.length === 0) throw new CmdError("W_ALREADY_STATE", "冇 approved 玩家");
+      push(ctx, { t: "ledger.append", d: { events } });
+      toast(ctx, `全場 ${delta > 0 ? "+" : ""}${delta}（${reason}）`);
+      break;
+    }
+    case "score.void": {
+      const eventId = cmd.targetId ?? optStr(p, "eventId");
+      if (!eventId) throw new CmdError("W_BAD_SCHEMA", "要 eventId");
+      const ev = store.state.ledger.find((e) => e.id === eventId);
+      if (!ev) throw new CmdError("W_BAD_SCHEMA", "冇呢筆分");
+      if (ev.voided) throw new CmdError("W_ALREADY_STATE", "已經作廢");
+      push(ctx, { t: "ledger.void", d: { eventIds: [eventId], by: "host" } });
+      toast(ctx, `作廢咗一筆 ${ev.delta > 0 ? "+" : ""}${ev.delta}（${ev.reason}）`);
+      break;
+    }
+    case "score.judge": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const round = store.round(roundId);
+      if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      const card = store.card(round.cardId);
+      if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      const allCorrect = p.allCorrect === true;
+      const targets: Submission[] = allCorrect
+        ? store.submissionsForRound(roundId).filter((s) => s.confirmed)
+        : (() => {
+            const sid = reqStr(p, "submissionId");
+            const s = store.state.submissions.find((x) => x.id === sid);
+            if (!s) throw new CmdError("W_BAD_SCHEMA", "冇呢份提交");
+            return [s];
+          })();
+      const events: ScoreEvent[] = [];
+      for (const s of targets) {
+        const points = allCorrect ? card.points : Number(p.points ?? 1);
+        const correct = allCorrect ? true : p.correct !== false;
+        if (!Number.isFinite(points)) throw new CmdError("W_BAD_SCHEMA", "points 唔合法");
+        // 重評：void 舊事件
+        const old = store.state.ledger.filter((e) => !e.voided && e.submissionId === s.id).map((e) => e.id);
+        if (old.length) push(ctx, { t: "ledger.void", d: { eventIds: old, by: "host" } });
+        push(ctx, {
+          t: "submission.update",
+          d: { submissionId: s.id, patch: { judged: { correct, points, by: "host" } } },
+        });
+        if (points !== 0) {
+          events.push(
+            makeEvent({
+              target: { type: "player", id: s.playerId },
+              gameId: card.gameId,
+              roundId,
+              cardId: card.id,
+              submissionId: s.id,
+              delta: points,
+              reason: `${cardReason(card)}・主持評分`,
+              by: "host",
+            }),
+          );
+        }
+      }
+      if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+      toast(ctx, allCorrect ? `全部當答對（${targets.length} 份）` : `評咗一份 ${String(p.points ?? 1)} 分`);
+      ctx.result = { judged: targets.map((t) => ({ submissionId: t.id, playerId: t.playerId })) };
+      break;
+    }
+
+    /* ── 題庫 ── */
+    case "quiz.upsert": {
+      const q = p.question as QuizQuestion | undefined;
+      if (!q || typeof q.prompt !== "string" || q.prompt.trim().length === 0) throw new CmdError("W_BAD_SCHEMA", "題目唔合法");
+      if (q.type !== "choice" && q.type !== "open") throw new CmdError("W_BAD_SCHEMA", "type 要 choice／open");
+      if (q.type === "open" && q.openKind !== "text" && q.openKind !== "number")
+        throw new CmdError("W_BAD_SCHEMA", "open 題一定要有 openKind");
+      if (q.type === "choice" && (!Array.isArray(q.options) || q.options.length !== 4))
+        throw new CmdError("W_BAD_SCHEMA", "choice 題要 4 個選項");
+      const card = questionToCard({ ...q, id: q.id || newId("q") });
+      const cards = store.quizCards().map((c) => ({ ...c }));
+      const idx = cards.findIndex((c) => c.id === card.id);
+      if (idx >= 0) {
+        const old = cards[idx] as Card;
+        // server-side merge：唔准後台儲存靜靜哋刪走 autoAnswer／state，version 每次 +1（§6）
+        card.state = old.state;
+        card.version = old.version + 1;
+        if (old.autoAnswer) card.autoAnswer = old.autoAnswer;
+        if (typeof q.autoAnswer === "string" && q.autoAnswer) card.autoAnswer = "minutes-to-midnight";
+        if (old.actualAnswer !== undefined && card.actualAnswer === undefined) card.actualAnswer = old.actualAnswer;
+        cards[idx] = card;
+      } else {
+        if (q.type === "choice") card.state = "draft";
+        cards.push(card);
+      }
+      push(ctx, { t: "quiz.set", d: { cards } });
+      const item = room.rundown.find((i) => i.gameId === "quiz");
+      if (item) {
+        const ids = cards.map((c) => c.id);
+        const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: ids } : { ...i }));
+        push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      }
+      toast(ctx, `題庫：${q.id ? "改" : "加"}咗一題`);
+      ctx.result = { id: card.id, type: card.type };
+      break;
+    }
+    case "quiz.delete": {
+      const id = cmd.targetId ?? optStr(p, "id");
+      if (!id) throw new CmdError("W_BAD_SCHEMA", "要題目 id");
+      if (!store.quizCards().some((c) => c.id === id)) throw new CmdError("W_BAD_SCHEMA", "冇呢題");
+      const keep = store.quizCards().filter((c) => c.id !== id);
+      push(ctx, { t: "quiz.set", d: { cards: keep } });
+      push(ctx, { t: "card.remove", d: { cardId: id } });
+      const item = room.rundown.find((i) => i.gameId === "quiz");
+      if (item) {
+        const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: i.cardIds.filter((x) => x !== id) } : { ...i }));
+        push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      }
+      toast(ctx, "題庫：刪咗一題");
+      break;
+    }
+    case "quiz.reorder": {
+      const ids = p.ids as string[] | undefined;
+      if (!Array.isArray(ids)) throw new CmdError("W_BAD_SCHEMA", "要 ids");
+      const cards = store.quizCards();
+      if (ids.length !== cards.length || ids.some((id) => !cards.some((c) => c.id === id)))
+        throw new CmdError("W_BAD_SCHEMA", "ids 同題庫對唔上");
+      const ordered = ids.map((id) => cards.find((c) => c.id === id) as Card);
+      push(ctx, { t: "quiz.set", d: { cards: ordered } });
+      const item = room.rundown.find((i) => i.gameId === "quiz");
+      if (item) {
+        const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: ids } : { ...i }));
+        push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      }
+      toast(ctx, "題庫：重排咗");
+      break;
+    }
+    case "quiz.import": {
+      const questions = (p.questions as QuizQuestion[] | undefined) ?? [];
+      if (!Array.isArray(questions)) throw new CmdError("W_BAD_SCHEMA", "要 questions");
+      const existing = store.quizCards();
+      const imported: string[] = [];
+      const unchanged: string[] = [];
+      const skippedOpen: { id: string; prompt: string; note: string }[] = [];
+      const diffs: { id: string; before: string; after: string }[] = [];
+      const cards = [...existing];
+      for (const q of questions) {
+        if (q.type !== "choice") {
+          // open 題：只顯示 diff（現有新版 open 題唔會被覆蓋）
+          const cur = cards.find((c) => c.id === q.id);
+          skippedOpen.push({
+            id: q.id,
+            prompt: q.prompt,
+            note: cur ? `保留現有 open 題（${cur.prompt}）` : "現有題庫冇呢題，未加入",
+          });
+          continue;
+        }
+        const same = cards.find((c) => c.id === q.id);
+        if (same && same.type === "choice") {
+          if (same.prompt !== q.prompt || JSON.stringify(same.options) !== JSON.stringify(q.options)) {
+            diffs.push({ id: same.id, before: same.prompt, after: q.prompt });
+            const card = questionToCard({ ...q, id: same.id });
+            const idx = cards.findIndex((c) => c.id === same.id);
+            cards[idx] = card;
+            imported.push(q.id);
+          } else {
+            unchanged.push(q.id);
+          }
+          continue;
+        }
+        const card = questionToCard({ ...q, id: q.id || newId("q") });
+        cards.push(card);
+        imported.push(card.id);
+      }
+      push(ctx, { t: "quiz.set", d: { cards } });
+      const item = room.rundown.find((i) => i.gameId === "quiz");
+      if (item) {
+        const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: cards.map((c) => c.id) } : { ...i }));
+        push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      }
+      toast(ctx, `題庫：匯入 ${imported.length} 題 MC（open 題 ${skippedOpen.length} 題只顯示 diff，冇覆蓋）`);
+      ctx.result = { imported, unchanged, skippedOpen, diffs, total: cards.length };
+      break;
+    }
+    case "quiz.setActualAnswer": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const round = store.round(roundId);
+      if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      const card = store.card(round.cardId);
+      if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      if (card.autoAnswer) throw new CmdError("W_ALREADY_STATE", "時間題 actualAnswer 由 server 自動計，唔可以手改（要改就 void／reopen，§3.1）");
+      const actual = reqNum(p, "actualAnswer");
+      push(ctx, { t: "round.update", d: { roundId, patch: { actualAnswer: actual } } });
+      push(ctx, { t: "card.update", d: { cardId: card.id, patch: { actualAnswer: actual } } });
+      // 最接近者 +2（並列全 +2），綁 roundId 去重
+      const old = store.state.ledger.filter((e) => e.roundId === roundId && e.by === "auto").map((e) => e.id);
+      if (old.length) push(ctx, { t: "ledger.void", d: { eventIds: old, by: "host" } });
+      const subs = store.submissionsForRound(roundId).filter((s) => s.confirmed && typeof s.amount === "number");
+      if (subs.length) {
+        const dist = (s: Submission): number => Math.abs((s.amount ?? 0) - actual);
+        const min = Math.min(...subs.map(dist));
+        const events = subs
+          .filter((s) => dist(s) === min)
+          .map((s) =>
+            makeEvent({
+              target: { type: "player", id: s.playerId },
+              gameId: "quiz",
+              roundId,
+              cardId: card.id,
+              submissionId: s.id,
+              delta: 2,
+              reason: `${cardReason(card)}・估數字`,
+              by: "auto",
+            }),
+          );
+        if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+      }
+      toast(ctx, `估數字答案：${actual}`);
+      ctx.result = { actualAnswer: actual, roundId };
+      break;
+    }
+
+    /* ── 規則頁 ── */
+    case "rules.upsert": {
+      const pageIn = p.page as RulePage | undefined;
+      if (!pageIn || typeof pageIn.gameId !== "string" || typeof pageIn.title !== "string")
+        throw new CmdError("W_BAD_SCHEMA", "規則頁唔合法");
+      const pages = room.rulePages.map((x) => ({ ...x, blocks: x.blocks.map((b) => ({ ...b })) }));
+      const idx = pages.findIndex((x) => x.id === pageIn.id);
+      const existing = idx >= 0 ? (pages[idx] as RulePage) : undefined;
+      if (existing && p.expectedVersion !== undefined && existing.version !== p.expectedVersion) {
+        return {
+          ok: false,
+          code: "W_RULES_CONFLICT",
+          message: `版本衝突：預期 ${String(p.expectedVersion)}，實際 ${existing.version}`,
+          revision: store.revision,
+          latest: existing,
+        };
+      }
+      const blocks = Array.isArray(pageIn.blocks) ? pageIn.blocks : [];
+      if (blocks.length > 20) throw new CmdError("W_RULES_LIMIT", "每頁最多 20 個 block");
+      let totalChars = 0;
+      for (const b of blocks) {
+        const textLen = (b.text ?? "").length + (b.value ?? "").length;
+        if (textLen > 120) throw new CmdError("W_RULES_LIMIT", "每個 block 文字最多 120 字");
+        if (b.items) {
+          if (b.items.length > 6) throw new CmdError("W_RULES_LIMIT", "items 最多 6 個");
+          for (const it of b.items) {
+            if (it.length > 120) throw new CmdError("W_RULES_LIMIT", "每個 item 最多 120 字");
+            totalChars += it.length;
+          }
+        }
+        totalChars += textLen;
+      }
+      if (totalChars > 1200) throw new CmdError("W_RULES_LIMIT", "全頁文字總和最多 1200 字");
+      if (pageIn.title.length > 16) throw new CmdError("W_RULES_LIMIT", "title 最多 16 字");
+      if ((pageIn.subtitle ?? "").length > 24) throw new CmdError("W_RULES_LIMIT", "subtitle 最多 24 字");
+      const page: RulePage = {
+        id: existing?.id ?? newId("rule"),
+        gameId: pageIn.gameId,
+        title: pageIn.title,
+        subtitle: pageIn.subtitle,
+        blocks: blocks.map((b) => ({ ...b, id: b.id || newId("b") })),
+        order: typeof pageIn.order === "number" ? pageIn.order : pages.length + 1,
+        enabled: pageIn.enabled !== false,
+        autoAdvanceSeconds: Math.max(0, Number(pageIn.autoAdvanceSeconds ?? 0)),
+        updatedAt: Date.now(),
+        version: (existing?.version ?? 0) + 1,
+        updatedBy: hostName,
+      };
+      if (page.enabled) {
+        for (const other of pages) {
+          if (other.id !== page.id && other.gameId === page.gameId) other.enabled = false;
+        }
+      }
+      if (idx >= 0) pages[idx] = page;
+      else {
+        if (pages.filter((x) => !x.archived).length >= 30) throw new CmdError("W_RULES_LIMIT", "每房最多 30 頁規則");
+        pages.push(page);
+      }
+      push(ctx, { t: "rules.set", d: { rulePages: pages } });
+      toast(ctx, `規則頁：${page.title} v${page.version}`);
+      break;
+    }
+    case "rules.delete": {
+      const id = cmd.targetId ?? optStr(p, "id");
+      if (!id) throw new CmdError("W_BAD_SCHEMA", "要規則頁 id");
+      const pages = room.rulePages.map((x) => (x.id === id ? { ...x, archived: true, enabled: false, updatedAt: Date.now(), version: x.version + 1 } : { ...x }));
+      push(ctx, { t: "rules.set", d: { rulePages: pages } });
+      toast(ctx, "規則頁：已停用");
+      break;
+    }
+    case "rules.reorder": {
+      const ids = p.ids as string[] | undefined;
+      if (!Array.isArray(ids)) throw new CmdError("W_BAD_SCHEMA", "要 ids");
+      const pages = room.rulePages.map((x) => ({ ...x }));
+      ids.forEach((id, i) => {
+        const page = pages.find((x) => x.id === id);
+        if (page) page.order = i;
+      });
+      push(ctx, { t: "rules.set", d: { rulePages: pages } });
+      toast(ctx, "規則頁：重排咗");
+      break;
+    }
+
+    /* ── rundown ── */
+    case "rundown.next":
+      advanceRundown(ctx, 0, "next");
+      break;
+    case "rundown.prev":
+      advanceRundown(ctx, 0, "prev");
+      break;
+    case "rundown.skip":
+      advanceRundown(ctx, 0, "skip");
+      break;
+    case "rundown.reorder": {
+      const ids = p.ids as string[] | undefined;
+      if (!Array.isArray(ids)) throw new CmdError("W_BAD_SCHEMA", "要 ids");
+      const rundown = room.rundown
+        .map((i) => ({ ...i }))
+        .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
+        .map((i, idx) => ({ ...i, index: idx }));
+      push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      toast(ctx, "Rundown：重排咗");
+      break;
+    }
+    case "rundown.insert": {
+      const itemIn = p.item as { gameId?: string; title?: string; rulesText?: string } | undefined;
+      if (!itemIn?.gameId) throw new CmdError("W_BAD_SCHEMA", "要 gameId");
+      const afterId = optStr(p, "afterItemId") ?? room.currentItemId;
+      const afterIdx = room.rundown.findIndex((i) => i.id === afterId);
+      const rundown = room.rundown.map((i) => ({ ...i }));
+      const item = {
+        id: newId("rd"),
+        index: 0,
+        gameId: itemIn.gameId,
+        title: (itemIn.title ?? itemIn.gameId).slice(0, 40),
+        state: "todo" as const,
+        cardIds: [] as string[],
+        rulesText: itemIn.rulesText ?? "",
+      };
+      rundown.splice(afterIdx + 1, 0, item);
+      rundown.forEach((i, idx) => {
+        i.index = idx;
+      });
+      push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      toast(ctx, `插入咗「${item.title}」`);
+      break;
+    }
+
+    /* ── 出卡流程（§6 狀態機） ── */
+    case "card.create": {
+      ensurePlaying(store);
+      const cardIn = (p.card ?? p) as Partial<Card>;
+      const type = cardIn.type;
+      if (!type || !["choice", "open", "vote", "bid", "media", "manual"].includes(type))
+        throw new CmdError("W_BAD_SCHEMA", "card.type 唔合法");
+      if (typeof cardIn.prompt !== "string" || cardIn.prompt.trim() === "") throw new CmdError("W_BAD_SCHEMA", "card.prompt 唔可以空");
+      const item = store.currentItem();
+      const card: Card = {
+        id: newId("card"),
+        type,
+        gameId: (cardIn.gameId as string | undefined) ?? item?.gameId ?? "quiz",
+        prompt: cardIn.prompt,
+        seconds: cardIn.seconds === undefined ? null : cardIn.seconds,
+        points: cardIn.points ?? 1,
+        version: 1,
+        state: "draft",
+      };
+      for (const k of ["category", "imageUrl", "mediaUrl", "explanation", "referenceAnswer", "hint", "openKind", "maxBid", "songId", "voteMode"] as const) {
+        if (cardIn[k] !== undefined) (card as unknown as Record<string, unknown>)[k] = cardIn[k];
+      }
+      if (cardIn.options) card.options = cardIn.options;
+      if (typeof cardIn.correct === "number") card.correct = cardIn.correct;
+      push(ctx, { t: "card.put", d: { card } });
+      if (item) {
+        const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: [...i.cardIds, card.id] } : { ...i }));
+        push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      }
+      toast(ctx, "新增咗一張卡");
+      break;
+    }
+    case "card.update": {
+      const cardId = cmd.targetId ?? reqStr(p, "cardId");
+      const card = store.card(cardId);
+      if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      const patch = asObj(p.patch ?? p.fields);
+      if (typeof patch.prompt === "string" && patch.prompt.trim() === "") throw new CmdError("W_BAD_SCHEMA", "prompt 唔可以空");
+      push(ctx, { t: "card.update", d: { cardId, patch: { ...patch, version: card.version + 1 } } });
+      toast(ctx, "改咗一張卡");
+      break;
+    }
+    case "card.open": {
+      ensurePlaying(store);
+      const cardId = cmd.targetId ?? reqStr(p, "cardId");
+      const card = store.card(cardId);
+      if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      const openRound = store.currentRound();
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先 reveal 或 void");
+      if (card.state === "revealed") throw new CmdError("W_ALREADY_STATE", "已 reveal 嘅卡要用 reopen");
+      const openCount = room.rounds.filter((r) => r.cardId === cardId).length + 1;
+      const round: Round = {
+        id: `${cardId}#${openCount}`,
+        cardId,
+        cardVersion: card.version,
+        endsAt: card.seconds && card.seconds > 0 ? Date.now() + card.seconds * 1000 : null,
+        closedAt: null,
+        state: "open",
+        eligiblePlayerIds: store.approvedPlayers().map((pl) => pl.id),
+      };
+      push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
+      push(ctx, { t: "card.update", d: { cardId, patch: { state: "open" } } });
+      const mode: StageMode = card.type === "bid" ? "bid" : card.type === "vote" ? "vote" : "question";
+      setStageIfUnlocked(ctx, { mode, payload: { roundId: round.id, cardId } });
+      toast(ctx, `開咗卡：${card.prompt.slice(0, 12)}`);
+      break;
+    }
+    case "card.close": {
+      const cardId = cmd.targetId ?? optStr(p, "cardId");
+      const round = store.currentRound();
+      if (!round) throw new CmdError("W_ALREADY_STATE", "冇開住嘅回合");
+      if (cardId && round.cardId !== cardId) throw new CmdError("W_STALE_COMMAND", "而家開住嘅唔係呢張卡");
+      if (round.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 已經係 ${round.state}`);
+      const card = store.card(round.cardId);
+      closeRoundMutations(ctx, round, card, false);
+      toast(ctx, "收卷");
+      break;
+    }
+    case "card.tally": {
+      const cardId = cmd.targetId ?? optStr(p, "cardId");
+      const round = store.currentRound();
+      if (!round) throw new CmdError("W_ALREADY_STATE", "冇開住嘅回合");
+      if (cardId && round.cardId !== cardId) throw new CmdError("W_STALE_COMMAND", "而家開住嘅唔係呢張卡");
+      if (round.state !== "closed" && round.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 係 ${round.state}`);
+      const card = store.card(round.cardId);
+      if (round.state === "open") closeRoundMutations(ctx, round, card, false);
+      push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "tally" } } });
+      push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "tally" } } });
+      setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: round.cardId } });
+      toast(ctx, "切去分佈");
+      break;
+    }
+    case "card.reveal": {
+      const cardId = cmd.targetId ?? optStr(p, "cardId");
+      const round = store.currentRound();
+      if (!round) throw new CmdError("W_WRONG_PHASE", "冇開住嘅回合");
+      if (cardId && round.cardId !== cardId) throw new CmdError("W_STALE_COMMAND", "而家開住嘅唔係呢張卡");
+      if (round.state !== "closed" && round.state !== "tally") throw new CmdError("W_WRONG_PHASE", `round 係 ${round.state}`);
+      const card = store.card(round.cardId);
+      if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      if (card.state !== "revealed") {
+        push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
+        push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "revealed" } } });
+        if (card.type === "choice") gradeChoiceRound(ctx, round, card);
+        if (card.type === "vote" && card.voteMode === "works") gradeDrawRound(ctx, round, card);
+      }
+      setStageIfUnlocked(ctx, { mode: "reveal", payload: { roundId: round.id, cardId: card.id } });
+      toast(ctx, "揭曉");
+      ctx.result = { roundId: round.id, cardId: card.id, correct: card.correct, actualAnswer: round.actualAnswer ?? card.actualAnswer };
+      break;
+    }
+    case "card.reopen": {
+      ensurePlaying(store);
+      const cardId = cmd.targetId ?? reqStr(p, "cardId");
+      const card = store.card(cardId);
+      if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      if (card.state !== "revealed") throw new CmdError("W_STALE_COMMAND", "reopen 前置係 card.state=revealed（§6 狀態表）");
+      const prevRound = [...room.rounds].reverse().find((r) => r.cardId === cardId && r.state !== "void");
+      if (!prevRound) throw new CmdError("W_STALE_COMMAND", "呢張卡未開過");
+      const openCount = room.rounds.filter((r) => r.cardId === cardId).length + 1;
+      const round: Round = {
+        id: `${cardId}#${openCount}`,
+        cardId,
+        cardVersion: card.version + 1,
+        retryOf: prevRound.id,
+        endsAt: card.seconds && card.seconds > 0 ? Date.now() + card.seconds * 1000 : null,
+        closedAt: null,
+        state: "open",
+        eligiblePlayerIds: store.approvedPlayers().map((pl) => pl.id),
+      };
+      // 舊 round void；舊 auto 分作廢；host 分手動保留（除非 payload.voidHostEvents）
+      push(ctx, { t: "round.update", d: { roundId: prevRound.id, patch: { state: "void" } } });
+      const autoIds = store.state.ledger
+        .filter((e) => e.roundId === prevRound.id && e.by === "auto" && !e.voided)
+        .map((e) => e.id);
+      const hostIds = p.voidHostEvents === true
+        ? store.state.ledger.filter((e) => e.roundId === prevRound.id && e.by === "host" && !e.voided).map((e) => e.id)
+        : [];
+      const voidIds = [...autoIds, ...hostIds];
+      if (voidIds.length) push(ctx, { t: "ledger.void", d: { eventIds: voidIds, by: "host" } });
+      push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
+      push(ctx, { t: "card.update", d: { cardId, patch: { state: "open", version: card.version + 1 } } });
+      const mode: StageMode = card.type === "bid" ? "bid" : card.type === "vote" ? "vote" : "question";
+      setStageIfUnlocked(ctx, { mode, payload: { roundId: round.id, cardId } });
+      toast(ctx, `重開：${card.prompt.slice(0, 12)}`);
+      break;
+    }
+    case "card.delete": {
+      const cardId = cmd.targetId ?? reqStr(p, "cardId");
+      if (!store.card(cardId)) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      push(ctx, { t: "card.remove", d: { cardId } });
+      const rundown = room.rundown.map((i) => ({ ...i, cardIds: i.cardIds.filter((x) => x !== cardId) }));
+      push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      toast(ctx, "刪咗一張卡");
+      break;
+    }
+
+    /* ── 大mon 控制 ── */
+    case "stage.set": {
+      const mode = p.mode as StageMode | undefined;
+      if (!mode || !MODES.includes(mode)) throw new CmdError("W_BAD_SCHEMA", "mode 唔合法");
+      if (room.stage.mode === "blackout" && mode !== "blackout") throw new CmdError("W_STAGE_LOCKED", "blackout 期間唔准切 mode");
+      if (mode === "rules" && room.phase !== "playing") throw new CmdError("W_WRONG_PHASE", "rules 只准 playing phase");
+      const prevMode = (room.stage.mode === "blackout" ? undefined : room.stage.mode) as Exclude<StageMode, "blackout" | "rules"> | undefined;
+      const payload = asObj(p.payload);
+      if (mode === "rules") {
+        const pageId = typeof payload.rulePageId === "string" ? payload.rulePageId : undefined;
+        const item = store.currentItem();
+        const page = pageId
+          ? room.rulePages.find((x) => x.id === pageId)
+          : item
+            ? store.activeRulePage(item.gameId)
+            : undefined;
+        const pag = page ? store.rulePagination(page) : { pageIndex: 0, totalPages: 1 };
+        stageSet(ctx, {
+          mode,
+          payload: {
+            ...payload,
+            rulePageId: page?.id,
+            totalPages: pag.totalPages,
+            pageIndex: typeof payload.pageIndex === "number" ? payload.pageIndex : 0,
+            autoAdvanceSeconds: page?.autoAdvanceSeconds ?? 0,
+          },
+          prevMode,
+        });
+      } else {
+        stageSet(ctx, { mode, payload, prevMode });
+      }
+      toast(ctx, `大mon → ${mode}`);
+      break;
+    }
+    case "stage.lock": {
+      const lock = p.lock === true;
+      stageSet(ctx, { lock });
+      toast(ctx, lock ? "大mon 鎖定" : "大mon 解鎖");
+      break;
+    }
+    case "stage.blackout": {
+      const on = p.on !== false;
+      if (on) {
+        stageSet(ctx, { mode: "blackout", prevMode: room.stage.mode as Exclude<StageMode, "blackout" | "rules">, payload: {} });
+      } else {
+        const prev = (room.stage.prevMode ?? "idle") as StageMode;
+        stageSet(ctx, { mode: prev, payload: {} });
+      }
+      toast(ctx, on ? "黑屏" : "恢復畫面");
+      break;
+    }
+    case "stage.rules": {
+      const on = p.on !== false;
+      if (on) {
+        if (room.phase !== "playing") throw new CmdError("W_WRONG_PHASE", "規則頁只准 playing phase");
+        if (room.stage.mode === "blackout") throw new CmdError("W_STAGE_LOCKED", "blackout 期間唔准出規則頁");
+      }
+      if (on) {
+        const item = store.currentItem();
+        const pageId = optStr(p, "rulePageId");
+        const page = pageId ? room.rulePages.find((x) => x.id === pageId) : item ? store.activeRulePage(item.gameId) : undefined;
+        const pag = page ? store.rulePagination(page) : { pageIndex: 0, totalPages: 1 };
+        stageSet(ctx, {
+          mode: "rules",
+          payload: {
+            itemId: item?.id,
+            gameId: item?.gameId,
+            title: item?.title,
+            fallback: !page,
+            rulesText: item?.rulesText ?? "",
+            rulePageId: page?.id,
+            totalPages: pag.totalPages,
+            pageIndex: 0,
+            autoAdvanceSeconds: page?.autoAdvanceSeconds ?? 0,
+          },
+          prevMode: room.stage.mode as Exclude<StageMode, "blackout" | "rules">,
+        });
+      } else {
+        const prev = (room.stage.prevMode ?? "idle") as StageMode;
+        stageSet(ctx, { mode: prev === "rules" || prev === "blackout" ? "idle" : prev, payload: {} });
+      }
+      toast(ctx, on ? "顯示規則頁" : "收起規則頁");
+      break;
+    }
+    case "stage.page": {
+      const pageIndex = reqNum(p, "pageIndex");
+      stageSet(ctx, { payload: { ...(room.stage.payload as Record<string, unknown>), pageIndex: Math.max(0, Math.floor(pageIndex)) } });
+      break;
+    }
+    case "stage.ticker": {
+      const ticker = { ...room.stage.ticker };
+      if (p.visible !== undefined) ticker.visible = p.visible === true;
+      if (p.scope === "player" || p.scope === "group") ticker.scope = p.scope;
+      if (p.range === "current" || p.range === "total") ticker.range = p.range;
+      if (p.sort === "score-desc" || p.sort === "score-asc" || p.sort === "number" || p.sort === "name" || p.sort === "group")
+        ticker.sort = p.sort;
+      stageSet(ctx, { ticker });
+      break;
+    }
+
+    /* ── 設定 ── */
+    case "settings.set": {
+      const settings: Record<string, unknown> = {};
+      if (p.autoClose !== undefined) settings.autoClose = p.autoClose === true;
+      if (p.maxBid !== undefined) {
+        const mb = reqNum(p, "maxBid");
+        if (!Number.isInteger(mb) || mb < 1 || mb > 10000) throw new CmdError("W_BAD_SCHEMA", "maxBid 1–10000");
+        settings.maxBid = mb;
+      }
+      if (p.allowRepeatAwards !== undefined) settings.allowRepeatAwards = p.allowRepeatAwards === true;
+      push(ctx, { t: "settings.set", d: { settings } });
+      toast(ctx, "改咗設定");
+      break;
+    }
+
+    /* ── 房間流程 ── */
+    case "room.start": {
+      if (room.phase === "playing") throw new CmdError("W_ALREADY_STATE", "已經 playing");
+      push(ctx, { t: "room.phase", d: { phase: "playing" } });
+      setStageIfUnlocked(ctx, { mode: "scoreboard", payload: {} });
+      toast(ctx, "開始");
+      break;
+    }
+    case "room.phase": {
+      const phase = p.phase;
+      if (phase !== "idle" && phase !== "lobby" && phase !== "playing" && phase !== "final" && phase !== "award")
+        throw new CmdError("W_BAD_SCHEMA", "phase 唔合法");
+      push(ctx, { t: "room.phase", d: { phase } });
+      if (phase === "final") {
+        const awards = store.computeAwards();
+        push(ctx, { t: "award.set", d: { awards: awards.map((a) => ({ ...a, revealed: false })) } });
+        setStageIfUnlocked(ctx, { mode: "finale", payload: {} });
+      }
+      toast(ctx, `phase → ${phase}`);
+      break;
+    }
+
+    /* ── 頒獎 ── */
+    case "award.compute": {
+      if (room.phase !== "final" && room.phase !== "award") throw new CmdError("W_WRONG_PHASE", "只准 final／award");
+      const awards = store.computeAwards(p.allowRepeat === true);
+      push(ctx, { t: "award.set", d: { awards } });
+      toast(ctx, "重算咗三獎");
+      break;
+    }
+    case "award.override": {
+      const id = reqStr(p, "id");
+      const targetId = p.targetId === null ? null : reqStr(p, "targetId");
+      const awards = room.awards.map((a) => (a.id === id ? { ...a, targetId, manual: true } : { ...a }));
+      push(ctx, { t: "award.set", d: { awards } });
+      toast(ctx, "手動改咗得獎者");
+      break;
+    }
+    case "award.reveal": {
+      const id = reqStr(p, "id");
+      const awards = room.awards.map((a) => (a.id === id ? { ...a, revealed: true } : { ...a }));
+      const award = awards.find((a) => a.id === id);
+      if (!award) throw new CmdError("W_BAD_SCHEMA", "冇呢個獎");
+      push(ctx, { t: "award.set", d: { awards } });
+      push(ctx, { t: "room.phase", d: { phase: "award" } });
+      setStageIfUnlocked(ctx, { mode: "award", payload: { revealAwardId: id } });
+      toast(ctx, `揭曉 ${id}`);
+      break;
+    }
+    case "award.reset": {
+      const awards = store.computeAwards().map((a) => ({ ...a, revealed: false }));
+      push(ctx, { t: "award.set", d: { awards } });
+      toast(ctx, "重設頒獎");
+      break;
+    }
+
+
+    /* ── M2：歌單 ── */
+    case "song.upsert": {
+      const songIn = asObj(p.song ?? p);
+      const title = String(songIn.title ?? "").trim();
+      if (title.length === 0 || title.length > 60) throw new CmdError("W_BAD_SCHEMA", "歌名 1–60 字");
+      const id = typeof songIn.id === "string" && songIn.id ? songIn.id : newId("song");
+      const existing = store.state.songs.find((x) => x.id === id);
+      const url = typeof songIn.url === "string" ? songIn.url.trim() : "";
+      const asset = typeof songIn.assetId === "string" ? store.state.assets.find((a) => a.id === songIn.assetId) : undefined;
+      let source: Song["source"];
+      if (asset && asset.kind === "audio") source = { kind: "file", fileName: asset.file };
+      else if (url) source = sourceKindOf(url) as Song["source"];
+      else source = { kind: "external" };
+      const song: Song = {
+        id,
+        index: existing?.index ?? store.state.songs.length + 1,
+        title,
+        source,
+        state: source.kind === "file" || source.url ? "ready" : "draft",
+      };
+      if (typeof songIn.hint === "string") song.hint = songIn.hint;
+      if (asset && asset.kind === "audio") song.durationMs = undefined;
+      push(ctx, { t: "song.put", d: { song } });
+      toast(ctx, `歌單：${existing ? "改" : "加"}咗《${title}》${song.state === "draft" ? "（未齊 link／檔案）" : ""}`);
+      ctx.result = { id, state: song.state };
+      break;
+    }
+    case "song.delete": {
+      const id = cmd.targetId ?? optStr(p, "id");
+      if (!id) throw new CmdError("W_BAD_SCHEMA", "要 songId");
+      push(ctx, { t: "song.remove", d: { songId: id } });
+      toast(ctx, "歌單：刪咗一首");
+      break;
+    }
+
+    /* ── M2：AudioLease（唯一音源） ── */
+    case "lease.acquire": {
+      const deckId = ownerDeck(ctx, optStr(p, "deckId"));
+      const nowMs = Date.now();
+      const old = store.state.room.audioLease;
+      const sameDeck = old?.deckId === deckId;
+      const ttl = Number(process.env.LEASE_TTL_MS ?? 30_000);
+      const marginMs = Number(process.env.LEASE_TAKEOVER_MARGIN_MS ?? 5000);
+      const forceOnline = p.forceOnline === true;
+      if (old && !sameDeck && !old.releasedAt) {
+        // 舊 lease 仲有效：在線接管要 host 明確確認（forceOnline）＋舊 host 真係在線；否則等 old deck release／到期+margin
+        if (forceOnline && ctx.isHostOnline && !ctx.isHostOnline(old.hostId)) {
+          throw new CmdError("W_NO_AUDIO_LEASE", "舊音源 host 唔在線：唔准 forceOnline 繞 margin（請等 lease 到期 + 5s margin 後接管）");
+        }
+        if (!forceOnline) {
+          const retryAfterMs = Math.max(0, old.leaseUntil - nowMs);
+          throw new CmdError("W_NO_AUDIO_LEASE", `舊音源（${old.deckId}）lease 未到期（仲有 ${Math.ceil(retryAfterMs / 1000)}s）。如舊 deck 仲在線，請用「在線接管（確認舊機）」；否則等 ${marginMs / 1000}s safety margin 後自動可接管`);
+        }
+        // 在線接管：server 叫舊 deck stop（舊 deck 收到 patch 即自行 pause）＋generation+1，最多 2 秒內完成（client 反應 <100ms）
+        const pb = store.state.playback;
+        if (pb && pb.deckId === old.deckId && (pb.state === "playing" || pb.state === "preparing")) {
+          const positionMs = pb.positionMs + Math.max(0, nowMs - pb.playStartedAt);
+          push(ctx, { t: "media.set", d: { playback: { ...pb, state: "paused", positionMs, pausedAt: nowMs } } });
+        }
+        toast(ctx, `在線接管音源：${old.deckId} → ${deckId}（gen ${old.generation + 1}）`);
+      } else if (old && !sameDeck && old.releasedAt) {
+        // 失聯接管：舊 lease 已到期，但要有 +5s safety margin（等舊 deck 一定停咗）
+        const marginLeft = old.releasedAt + marginMs - nowMs;
+        if (marginLeft > 0) {
+          const err = new CmdError("W_NO_AUDIO_LEASE", `失聯接管要等 safety margin：舊音源 ${Math.ceil(marginLeft / 1000)}s 後先可以接管（防雙響）`);
+          (err as CmdError & { retryAfterMs?: number }).retryAfterMs = marginLeft;
+          throw err;
+        }
+        toast(ctx, `失聯接管：${old.deckId} → ${deckId}（gen ${old.generation + 1}，margin 已過）`);
+      } else {
+        toast(ctx, `音源 lease：${deckId}（gen ${(old?.generation ?? 0) + 1}）`);
+      }
+      const baseGeneration = old ? (sameDeck ? old.generation : old.generation + 1) : 1;
+      const lease: AudioLease = {
+        deckId,
+        hostId: hostId,
+        generation: baseGeneration,
+        leaseUntil: nowMs + ttl,
+      };
+      push(ctx, { t: "lease.set", d: { lease } });
+      ctx.result = { deckId, generation: lease.generation, leaseUntil: lease.leaseUntil };
+      break;
+    }
+    case "lease.heartbeat": {
+      const lease = store.state.room.audioLease;
+      if (!lease) throw new CmdError("W_NO_AUDIO_LEASE", "未有 lease");
+      const deckId = optStr(p, "deckId") ?? lease.deckId;
+      const gen = optNum(p, "generation") ?? lease.generation;
+      if (lease.deckId !== deckId || lease.generation !== gen) throw new CmdError("W_NO_AUDIO_LEASE", "generation 已過期");
+      const ttl = Number(process.env.LEASE_TTL_MS ?? 30_000);
+      push(ctx, { t: "lease.set", d: { lease: { ...lease, leaseUntil: Date.now() + ttl } } });
+      ctx.result = { leaseUntil: Date.now() + ttl, generation: gen };
+      break;
+    }
+    case "lease.release": {
+      const lease = store.state.room.audioLease;
+      if (lease && lease.deckId === (optStr(p, "deckId") ?? lease.deckId)) push(ctx, { t: "lease.set", d: { lease: null } });
+      ctx.result = { released: true };
+      break;
+    }
+
+    /* ── M2：media 播放（大mon 靜音，media deck 先出聲） ── */
+    case "media.play": {
+      ensurePlaying(store);
+      const curRound = store.currentRound();
+      if (curRound && curRound.state === "open") {
+        const curCard = store.card(curRound.cardId);
+        if (curCard?.type === "bid") throw new CmdError("W_WRONG_PHASE", "bid round 仲 open：先收卷／結算，唔可以而家播歌搶大mon 畫面");
+      }
+      const deckId = leaseDeck(ctx, optStr(p, "deckId"));
+      const cur = store.state.playback;
+      if (cur && (cur.state === "preparing" || cur.state === "playing") && p.resume !== true) {
+        throw new CmdError("W_ALREADY_STATE", `已經有播放中（${cur.state}）：先 pause／stop 再播另一首`);
+      }
+      const songId = cmd.targetId ?? reqStr(p, "songId");
+      const song = store.state.songs.find((s) => s.id === songId);
+      if (!song) throw new CmdError("W_BAD_SCHEMA", "冇呢首歌");
+      if (song.source.kind !== "file") throw new CmdError("W_BAD_SCHEMA", "YouTube／Apple 只係手動提示，唔受 media.play 控制（D32）");
+      const fromStart = p.fromStart === true;
+      const winRaw = p.window;
+      const win: [number, number] = Array.isArray(winRaw) && winRaw.length === 2 ? [Number(winRaw[0]), Number(winRaw[1])] : [0, 15_000];
+      const playback: MediaPlayback = {
+        songId,
+        deckId,
+        playStartedAt: 0,
+        state: "preparing",
+        positionMs: 0,
+        window: win,
+        by: hostName,
+        revealedAt: null,
+        readyDeadline: Date.now() + Number(process.env.AUDIO_READY_TIMEOUT_MS ?? 15_000),
+      };
+      push(ctx, { t: "media.set", d: { playback } });
+      push(ctx, { t: "song.put", d: { song: { ...song, state: "played" } } });
+      const idx = songIndex(store, songId);
+      setStageIfUnlocked(ctx, { mode: "song", payload: { songIndex: idx + 1, total: store.state.songs.length }, prevMode: "bid" });
+      toast(ctx, `播歌：第 ${idx + 1} 首（等 deck ready ACK）`);
+      ctx.result = { songId, deckId, state: "preparing" };
+      break;
+    }
+    case "media.pause": {
+      const deckId = leaseDeck(ctx, optStr(p, "deckId"));
+      const pb = store.state.playback;
+      if (!pb || pb.deckId !== deckId) throw new CmdError("W_ALREADY_STATE", "唔係你部機播緊");
+      if (pb.state !== "playing") throw new CmdError("W_ALREADY_STATE", `而家係 ${pb.state}`);
+      const positionMs = pb.positionMs + Math.max(0, Date.now() - pb.playStartedAt);
+      push(ctx, { t: "media.set", d: { playback: { ...pb, state: "paused", positionMs, pausedAt: Date.now() } } });
+      toast(ctx, "暫停");
+      break;
+    }
+    case "media.resume": {
+      const deckId = leaseDeck(ctx, optStr(p, "deckId"));
+      const pb = store.state.playback;
+      if (!pb || pb.deckId !== deckId) throw new CmdError("W_ALREADY_STATE", "唔係你部機");
+      if (pb.state !== "paused") throw new CmdError("W_ALREADY_STATE", `而家係 ${pb.state}`);
+      push(ctx, { t: "media.set", d: { playback: { ...pb, state: "preparing", playStartedAt: 0, resumedAt: Date.now() } } });
+      toast(ctx, "繼續播（等 ready）");
+      break;
+    }
+    case "media.stop": {
+      const deckId = leaseDeck(ctx, optStr(p, "deckId"));
+      const pb = store.state.playback;
+      if (pb && pb.deckId === deckId) push(ctx, { t: "media.set", d: { playback: { ...pb, state: "idle", playStartedAt: 0, positionMs: 0, pausedAt: undefined } } });
+      toast(ctx, "停播");
+      break;
+    }
+    case "media.reveal": {
+      const pb = store.state.playback;
+      if (!pb) throw new CmdError("W_ALREADY_STATE", "未播過歌");
+      const song = store.state.songs.find((s) => s.id === pb.songId);
+      if (!song) throw new CmdError("W_BAD_SCHEMA", "冇呢首歌");
+      push(ctx, { t: "media.set", d: { playback: { ...pb, revealedAt: Date.now() } } });
+      push(ctx, {
+        t: "stage.set",
+        d: { stage: { mode: "reveal", payload: { songTitle: song.title, songIndex: song.index }, prevMode: "song" } },
+      });
+      toast(ctx, `揭曉歌名：《${song.title}》`);
+      ctx.result = { title: song.title };
+      break;
+    }
+    case "bid.settle": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const round = store.round(roundId);
+      if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      const card = store.card(round.cardId);
+      if (!card || card.type !== "bid") throw new CmdError("W_BAD_SCHEMA", "唔係 bid 卡");
+      const { submission: best, second } = bidWinner(store, roundId);
+      if (!best) throw new CmdError("W_ALREADY_STATE", "冇人出價");
+      const correct = p.correct === true;
+      const backup = p.backup === true;
+      // 同一 round 重複結算：先 void 上次 host 結算分（更正語義，唔會雙派）
+      const prevSettle = store.state.ledger.filter((e) => e.roundId === roundId && e.gameId === "auction" && e.by === "host" && !e.voided).map((e) => e.id);
+      if (prevSettle.length) push(ctx, { t: "ledger.void", d: { eventIds: prevSettle, by: "host" } });
+      const song = card.songId ? store.state.songs.find((s) => s.id === card.songId) : undefined;
+      const reason = `估歌 ${song ? `S${song.index}` : card.id}`;
+      const events: ScoreEvent[] = [];
+      if (correct) {
+        events.push(
+          makeEvent({
+            target: { type: "player", id: best.playerId },
+            gameId: "auction",
+            roundId,
+            cardId: card.id,
+            submissionId: best.id,
+            delta: card.points,
+            reason,
+            by: "host",
+          }),
+        );
+      } else if (backup && second) {
+        const half = Math.ceil(card.points / 2);
+        events.push(
+          makeEvent({
+            target: { type: "player", id: second.playerId },
+            gameId: "auction",
+            roundId,
+            cardId: card.id,
+            submissionId: second.id,
+            delta: half,
+            reason: `${reason}・次高補答`,
+            by: "host",
+          }),
+        );
+      }
+      if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+      toast(ctx, correct ? `估歌答對：${store.player(best.playerId)?.name} +${card.points}` : backup && second ? `次高補答 +${Math.ceil(card.points / 2)}` : "估歌答錯，0 分");
+      ctx.result = { winnerId: best.playerId, correct, points: correct ? card.points : backup && second ? Math.ceil(card.points / 2) : 0, voidedPrevious: prevSettle.length };
+      break;
+    }
+
+    /* ── M3：畫畫（作品牆／評審） ── */
+    case "draw.judge": {
+      const cardId = cmd.targetId ?? reqStr(p, "cardId");
+      const assetId = reqStr(p, "assetId");
+      const card = store.card(cardId);
+      if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      const asset = store.state.assets.find((a) => a.id === assetId);
+      if (!asset) throw new CmdError("W_BAD_SCHEMA", "冇呢張作品");
+      const authorId = asset.authorId;
+      if (!authorId) throw new CmdError("W_BAD_SCHEMA", "作品冇作者");
+      const points = Number(p.points ?? 0);
+      if (![0, 1, 2].includes(points)) throw new CmdError("W_BAD_SCHEMA", "評審分要 1／2／0");
+      if (points === 0) {
+        const prev = [...store.state.ledger]
+          .reverse()
+          .find((e) => !e.voided && e.by === "host" && e.gameId === "draw" && e.cardId === cardId && e.target.id === authorId && e.reason.includes("主持評分"));
+        if (prev) push(ctx, { t: "ledger.void", d: { eventIds: [prev.id], by: "host" } });
+        toast(ctx, "主持評分：取消上一筆");
+      } else {
+        push(ctx, {
+          t: "ledger.append",
+          d: {
+            events: [
+              makeEvent({
+                target: { type: "player", id: authorId },
+                gameId: "draw",
+                roundId: room.currentRoundId ?? undefined,
+                cardId,
+                delta: points,
+                reason: "畫畫・主持評分",
+                by: "host",
+              }),
+            ],
+          },
+        });
+        toast(ctx, `主持評分 +${points}（${store.player(authorId)?.name}）`);
+      }
+      ctx.result = { authorId, points };
+      break;
+    }
+    case "draw.focus": {
+      const assetId = p.assetId === null ? null : reqStr(p, "assetId");
+      stageSet(ctx, {
+        mode: assetId ? "draw-focus" : "draw-wall",
+        payload: { focusId: assetId },
+        prevMode: room.stage.mode as Exclude<StageMode, "blackout" | "rules">,
+      });
+      toast(ctx, assetId ? "放大作品" : "作品牆");
+      break;
+    }
+
+    /* ── M4：搗蛋鬼（版本 A，§4） ── */
+    case "saboteur.assign": {
+      ensurePlaying(store);
+      const approved = store.approvedPlayers();
+      if (approved.length < 3) throw new CmdError("W_ALREADY_STATE", "至少 3 位 approved 玩家先玩到");
+      const seed = optNum(p, "saboteurIndex");
+      const sab = typeof seed === "number" ? approved[seed % approved.length] : approved[Math.floor(Math.random() * approved.length)];
+      const sabId = (sab as Player).id;
+      for (const pl of approved) {
+        push(ctx, { t: "player.setRole", d: { playerId: pl.id, role: pl.id === sabId ? "saboteur" : "crew" } });
+      }
+      push(ctx, {
+        t: "game.set",
+        d: {
+          gameState: {
+            saboteur: {
+              saboteurId: sabId,
+              eliminatedIds: [],
+              rounds: [],
+              caught: false,
+              finished: false,
+              revealedRole: null,
+            },
+          },
+        },
+      });
+      toast(ctx, `已派身份（1 個搗蛋鬼／${approved.length - 1} 個好人；主持可以口頭帶入下一輪）`);
+      ctx.result = { saboteurId: sabId, players: approved.length };
+      break;
+    }
+    case "saboteur.openRound": {
+      ensurePlaying(store);
+      const st = cloneSaboteur(store);
+      if (st.finished) throw new CmdError("W_ALREADY_STATE", "遊戲已完結");
+      const openRound = store.currentRound();
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成");
+      const index = st.rounds.length + 1;
+      const existingCard = store.gameCards("saboteur").find((c) => c.type === "vote" && c.voteMode === "players");
+      let card: Card;
+      if (existingCard) {
+        card = existingCard;
+      } else {
+        const newCard: Card = {
+          id: newId("card"),
+          type: "vote",
+          gameId: "saboteur",
+          voteMode: "players",
+          prompt: "邊個係搗蛋鬼？投佢一票",
+          seconds: 30,
+          points: 0,
+          version: 1,
+          state: "draft",
+        };
+        card = newCard;
+        push(ctx, { t: "card.put", d: { card: newCard } });
+        const item = room.rundown.find((i) => i.gameId === "saboteur");
+        if (item) {
+          const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: [...i.cardIds, newCard.id] } : { ...i }));
+          push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+        }
+      }
+      const eligible = store.approvedPlayers().filter((pl) => !st.eliminatedIds.includes(pl.id)).map((pl) => pl.id);
+      if (eligible.length < 2) throw new CmdError("W_ALREADY_STATE", "少過 2 個 eligible 玩家");
+      const sabCard = card as Card;
+      const round: Round = {
+        id: `${sabCard.id}#${room.rounds.filter((r) => r.cardId === sabCard.id).length + 1}`,
+        cardId: sabCard.id,
+        cardVersion: sabCard.version,
+        endsAt: sabCard.seconds ? Date.now() + sabCard.seconds * 1000 : null,
+        closedAt: null,
+        state: "open",
+        eligiblePlayerIds: eligible,
+      };
+      st.rounds = [
+        ...st.rounds,
+        { index, roundId: round.id, eligiblePlayerIds: eligible, votes: [], state: "open", eliminatedId: null, retried: false, decision: null },
+      ];
+      push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+      push(ctx, { t: "card.update", d: { cardId: sabCard.id, patch: { state: "open", prompt: `第 ${index} 輪：邊個係搗蛋鬼？` } } });
+      push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
+      setStageIfUnlocked(ctx, { mode: "vote", payload: { roundId: round.id, cardId: sabCard.id, saboteurRound: index }, prevMode: "rules" as unknown as Exclude<StageMode, "blackout" | "rules"> });
+      toast(ctx, `搗蛋鬼第 ${index} 輪投票開始（eligible ${eligible.length}）`);
+      ctx.result = { roundId: round.id, index, eligible: eligible.length };
+      break;
+    }
+    case "saboteur.closeRound": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const round = store.round(roundId);
+      if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      if (round.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 係 ${round.state}`);
+      const st = cloneSaboteur(store);
+      const rOut = st.rounds.find((r) => r.roundId === roundId);
+      if (!rOut) throw new CmdError("W_BAD_SCHEMA", "唔係搗蛋鬼 round");
+      const subs = store.submissionsForRound(roundId).filter((x) => x.confirmed && x.kind === "vote");
+      const counts = new Map<string, number>();
+      for (const x of subs) {
+        const target = x.text ?? "";
+        if (!target) continue;
+        counts.set(target, (counts.get(target) ?? 0) + 1);
+      }
+      const validVotes = subs.filter((x) => x.text && x.text.length > 0).length;
+      rOut.votes = subs.map((x) => ({ voterId: x.playerId, targetId: x.text ?? null }));
+      rOut.state = "closed";
+      push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+      push(ctx, { t: "round.update", d: { roundId, patch: { state: "closed", closedAt: Date.now() } } });
+      const card = store.card(round.cardId);
+      push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "tally" } } });
+      setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId, cardId: round.cardId, saboteurRound: rOut.index }, prevMode: "vote" });
+      const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || String(store.player(a[0])?.number ?? 0).localeCompare(String(store.player(b[0])?.number ?? 0)));
+      const top = ranked[0];
+      const topCount = top ? top[1] : 0;
+      const tied = ranked.filter(([, c]) => c === topCount);
+      const majority = validVotes > 0 && topCount >= Math.floor(validVotes / 2) + 1;
+      let mode: "eliminate" | "decide" | "none";
+      if (validVotes === 0) mode = "none";
+      else if (majority && tied.length === 1) mode = "eliminate";
+      else mode = "decide";
+      toast(ctx, `第 ${rOut.index} 輪：有效票 ${validVotes}，最高 ${topCount} 票${mode === "eliminate" ? "（過半，即場淘汰）" : mode === "decide" ? "（未過半／平票，主持裁決）" : "（全體棄權）"}`);
+      ctx.result = { roundId, validVotes, top: ranked.map(([id, count]) => ({ playerId: id, name: store.player(id)?.name ?? "?", count })), mode };
+      if (mode === "eliminate" && top) {
+        eliminateSaboteur(ctx, st, top[0], roundId);
+      } else {
+        push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+      }
+      break;
+    }
+    case "saboteur.decide": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const st = cloneSaboteur(store);
+      const rOut = st.rounds.find((r) => r.roundId === roundId);
+      if (!rOut) throw new CmdError("W_BAD_SCHEMA", "唔係搗蛋鬼 round");
+      if (rOut.state === "resolved") throw new CmdError("W_ALREADY_STATE", "呢輪已裁決");
+      const decision = optStr(p, "decision");
+      if (decision === "retry") {
+        if (rOut.retried) throw new CmdError("W_ALREADY_STATE", "每輪最多重投一次");
+        const round = store.round(roundId);
+        if (!round) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+        push(ctx, { t: "round.update", d: { roundId, patch: { state: "void" } } });
+        push(ctx, { t: "round.current", d: { currentRoundId: null } });
+        rOut.state = "resolved";
+        rOut.decision = "retry";
+        const card = store.card(round.cardId);
+        const newRound: Round = {
+          id: `${round.cardId}#${room.rounds.filter((r) => r.cardId === round.cardId).length + 1}`,
+          cardId: round.cardId,
+          cardVersion: card?.version ?? 1,
+          retryOf: roundId,
+          endsAt: card?.seconds ? Date.now() + card.seconds * 1000 : null,
+          closedAt: null,
+          state: "open",
+          eligiblePlayerIds: [...round.eligiblePlayerIds],
+        };
+        st.rounds = [
+          ...st.rounds,
+          {
+            index: rOut.index,
+            roundId: newRound.id,
+            eligiblePlayerIds: newRound.eligiblePlayerIds,
+            votes: [],
+            state: "open",
+            eliminatedId: null,
+            retried: true,
+            decision: null,
+          },
+        ];
+        push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+        push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "open" } } });
+        push(ctx, { t: "round.put", d: { round: newRound, currentRoundId: newRound.id } });
+        setStageIfUnlocked(ctx, { mode: "vote", payload: { roundId: newRound.id, cardId: round.cardId, saboteurRound: rOut.index, retry: true } });
+        toast(ctx, `第 ${rOut.index} 輪重投（原 round void，原票保留但唔計分）`);
+        ctx.result = { roundId: newRound.id, retried: true };
+        break;
+      }
+      if (decision === "eliminate") {
+        const targetId = reqStr(p, "targetId");
+        push(ctx, { t: "round.update", d: { roundId, patch: { closedAt: Date.now() } } });
+        eliminateSaboteur(ctx, st, targetId, roundId);
+        break;
+      }
+      throw new CmdError("W_BAD_SCHEMA", "decision 要 retry／eliminate");
+    }
+    case "saboteur.finish": {
+      const st = cloneSaboteur(store);
+      if (st.finished) throw new CmdError("W_ALREADY_STATE", "已經完結");
+      st.finished = true;
+      st.revealedRole = "saboteur";
+      const sab = store.player(st.saboteurId ?? "");
+      if (sab) {
+        push(ctx, {
+          t: "ledger.append",
+          d: {
+            events: [
+              makeEvent({ target: { type: "player", id: sab.id }, gameId: "saboteur", delta: 5, reason: "搗蛋鬼・潛伏成功", by: "auto" }),
+            ],
+          },
+        });
+      }
+      push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+      push(ctx, { t: "stage.set", d: { stage: { mode: "role-reveal", payload: { caught: false, saboteurId: st.saboteurId }, prevMode: "vote" } } });
+      toast(ctx, "兩輪都揪唔中：搗蛋鬼 +5");
+      ctx.result = { finished: true, caught: false };
+      break;
+    }
+    case "saboteur.reset": {
+      for (const pl of store.state.room.players) push(ctx, { t: "player.setRole", d: { playerId: pl.id, role: null } });
+      push(ctx, { t: "game.set", d: { gameState: { saboteur: null } } });
+      toast(ctx, "搗蛋鬼：重設身份");
+      break;
+    }
+
+    default:
+      throw new CmdError("W_BAD_SCHEMA", `未知 command kind: ${cmd.kind}`);
+  }
+
+  if (ctx.muts.length === 0) throw new CmdError("W_BAD_SCHEMA", "冇 mutation");
+  const newRevision = store.revision + 1;
+  const receipt: CommandReceipt = {
+    commandId: cmd.commandId,
+    payloadHash: ph,
+    hostId,
+    kind: cmd.kind,
+    ts: Date.now(),
+    result: ctx.result ?? { kind: cmd.kind },
+    revision: newRevision,
+  };
+  ctx.muts.push({ t: "receipt.add", d: { receipt } });
+  store.commit(ctx.muts, { bumpRevision: true });
+  return { ok: true, revision: newRevision, result: receipt.result };
+}

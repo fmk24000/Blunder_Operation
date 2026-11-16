@@ -1,0 +1,32 @@
+{
+  "name": "hbd-game-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "2026 HBD 派對遊戲平台 — 4 關・手機投票／問答・大mon＋主持台（PLAN v3.1）",
+  "type": "module",
+  "engines": {
+    "node": ">=26.0.0 <27.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/sync-seed.mjs && npm run build:tsc && node scripts/make-manifest.mjs",
+    "start": "node dist/server/index.js",
+    "dev": "tsx watch src/server/index.ts",
+    "bots": "node bots/bots.mjs",
+    "test": "node --test --test-reporter=spec test/",
+    "build:tsc": "tsc -p tsconfig.json && tsc -p tsconfig.client.json"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^9.2.0",
+    "@fastify/static": "^8.2.0",
+    "@fastify/websocket": "^11.2.0",
+    "fastify": "^5.6.2",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/qrcode": "^1.5.5",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

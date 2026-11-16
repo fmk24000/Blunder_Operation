@@ -1,0 +1,238 @@
+{
+ "version": 1,
+ "note": "舊 QUIZ：10 題 MC（D34 沿用）＋8 條已退役 open 題（只作 diff 提示；一鍵匯入唔會覆蓋附錄 A 新版 open 題）",
+ "questions": [
+  {
+   "id": "q1",
+   "type": "choice",
+   "category": "動物",
+   "prompt": "長頸鹿條脷係咩顏色？",
+   "options": [
+    "粉紅色",
+    "紫黑色",
+    "草綠色",
+    "透明"
+   ],
+   "correct": 1,
+   "explanation": "紫黑色可以防曬，仲可以伸到 50 厘米長，方便捲樹葉。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q2",
+   "type": "choice",
+   "category": "動物",
+   "prompt": "北極熊嘅皮膚其實係咩顏色？",
+   "options": [
+    "白色",
+    "黑色",
+    "粉紅色",
+    "透明"
+   ],
+   "correct": 1,
+   "explanation": "毛係透明中空，睇落白色；皮膚其實係黑色，方便吸熱。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q3",
+   "type": "choice",
+   "category": "動物",
+   "prompt": "袋鼠可唔可以倒退行？",
+   "options": [
+    "可以，仲好快",
+    "可以，但好慢",
+    "完全唔可以",
+    "只可以倒退跳"
+   ],
+   "correct": 2,
+   "explanation": "袋鼠腳踝結構唔容許向後行，所以澳洲國徽揀佢代表「永遠向前」。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q4",
+   "type": "choice",
+   "category": "食物",
+   "prompt": "一罈蜂蜜放咗 3000 年，仲食唔食得？",
+   "options": [
+    "一定壞咗",
+    "食得，蜂蜜唔會變壞",
+    "會變醋",
+    "會變石頭"
+   ],
+   "correct": 1,
+   "explanation": "埃及古墓出土嘅蜂蜜，考古學家話仲食得。含水量低＋酸性強，細菌好難生存。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q5",
+   "type": "choice",
+   "category": "太空",
+   "prompt": "太空人喺太空站去廁所，主要靠咩？",
+   "options": [
+    "用水沖",
+    "用吸力（好似吸塵機）",
+    "著尿片",
+    "去太空船外面"
+   ],
+   "correct": 1,
+   "explanation": "太空冇重力，要靠氣流將排泄物吸走。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q6",
+   "type": "choice",
+   "category": "食物",
+   "prompt": "世界上最貴嘅香料（按重量計）係？",
+   "options": [
+    "黑胡椒",
+    "番紅花",
+    "雲呢拿",
+    "肉桂"
+   ],
+   "correct": 1,
+   "explanation": "番紅花要人手逐朵摘花蕊，一公斤要大約 15 萬朵花。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q7",
+   "type": "choice",
+   "category": "動物",
+   "prompt": "蝸牛有幾多隻牙？",
+   "options": [
+    "0 隻",
+    "4 隻",
+    "大約 1 萬隻",
+    "32 隻"
+   ],
+   "correct": 2,
+   "explanation": "蝸牛嘅牙生喺「齒舌」上面，肉眼睇唔到，但真係過萬隻。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q8",
+   "type": "choice",
+   "category": "動物",
+   "prompt": "樹懶幾耐先去一次大便？",
+   "options": [
+    "一日三次",
+    "大約一星期一次",
+    "一個月一次",
+    "成世都唔去"
+   ],
+   "correct": 1,
+   "explanation": "樹懶新陳代謝極慢，一星期先落地一次，而且落地面對佢嚟講好危險。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q9",
+   "type": "choice",
+   "category": "數學",
+   "prompt": "一張 A4 紙對摺 42 次，會有幾厚？",
+   "options": [
+    "一本書咁厚",
+    "一層樓咁高",
+    "超過地球到月球",
+    "一座山咁高"
+   ],
+   "correct": 2,
+   "explanation": "0.1 毫米 × 2⁴² ≈ 44 萬公里；地球到月球約 38 萬公里。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "q10",
+   "type": "choice",
+   "category": "科學",
+   "prompt": "你身體入面大部分原子，原本嚟自邊度？",
+   "options": [
+    "地球核心",
+    "爆炸咗嘅恆星",
+    "太陽",
+    "海水"
+   ],
+   "correct": 1,
+   "explanation": "「我哋都係星塵」——碳、氧、鐵等元素都係喺恆星內部製造出嚟。",
+   "seconds": 20,
+   "points": 1
+  },
+  {
+   "id": "old-open-1",
+   "type": "open",
+   "openKind": "number",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "全場影相總數係幾多？",
+   "seconds": 45,
+   "points": 2
+  },
+  {
+   "id": "old-open-2",
+   "type": "open",
+   "openKind": "number",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "全場手機電量加埋係幾多 %？",
+   "seconds": 45,
+   "points": 2
+  },
+  {
+   "id": "old-open-3",
+   "type": "open",
+   "openKind": "number",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "人體血管總長大約幾多公里？",
+   "seconds": 45,
+   "points": 2
+  },
+  {
+   "id": "old-open-4",
+   "type": "open",
+   "openKind": "text",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "你最鍾意食邊一餐飯？",
+   "seconds": 45,
+   "points": 2
+  },
+  {
+   "id": "old-open-5",
+   "type": "open",
+   "openKind": "number",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "長頸鹿條頸有幾多節頸骨？",
+   "seconds": 45,
+   "points": 2
+  },
+  {
+   "id": "old-open-6",
+   "type": "open",
+   "openKind": "text",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "貓入紙箱係因為咩？",
+   "seconds": 45,
+   "points": 2
+  },
+  {
+   "id": "old-open-7",
+   "type": "open",
+   "openKind": "text",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "人為咩會打喊露？",
+   "seconds": 45,
+   "points": 2
+  },
+  {
+   "id": "old-open-8",
+   "type": "open",
+   "openKind": "text",
+   "category": "舊 QUIZ・已退役",
+   "prompt": "香港車牌點解有英文字母？",
+   "seconds": 45,
+   "points": 2
+  }
+ ]
+}

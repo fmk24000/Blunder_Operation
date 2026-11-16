@@ -1,0 +1,15 @@
+{
+  "name": "關於我初試策劃壽星黑歷史這檔事",
+  "short_name": "壽星黑歷史",
+  "start_url": "/play",
+  "display": "standalone",
+  "background_color": "#f6f5f1",
+  "theme_color": "#f6f5f1",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+/** 協議：WS 訊息、穩定 error code、host command envelope（PLAN-v3.1 §7） */
+export const ERROR_CODES = [
+    "W_BAD_MSG",
+    "W_BAD_SCHEMA",
+    "W_ROOM_FULL",
+    "W_ROOM_LOCKED",
+    "W_WRONG_PHASE",
+    "W_STALE_COMMAND",
+    "W_CMD_PAYLOAD_MISMATCH",
+    "W_ID_PAYLOAD_MISMATCH",
+    "W_ROUND_CLOSED",
+    "W_ALREADY_STATE",
+    "W_SELF_VOTE",
+    "W_DUP_NUMBER",
+    "W_TOKEN_EXPIRED",
+    "W_FORBIDDEN_ROLE",
+    "W_RATE_LIMIT",
+    "W_UPLOAD_REJECTED",
+    "W_RULES_LIMIT",
+    "W_RULES_CONFLICT",
+    "W_INVALID_OPEN_KIND",
+    "W_NO_AUDIO_LEASE",
+    "W_AUDIO_READY_TIMEOUT",
+    "W_STAGE_LOCKED",
+];
+export const CAPS = {
+    rooms: 1,
+    approvedPlayers: 30,
+    pendingPlayers: 10,
+    hostSockets: 5,
+    stageSockets: 2,
+    totalSockets: 60,
+};

@@ -1,0 +1,28 @@
+# 部署目標（PLAN-v3.1 §9.8／§9.9）：Windows server 192.168.99.20，host port 30005 → 容器 3000
+services:
+  platform:
+    build: .
+    image: hbd-platform:latest
+    container_name: hbd-platform
+    ports:
+      - "30005:3000"
+    volumes:
+      - "./data:/app/data"
+      - "./media:/app/media"
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      PIN: "${PIN:?PIN 未設定：喺 .env 設一個 6 位數字 PIN}"
+      PUBLIC_ORIGINS: "${PUBLIC_ORIGINS:-http://127.0.0.1:30005,http://localhost:30005,http://192.168.99.20:30005}"
+      ACCESS_REQUIRED: "${ACCESS_REQUIRED:-0}"
+      AUTO_APPROVE: "${AUTO_APPROVE:-0}"
+      DEV_LAN_MODE: "${DEV_LAN_MODE:-0}"
+      # 非 §7 公開只讀 endpoint（auditor 用）：production 預設關，要明確開 1
+      AUDIT_READONLY: "${AUDIT_READONLY:-0}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/ready"]
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s

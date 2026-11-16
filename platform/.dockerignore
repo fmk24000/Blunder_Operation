@@ -1,0 +1,9 @@
+node_modules
+dist
+data
+media
+.npm-cache
+bots
+test
+*.log
+.env
