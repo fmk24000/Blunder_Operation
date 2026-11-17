@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.1.4 — 2026-11-17
+
+大mon 黑屏事故修復 ＋ 主持台「返 QR 頁」掣。
+
+### Fixed — 大mon（用戶回報：一入去空白、只見上角分數）
+- **黑屏（blackout）死胡同**：黑屏期間 server 拒絕所有 stage.set（W_STAGE_LOCKED），唯一出路係「恢復畫面」，主持唔知就永久空白。而家 stage.set 可以離開黑屏；stage.rules 仍保留鎖。
+- **雙撳「黑屏」永久鎖死**：prevMode 會被寫成 blackout，之後「恢復畫面」仍然黑屏。新增 resumableMode()，blackout／rules 永遠唔可以做恢復目標。
+- **黑屏疊規則頁後恢復變空白**：恢復會入 rules 但 payload 空。已一併修（fallback idle）。
+- **黑屏中仍可經「規則頁」掣出假規則頁**（F1）：stage.set{mode:'rules'} 而家同 stage.rules 一致回 423。
+- **規則頁 payload 唔齊**（F2）：抽出 rulesStagePayload() 兩條路徑共用，大mon 出真規則頁。
+- **黑屏真全黑**：連 toast 同斷線 banner 都唔顯示（非黑屏照舊顯示斷線 banner）。
+- 非黑屏撳「恢復畫面」改為 no-op（唔會亂跳 mode）。
+
+### Added
+- 主持台大mon 控制卡頂部新增 primary 掣：**「大mon 返 QR／入場頁」**（黑屏中顯示「（離開黑屏）」），任何 phase 都撳得，係逃生門。
+
+### Fixed — 規則頁預覽（audit 發現，v0.1.3 之前已存在）
+- resolveRulePage() 由 currentItem 猜頁 → 改為優先讀 stage.payload.rulePageId；主持揀 B 頁預覽，大mon 就出 B 頁（之前出 A 頁或「主持未設定呢關規則」）。disabled／archived 頁安全 fallback。
+
+### Changed
+- 前端資產版本 ?v=20261117h。
+- 測試 37 → 49（新增 blackout 逃生、雙撳黑屏、payload 一致、恢復 no-op、真全黑、規則頁預覽跨 game 等）。
+
+### Known Issues
+- 主持台規則頁頁碼 pill 喺預覽頁被 disable／delete 之後會顯示舊頁數（cosmetic，大mon 本身正確）。
+- stage.rules{pageIndex} API 一律由第 0 頁開始（UI 翻頁用 stage.page，唔會踩到）。
+- 音源未做真 mp3 瀏覽器 E2E（repo media 係 stub）。
+
 ## v0.1.3 — 2026-11-17
 
 派對前修復版：主持台控制、大mon 穩定度、音源、以及 codex（gpt-6.1-sol）多輪 audit 揪出嘅 server/client bug。
