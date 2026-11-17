@@ -313,6 +313,8 @@ function render() {
     if (!root)
         return;
     const v = view;
+    // 黑屏要真係全黑：連分數條／toast 都收埋（CSS 用 body.is-blackout 攔截）
+    document.body.classList.toggle("is-blackout", v?.stage?.mode === "blackout");
     let html;
     try {
         html = stageHtml(v);
@@ -321,7 +323,8 @@ function render() {
         console.warn("[stage] render 失敗，改顯示等待畫面", err);
         html = waitingHtml(v);
     }
-    root.innerHTML = html + connBanner(status, v);
+    // 黑屏要真全黑：斷線 banner 都唔可以浮喺黑色 overlay 上面（非黑屏照舊顯示）
+    root.innerHTML = html + (v?.stage?.mode === "blackout" ? "" : connBanner(status, v));
     updateTimers();
 }
 function stageHtml(v) {
@@ -330,7 +333,8 @@ function stageHtml(v) {
         html = `<div class="stage-main stage-idle"><div class="stage-logo">連線中…</div></div>`;
     }
     else if (v.stage?.mode === "blackout") {
-        html = `<div class="blackout">（黑屏）</div>`;
+        // 黑屏分支唔可以有任何 ticker／分數（連文字都唔要，畫面要真係黑）
+        html = `<div class="blackout"></div>`;
     }
     else {
         const mode = v.stage?.mode ?? "idle";

@@ -270,6 +270,8 @@ body.stage { overflow: hidden; height: 100vh; background: var(--bg); }
   position: fixed; inset: 0; background: #000; z-index: 90; display: flex;
   align-items: center; justify-content: center; color: #222; font-size: 28px;
 }
+/* 黑屏期間唔准有 ticker／toast 浮喺上面（黑屏要真係全黑，主持唔會見到分數） */
+body.is-blackout .ticker, body.is-blackout #toast { display: none !important; }
 .helptext { font-size: 26px; color: var(--muted); }
 
 /* ───────────────── 主持台 /host（iPad 觸控優先） ───────────────── */
@@ -405,6 +407,8 @@ body.host textarea { min-height: 96px; }
 .rd-list .ledger-row { min-height: 56px; font-size: 17px; }
 .ctrl-phase { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 10px; }
 .ctrl-phase .primary { min-height: 68px; }
+.ctrl-quick { margin-bottom: 14px; }
+.ctrl-quick button { width: 100%; min-height: 72px; font-size: 20px; font-weight: 750; letter-spacing: .02em; }
 .mode-groups { display: flex; flex-direction: column; gap: 16px; }
 .mode-group .mg-label {
   font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted);

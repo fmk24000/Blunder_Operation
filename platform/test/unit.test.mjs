@@ -8,6 +8,7 @@ import path from "node:path";
 import ts from "typescript";
 
 import { minutesToMidnightHK, executeCommand, tickAutoClose, tickLeases } from "../dist/server/commands.js";
+import { buildStageView } from "../dist/server/views.js";
 import { Store } from "../dist/server/store.js";
 import { Journal } from "../dist/server/journal.js";
 
@@ -1110,3 +1111,192 @@ test("host.ts #3：儲存 q_1 唔可以清走 q_2 嘅 dirty 保護（請求期�
   assert.match(src, /dirtyAt\.set\(key, Date\.now\(\)\);/, "每次 input／change 要記低時間");
 });
 
+
+/* ───────── 大mon 黑屏陷阱（blackout dead-end）／返 QR 掣 ───────── */
+
+test("stage.set 由黑屏轉其他 mode 唔會再 W_STAGE_LOCKED，會真正離開黑屏", () => {
+  const { store } = makeStore("stage-leave-blackout");
+  run(store, "stage.set", { mode: "scoreboard" });
+  run(store, "stage.blackout", { on: true });
+  assert.equal(store.state.room.stage.mode, "blackout");
+
+  const res = run(store, "stage.set", { mode: "idle" });
+  assert.equal(res.ok, true, "blackout 期間 stage.set 要放行（唔再 W_STAGE_LOCKED）");
+  assert.equal(store.state.room.stage.mode, "idle", "撳完要真正離開黑屏");
+  assert.notEqual(store.state.room.stage.prevMode, "blackout", "prevMode 唔可以殘留 blackout");
+});
+
+test("黑屏期間 stage.set 去 question：一次過離開黑屏、payload 一齊換", () => {
+  const { store } = makeStore("stage-leave-blackout-payload");
+  run(store, "stage.blackout", { on: true });
+  const res = run(store, "stage.set", { mode: "question", payload: { roundId: "r1" } });
+  assert.equal(res.ok, true);
+  assert.equal(store.state.room.stage.mode, "question");
+  assert.equal(store.state.room.stage.payload.roundId, "r1");
+});
+
+test("連撳兩次黑屏：prevMode 唔會變 blackout，恢復畫面一定返到原本 mode", () => {
+  const { store } = makeStore("stage-double-blackout");
+  run(store, "stage.set", { mode: "scoreboard" });
+  run(store, "stage.blackout", { on: true });
+  assert.equal(store.state.room.stage.prevMode, "scoreboard");
+  run(store, "stage.blackout", { on: true }); // 黑屏期間再撳黑屏
+  assert.notEqual(store.state.room.stage.prevMode, "blackout", "第二次黑屏要保留原本恢復目標");
+  assert.equal(store.state.room.stage.prevMode, "scoreboard");
+
+  run(store, "stage.blackout", { on: false });
+  assert.equal(store.state.room.stage.mode, "scoreboard", "恢復畫面要返到非黑屏嘅實際畫面");
+});
+
+test("黑屏前停喺規則頁：恢復畫面 fallback idle（唔會出空白規則頁）", () => {
+  const { store } = makeStore("stage-blackout-rules");
+  run(store, "room.start");
+  run(store, "stage.rules", { on: true });
+  assert.equal(store.state.room.stage.mode, "rules");
+  run(store, "stage.blackout", { on: true });
+  assert.equal(store.state.room.stage.prevMode, "idle", "rules 唔可以做恢復目標（payload 已經冇咗）");
+
+  run(store, "stage.blackout", { on: false });
+  assert.equal(store.state.room.stage.mode, "idle");
+  assert.deepEqual(store.state.room.stage.payload, {}, "恢復之後唔可以留低空規則頁 payload");
+});
+
+test("host.ts：控制台有 primary「大mon 返 QR／入場頁」掣，撳完送 stage.set idle", () => {
+  const src = clientSrc("host.ts");
+  assert.match(
+    src,
+    /<button class="primary" data-act="stage\.qr">大mon 返 QR／入場頁/,
+    "要有明確、primary 樣式嘅返 QR 掣（唔止係 mode 格仔）",
+  );
+  assert.match(src, /if \(sub === "qr"\) await cmd\("stage\.set", undefined, \{ mode: "idle" \}\)/, "一撳要送 stage.set idle");
+  const idxQuick = src.indexOf('data-act="stage.qr"');
+  const idxGroups = src.indexOf('<div class="mode-groups">');
+  assert.ok(idxQuick >= 0 && idxQuick < idxGroups, "掣要放喺流程／畫面區頂部（mode 格仔之上）");
+});
+
+test("stage.ts＋app.css：黑屏真係全黑（唔 render ticker、CSS 亦攔截）", () => {
+  const src = clientSrc("stage.ts");
+  assert.match(src, /classList\.toggle\(\s*"is-blackout",\s*v\?\.stage\?\.mode === "blackout"\)/, "黑屏要標記 body，俾 CSS 攔截浮層");
+  const start = src.indexOf('v.stage?.mode === "blackout"');
+  const end = src.indexOf("} else {", start);
+  assert.ok(start >= 0 && end > start);
+  const branch = src.slice(start, end);
+  assert.ok(!/scoreBar\(/.test(branch), "黑屏分支唔可以 render 分數條／ticker");
+  assert.ok(!/class="ticker"/.test(branch), "黑屏分支唔可以出 ticker 節點");
+  assert.ok(!/[（(]黑屏[）)]/.test(branch), "黑屏分支唔好再印字（要真係黑）");
+
+  const css = fs.readFileSync(path.resolve("public/app.css"), "utf8");
+  assert.match(css, /body\.is-blackout \.ticker[^{]*\{[^}]*display: none/, "黑屏期間 ticker 一定要隱藏");
+});
+
+/* ───────── checker 覆核 F1／F2／F3／F5 ───────── */
+
+test("F1：黑屏中 stage.set{mode:'rules'} 一樣 423（同 stage.rules 一致），QR 逃生門唔受影響", () => {
+  const { store } = makeStore("f1-blackout-rules");
+  run(store, "room.start");
+  run(store, "stage.blackout", { on: true });
+  assert.throws(() => run(store, "stage.set", { mode: "rules" }), isCmdError("W_STAGE_LOCKED", /blackout 期間唔准出規則頁/));
+  assert.equal(store.state.room.stage.mode, "blackout", "被拒之後要仍然係黑屏");
+  assert.throws(() => run(store, "stage.rules", { on: true }), isCmdError("W_STAGE_LOCKED"));
+
+  const res = run(store, "stage.set", { mode: "idle" });
+  assert.equal(res.ok, true, "其他 mode 照樣放行（逃生門）");
+  assert.equal(store.state.room.stage.mode, "idle");
+});
+
+function putRundownItem(store, item) {
+  store.commit([{ t: "rundown.set", d: { rundown: [item], currentItemId: item.id, phase: "playing" } }]);
+}
+
+test("F2：stage.set{mode:'rules'} 會砌齊規則頁 payload（同 stage.rules 一致，唔會出假頁）", () => {
+  const { store } = makeStore("f2-rules-payload");
+  run(store, "room.start");
+  putRundownItem(store, { id: "rd_1", index: 0, gameId: "quiz", title: "第 1 關", state: "todo", cardIds: [], rulesText: "規矩內容" });
+
+  run(store, "stage.set", { mode: "rules" });
+  const viaSet = { ...store.state.room.stage.payload };
+  assert.equal(viaSet.itemId, "rd_1", "要有 itemId（stage.page／上一頁下一頁靠佢）");
+  assert.equal(viaSet.title, "第 1 關");
+  assert.equal(viaSet.rulesText, "規矩內容", "冇 rulesText 就會出「主持未設定呢關規則」假頁");
+  assert.equal(viaSet.gameId, "quiz");
+  assert.equal(viaSet.fallback, true);
+
+  run(store, "stage.set", { mode: "idle" });
+  run(store, "stage.rules", { on: true });
+  const viaRules = { ...store.state.room.stage.payload };
+  assert.deepEqual(viaSet, viaRules, "兩條路徑砌出嚟嘅 payload 要一樣");
+});
+
+test("F3：非黑屏時撳「恢復畫面」係 no-op（唔會跳去 prevMode）", () => {
+  const { store } = makeStore("f3-restore-noop");
+  run(store, "stage.set", { mode: "scoreboard" });
+  run(store, "stage.set", { mode: "question" });
+  assert.equal(store.state.room.stage.prevMode, "scoreboard");
+
+  const res = run(store, "stage.blackout", { on: false });
+  assert.equal(res.ok, true, "no-op 都要回 ok");
+  assert.equal(store.state.room.stage.mode, "question", "非黑屏時唔可以跳去 prevMode");
+  assert.equal(store.state.room.stage.prevMode, "scoreboard", "state 完全唔應該變");
+});
+
+test("F5：黑屏分支連斷線 banner 都唔 render（非黑屏照舊有）", () => {
+  const src = clientSrc("stage.ts");
+  assert.match(
+    src,
+    /root\.innerHTML = html \+ \(v\?\.stage\?\.mode === "blackout" \? "" : connBanner\(status, v\)\)/,
+    "黑屏時要吞咗 conn banner",
+  );
+  assert.match(src, /function connBanner|connBanner\(status, v\)/, "非黑屏仍然要有 banner 路徑");
+});
+
+/* ───────── auditor A：規則頁「預覽上大mon」出錯頁 ───────── */
+
+function rulePageFixture(id, gameId, order, heading, extra = {}) {
+  return {
+    id,
+    gameId,
+    title: "頁 " + id,
+    blocks: [{ id: id + "-b1", type: "heading", text: heading }],
+    order,
+    enabled: true,
+    autoAdvanceSeconds: 0,
+    updatedAt: 0,
+    version: 1,
+    updatedBy: "test",
+    ...extra,
+  };
+}
+
+test("A：預覽唔屬於 currentItem 嘅規則頁 → 大mon view.rulePage 要係揀中嗰頁", () => {
+  const { store } = makeStore("preview-rule-page");
+  const pageA = rulePageFixture("rp_quiz", "quiz", 0, "A 頁：問答規則");
+  const pageB = rulePageFixture("rp_auction", "auction", 1, "B 頁：拍賣規則");
+  store.commit([{ t: "rules.set", d: { rulePages: [pageA, pageB] } }]);
+  const item = { id: "rd_quiz", index: 0, gameId: "quiz", title: "問答關", state: "todo", cardIds: [], rulesText: "" };
+  store.commit([{ t: "rundown.set", d: { rundown: [item], currentItemId: item.id, phase: "playing" } }]);
+
+  // 對照：冇指定頁 → 由 currentItem（quiz）推 A 頁
+  run(store, "stage.rules", { on: true });
+  assert.equal(buildStageView(store).rulePage?.id, "rp_quiz", "冇指定時照舊用 currentItem 嗰關嘅頁");
+
+  // 主持人喺 host 揀 B 頁預覽（B 唔屬於 currentItem 嘅 gameId）
+  run(store, "stage.set", { mode: "rules", payload: { rulePageId: "rp_auction" } });
+  const view = buildStageView(store);
+  assert.equal(view.rulePage?.id, "rp_auction", "大mon 要出主持揀中嗰頁，唔係 currentItem 嗰頁");
+  assert.match(JSON.stringify(view.rulePage?.blocks ?? []), /B 頁：拍賣規則/);
+});
+
+test("A 邊界：揀中嘅頁 disabled／archived → 照舊 fallback currentItem 嗰頁", () => {
+  const { store } = makeStore("preview-rule-page-guard");
+  const pageA = rulePageFixture("rp_quiz", "quiz", 0, "A 頁");
+  const archivedB = rulePageFixture("rp_auction", "auction", 1, "B 頁", { archived: true });
+  const disabledB = rulePageFixture("rp_off", "auction", 2, "B2 頁", { enabled: false });
+  store.commit([{ t: "rules.set", d: { rulePages: [pageA, archivedB, disabledB] } }]);
+  const item = { id: "rd_quiz", index: 0, gameId: "quiz", title: "問答關", state: "todo", cardIds: [], rulesText: "" };
+  store.commit([{ t: "rundown.set", d: { rundown: [item], currentItemId: item.id, phase: "playing" } }]);
+
+  run(store, "stage.set", { mode: "rules", payload: { rulePageId: "rp_auction" } });
+  assert.equal(buildStageView(store).rulePage?.id, "rp_quiz", "archived 頁唔可以上大mon");
+  run(store, "stage.set", { mode: "rules", payload: { rulePageId: "rp_off" } });
+  assert.equal(buildStageView(store).rulePage?.id, "rp_quiz", "disabled 頁唔可以上大mon");
+});

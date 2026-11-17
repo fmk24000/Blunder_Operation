@@ -118,6 +118,11 @@ function stageSet(ctx: Ctx, stage: Partial<StageState>): void {
   push(ctx, { t: "stage.set", d: { stage } });
 }
 
+/** 黑屏／規則頁都唔可以做「恢復目標」：restore 時一律 fallback idle（否則會再黑一次或者空白） */
+function resumableMode(mode: StageMode | undefined): Exclude<StageMode, "blackout" | "rules"> {
+  return mode && mode !== "blackout" && mode !== "rules" ? (mode as Exclude<StageMode, "blackout" | "rules">) : "idle";
+}
+
 function currentRoundOrThrow(store: Store): Round {
   const r = store.currentRound();
   if (!r) throw new CmdError("W_ALREADY_STATE", "而家冇開住嘅回合");
@@ -164,21 +169,21 @@ function transferStay(ctx: Ctx, player: Player, oldGroupId: string): void {
   }
 }
 
-function rulesStageForItem(ctx: Ctx, target?: RundownItem): Partial<StageState> | null {
+/** 規則頁 payload：stage.rules 同 stage.set{mode:'rules'} 共用（唔可以有一邊砌漏 title／rulesText 出假頁） */
+function rulesStagePayload(ctx: Ctx, item: RundownItem | undefined, pageIdParam?: string): Record<string, unknown> {
   const store = ctx.store;
-  const item = target ?? store.currentItem();
-  if (!item) return null;
   let page: RulePage | undefined;
-  if (item.rulePageId) page = store.state.room.rulePages.find((p) => p.id === item.rulePageId && p.enabled && !p.archived);
-  if (!page) page = store.activeRulePage(item.gameId);
+  if (pageIdParam) page = store.state.room.rulePages.find((p) => p.id === pageIdParam);
+  if (!page && item?.rulePageId) page = store.state.room.rulePages.find((p) => p.id === item.rulePageId && p.enabled && !p.archived);
+  if (!page && item) page = store.activeRulePage(item.gameId);
   const payload: Record<string, unknown> = {
-    itemId: item.id,
-    gameId: item.gameId,
-    gameIndex: item.index + 1,
-    title: item.title,
+    itemId: item?.id,
+    gameId: item?.gameId,
+    gameIndex: item ? item.index + 1 : undefined,
+    title: item?.title,
     pageIndex: 0,
     fallback: !page,
-    rulesText: item.rulesText ?? "",
+    rulesText: item?.rulesText ?? "",
   };
   if (page) {
     const pag = store.rulePagination(page);
@@ -189,8 +194,15 @@ function rulesStageForItem(ctx: Ctx, target?: RundownItem): Partial<StageState> 
     payload.totalPages = 1;
     payload.autoAdvanceSeconds = 0;
   }
+  return payload;
+}
+
+function rulesStageForItem(ctx: Ctx, target?: RundownItem): Partial<StageState> | null {
+  const store = ctx.store;
+  const item = target ?? store.currentItem();
+  if (!item) return null;
   const prev = store.state.room.stage.mode === "rules" || store.state.room.stage.mode === "blackout" ? "idle" : store.state.room.stage.mode;
-  return { mode: "rules", payload, prevMode: prev as Exclude<StageMode, "blackout" | "rules"> };
+  return { mode: "rules", payload: rulesStagePayload(ctx, item), prevMode: prev as Exclude<StageMode, "blackout" | "rules"> };
 }
 
 function setStageIfUnlocked(ctx: Ctx, stage: Partial<StageState>): void {
@@ -1376,30 +1388,17 @@ export function executeCommand(
     case "stage.set": {
       const mode = p.mode as StageMode | undefined;
       if (!mode || !MODES.includes(mode)) throw new CmdError("W_BAD_SCHEMA", "mode 唔合法");
-      if (room.stage.mode === "blackout" && mode !== "blackout") throw new CmdError("W_STAGE_LOCKED", "blackout 期間唔准切 mode");
+      // 黑屏期間唔准出規則頁（同 stage.rules 一致；其他 mode 照樣放行，QR 逃生門不受影響）
+      if (room.stage.mode === "blackout" && mode === "rules") throw new CmdError("W_STAGE_LOCKED", "blackout 期間唔准出規則頁");
       if (mode === "rules" && room.phase !== "playing") throw new CmdError("W_WRONG_PHASE", "rules 只准 playing phase");
-      const prevMode = (room.stage.mode === "blackout" ? undefined : room.stage.mode) as Exclude<StageMode, "blackout" | "rules"> | undefined;
+      // 黑屏唔可以係死胡同：stage.set 一撳就係離開黑屏，prevMode 亦唔會殘留 blackout／rules
+      const prevMode = resumableMode(room.stage.mode === "blackout" ? room.stage.prevMode : room.stage.mode);
       const payload = asObj(p.payload);
       if (mode === "rules") {
         const pageId = typeof payload.rulePageId === "string" ? payload.rulePageId : undefined;
-        const item = store.currentItem();
-        const page = pageId
-          ? room.rulePages.find((x) => x.id === pageId)
-          : item
-            ? store.activeRulePage(item.gameId)
-            : undefined;
-        const pag = page ? store.rulePagination(page) : { pageIndex: 0, totalPages: 1 };
-        stageSet(ctx, {
-          mode,
-          payload: {
-            ...payload,
-            rulePageId: page?.id,
-            totalPages: pag.totalPages,
-            pageIndex: typeof payload.pageIndex === "number" ? payload.pageIndex : 0,
-            autoAdvanceSeconds: page?.autoAdvanceSeconds ?? 0,
-          },
-          prevMode,
-        });
+        const rulesPayload = { ...payload, ...rulesStagePayload(ctx, store.currentItem(), pageId) };
+        if (typeof payload.pageIndex === "number") rulesPayload.pageIndex = payload.pageIndex;
+        stageSet(ctx, { mode, payload: rulesPayload, prevMode });
       } else {
         stageSet(ctx, { mode, payload, prevMode });
       }
@@ -1414,11 +1413,18 @@ export function executeCommand(
     }
     case "stage.blackout": {
       const on = p.on !== false;
+      // 唔係黑屏時撳「恢復畫面」＝ no-op：唔好跳去 prevMode 打亂主持而家嘅畫面
+      if (!on && room.stage.mode !== "blackout") {
+        toast(ctx, "而家唔係黑屏");
+        break;
+      }
       if (on) {
-        stageSet(ctx, { mode: "blackout", prevMode: room.stage.mode as Exclude<StageMode, "blackout" | "rules">, payload: {} });
+        // 黑屏期間再撳黑屏：保留原本嘅恢復目標（寫成 blackout 就永遠走唔返出嚟）
+        const prev = room.stage.mode === "blackout" ? room.stage.prevMode : room.stage.mode;
+        stageSet(ctx, { mode: "blackout", prevMode: resumableMode(prev), payload: {} });
       } else {
-        const prev = (room.stage.prevMode ?? "idle") as StageMode;
-        stageSet(ctx, { mode: prev, payload: {} });
+        const mode = resumableMode(room.stage.prevMode);
+        stageSet(ctx, { mode, prevMode: mode, payload: {} });
       }
       toast(ctx, on ? "黑屏" : "恢復畫面");
       break;
@@ -1430,28 +1436,14 @@ export function executeCommand(
         if (room.stage.mode === "blackout") throw new CmdError("W_STAGE_LOCKED", "blackout 期間唔准出規則頁");
       }
       if (on) {
-        const item = store.currentItem();
-        const pageId = optStr(p, "rulePageId");
-        const page = pageId ? room.rulePages.find((x) => x.id === pageId) : item ? store.activeRulePage(item.gameId) : undefined;
-        const pag = page ? store.rulePagination(page) : { pageIndex: 0, totalPages: 1 };
         stageSet(ctx, {
           mode: "rules",
-          payload: {
-            itemId: item?.id,
-            gameId: item?.gameId,
-            title: item?.title,
-            fallback: !page,
-            rulesText: item?.rulesText ?? "",
-            rulePageId: page?.id,
-            totalPages: pag.totalPages,
-            pageIndex: 0,
-            autoAdvanceSeconds: page?.autoAdvanceSeconds ?? 0,
-          },
-          prevMode: room.stage.mode as Exclude<StageMode, "blackout" | "rules">,
+          payload: rulesStagePayload(ctx, store.currentItem(), optStr(p, "rulePageId")),
+          prevMode: resumableMode(room.stage.mode),
         });
       } else {
-        const prev = (room.stage.prevMode ?? "idle") as StageMode;
-        stageSet(ctx, { mode: prev === "rules" || prev === "blackout" ? "idle" : prev, payload: {} });
+        const mode = resumableMode(room.stage.prevMode);
+        stageSet(ctx, { mode, prevMode: mode, payload: {} });
       }
       toast(ctx, on ? "顯示規則頁" : "收起規則頁");
       break;

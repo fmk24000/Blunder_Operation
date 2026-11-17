@@ -110,6 +110,12 @@ function voteCounts(store: Store, round: Round, optionsLength: number): number[]
 }
 
 function resolveRulePage(store: Store): RulePage | null {
+  // 預覽：主持喺 host 揀邊一頁，就以 stage.payload 為準（唔可以由 currentItem 猜返出嚟）
+  const pickedId = store.state.room.stage.payload?.rulePageId;
+  if (typeof pickedId === "string") {
+    const picked = store.state.room.rulePages.find((x) => x.id === pickedId);
+    if (picked && picked.enabled && !picked.archived) return picked;
+  }
   const item = store.currentItem();
   if (item?.rulePageId) {
     const p = store.state.room.rulePages.find((x) => x.id === item.rulePageId);

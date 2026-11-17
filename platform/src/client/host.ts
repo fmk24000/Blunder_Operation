@@ -555,6 +555,9 @@ function controlSection(v: any): string {
   </section>
   <section class="ctrl-stage"><h3>大mon 控制（現在：${esc(MODE_LABEL[mode] ?? mode)}）</h3>
     <div class="card-box">
+      <div class="ctrl-quick">
+        <button class="primary" data-act="stage.qr">大mon 返 QR／入場頁${mode === "blackout" ? "（離開黑屏）" : ""}</button>
+      </div>
       <div class="mode-groups">
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard", "award"])}
         ${group("問答", ["question", "tally", "reveal"])}
@@ -1346,7 +1349,9 @@ async function handleAct(act: string): Promise<void> {
       else if (sub === "phase") await cmd("room.phase", undefined, { phase: arg });
       break;
     case "stage":
-      if (sub === "nextPage") await cmd("stage.page", undefined, { pageIndex: (view?.stage?.payload?.pageIndex ?? 0) + 1 });
+      // 一撳即返 QR／入場頁：stage.set 已經可以離開黑屏（唔使先撳「恢復畫面」）
+      if (sub === "qr") await cmd("stage.set", undefined, { mode: "idle" });
+      else if (sub === "nextPage") await cmd("stage.page", undefined, { pageIndex: (view?.stage?.payload?.pageIndex ?? 0) + 1 });
       else if (sub === "prevPage") await cmd("stage.page", undefined, { pageIndex: Math.max(0, (view?.stage?.payload?.pageIndex ?? 0) - 1) });
       else if (sub === "lock") await cmd("stage.lock", undefined, { lock: !view?.stage?.lock });
       else if (sub === "blackout") await cmd("stage.blackout", undefined, { on: arg === "1" });
