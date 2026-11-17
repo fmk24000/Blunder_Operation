@@ -525,10 +525,11 @@ function controlSection(v: any): string {
   const curIdx = cur ? rd.findIndex((i: any) => i.id === cur.id) : -1;
   const nxt = rd[curIdx + 1] ?? rd.find((i: any) => i.state !== "done" && i.state !== "skipped");
   const mode = v.stage?.mode;
-  const group = (label: string, modes: string[]) =>
+  // extraHtml：容許喺同一組尾插額外掣（例如估歌組嘅「開估」唔係 stage.mode，而係 media.reveal）
+  const group = (label: string, modes: string[], extraHtml = "") =>
     `<div class="mode-group"><div class="mg-label">${label}</div><div class="stage-mode-grid">${modes
       .map((m) => `<button data-act="stage.mode:${m}" class="${mode === m ? "active" : ""}">${esc(MODE_LABEL[m] ?? m)}</button>`)
-      .join("")}</div></div>`;
+      .join("")}${extraHtml}</div></div>`;
   return `<section class="ctrl-rundown"><h3>Rundown（${rd.filter((i: any) => i.state === "done" || i.state === "skipped").length}/${rd.length}）</h3>
     <div class="card-box">
       <button class="ctrl-hero" data-act="rd.next">
@@ -559,11 +560,16 @@ function controlSection(v: any): string {
         <button class="primary" data-act="stage.qr">大mon 返 QR／入場頁${mode === "blackout" ? "（離開黑屏）" : ""}</button>
       </div>
       <div class="mode-groups">
-        ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard", "award"])}
+        ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
         ${group("問答", ["question", "tally", "reveal"])}
-        ${group("估歌", ["bid", "song", "finale"])}
+        ${group(
+          "估歌",
+          ["bid", "song"],
+          `<button data-act="media.reveal" class="${mode === "reveal" && v.stage?.payload?.songTitle ? "active" : ""}">開估（揭曉歌名）</button>`,
+        )}
         ${group("畫畫", ["draw-wall", "draw-focus", "vote"])}
         ${group("搗蛋鬼／其他", ["role-reveal", "timer", "blackout"])}
+        ${group("結算／頒獎", ["finale", "award"])}
       </div>
       <div class="ctrl-emergency">
         <button class="danger" data-act="stage.blackout:1">黑屏</button>
