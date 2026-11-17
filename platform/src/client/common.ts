@@ -201,8 +201,18 @@ export class Live {
           for (const op of msg.ops ?? []) {
             if (op.op === "viewport") continue;
             if (op.op === "section") this.view[op.name] = op.value;
-            else if (op.op === "view") this.view = op.value;
-            else if (op.op === "toast") this.view.toast = op.text;
+            else if (op.op === "view") {
+              // protocol 送 {op:"view", view}（唔係 value）；收到壞 payload 就 resync，唔好整爛個 view
+              if (!op.view || typeof op.view !== "object") {
+                this.resync();
+                return;
+              }
+              this.view = op.view;
+            } else if (op.op === "toast") this.view.toast = op.text;
+          }
+          if (!this.view || typeof this.view !== "object") {
+            this.resync();
+            return;
           }
           this.view.serverNow = msg.serverNow;
           this.view.seq = msg.seq;

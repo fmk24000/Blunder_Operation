@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-16T10:09:52.588Z",
+  "generatedAt": "2026-11-17T06:18:17.965Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -28,8 +28,8 @@
     },
     {
       "path": ".env.example",
-      "bytes": 676,
-      "sha256": "17f7c199659e308b0196ff315a6559206280c752302764228345cc3e52463484"
+      "bytes": 673,
+      "sha256": "294233eafec95386a61c60fbecf1a1fe2b00d0636e5176cd1519ac3c9ed97c48"
     },
     {
       "path": ".nvmrc",
@@ -97,6 +97,16 @@
       "sha256": "3b309b1360ab47f27f23eb84272edeae3721ba32da5d03c918ee34d5f1bf67b1"
     },
     {
+      "path": "data/journal/room-room_41a5e5fc2c596c12/manifest.json",
+      "bytes": 190,
+      "sha256": "bf66f00bb4ec60ff2f2357902c2f59e209cc5fb61cf8efae9167e3392cb36833"
+    },
+    {
+      "path": "data/journal/room-room_41a5e5fc2c596c12/segment-0001.jsonl",
+      "bytes": 29973,
+      "sha256": "f6e2be62915cde7089ee8b463d8ecd2797c176cc24976fe6a4fa0d284b8c18cc"
+    },
+    {
       "path": "data/quiz.seed.json",
       "bytes": 7510,
       "sha256": "ff85d079a39290cffbb8b919449887cde7a74481f6928acec246aa522f9e0bb1"
@@ -118,18 +128,18 @@
     },
     {
       "path": "package.json",
-      "bytes": 972,
-      "sha256": "cec4551e23b7c95ff220a212150f583a9556fae7b4f06dec5c70c1a7b0ea3ef0"
+      "bytes": 973,
+      "sha256": "afbf1a2c0e6345ececdaa3b048719ae881cac6d1146b31d6960f97d4f0a0ffd8"
     },
     {
       "path": "public/app.css",
-      "bytes": 29423,
-      "sha256": "22d8a369a4e7957bb3149649ca6f5ef7f1f9710a0e9501e5258e221f400b8711"
+      "bytes": 29617,
+      "sha256": "606805d0b7548b62975a691eeb9646c4f90569f0ae9a9d926e2e6c65e48a6043"
     },
     {
       "path": "public/host.html",
-      "bytes": 505,
-      "sha256": "ab0811a050a9dff5657cabaf89e76025746fcc9f1e46b4f6f2cac01f672c6b14"
+      "bytes": 517,
+      "sha256": "dbd29029e5287c617c738fe98ef855c6aab918e6668d276be51b79047e637f87"
     },
     {
       "path": "public/icon.svg",
@@ -138,18 +148,18 @@
     },
     {
       "path": "public/index.html",
-      "bytes": 773,
-      "sha256": "d0694e2ead63aac2c7ac23532c789749199c2030d9c446443d4ec377e66afcca"
+      "bytes": 779,
+      "sha256": "f949ddd8b9825c1ddda1a37c45e788c8010b1c82a8a800753b64e1839a62da15"
     },
     {
       "path": "public/js/client/common.js",
-      "bytes": 11083,
-      "sha256": "9fb3a31c568c4106740e9c76e8ad54f25a6d53d7a8bffcdd60f08e79250e2129"
+      "bytes": 11600,
+      "sha256": "207cbc26aec4fcb0740bb69aef76fd6d3935e0e80dfbfcd9b5be44ab82b10ebc"
     },
     {
       "path": "public/js/client/host.js",
-      "bytes": 67026,
-      "sha256": "7050b490ab9686dc58db3bff08c175e446c2db10d463ca80a0aac91a03164b81"
+      "bytes": 91459,
+      "sha256": "9a8728c7e324803acd4caee8053bdb3c3f43111a2f273effbd8646bf79800d11"
     },
     {
       "path": "public/js/client/play.js",
@@ -158,8 +168,8 @@
     },
     {
       "path": "public/js/client/stage.js",
-      "bytes": 19362,
-      "sha256": "283c8f635b09ba5b0e765f9ca24318490a5387626c139345abcea1e18d487777"
+      "bytes": 22511,
+      "sha256": "c42f717f38ccbdadeef4398ecd8c035580fbfe52677db1ea3f3a22feba4d8879"
     },
     {
       "path": "public/js/shared/protocol.js",
@@ -178,8 +188,8 @@
     },
     {
       "path": "public/play.html",
-      "bytes": 686,
-      "sha256": "98e4d8d9a02777fc5fd0d0122d3677633932f3903a38dddc1d4075c00416dde7"
+      "bytes": 698,
+      "sha256": "61a2afca6f8d03c327b0c342ab842ccee71e15d3550ab614f4852f65747bfb8f"
     },
     {
       "path": "public/quiz-legacy-mc.json",
@@ -188,8 +198,8 @@
     },
     {
       "path": "public/stage.html",
-      "bytes": 520,
-      "sha256": "58055139a4003baf088126417476dc5649aec22225d046af2ed21f24937acf85"
+      "bytes": 532,
+      "sha256": "5317ffdda4c5fbf125fdd17437c19e7c791a9ea2cc90fb8296e1937d1522f7ce"
     },
     {
       "path": "scripts/make-manifest.mjs",
@@ -218,13 +228,13 @@
     },
     {
       "path": "src/client/common.ts",
-      "bytes": 10759,
-      "sha256": "426f71de5e65bd97bcde97cba0cc93af172e92c6b87eeedaab52d8dc670e75e4"
+      "bytes": 11148,
+      "sha256": "a5c03fa8d4efb8f09e29b5e4c64c3b79daf50fccb116e8717ae237959678b59b"
     },
     {
       "path": "src/client/host.ts",
-      "bytes": 64588,
-      "sha256": "8d4613c6985d26d67cef677418df27e3fd949e76b5ed93fbfd00313f940f7197"
+      "bytes": 90580,
+      "sha256": "952c9d3a7ca9419bec0e778595d1d29560a3d639a73ae0b0d188e28169f39213"
     },
     {
       "path": "src/client/play.ts",
@@ -233,8 +243,8 @@
     },
     {
       "path": "src/client/stage.ts",
-      "bytes": 19196,
-      "sha256": "6423b442bfac4f591d27342d65d476297c22d88385104b469df837d7e479b9b4"
+      "bytes": 22072,
+      "sha256": "ef21e4681880c693a4135be726b208fd2dea615a4d8f1715074f4be6b89bf37c"
     },
     {
       "path": "src/server/auth.ts",
@@ -243,8 +253,8 @@
     },
     {
       "path": "src/server/commands.ts",
-      "bytes": 89919,
-      "sha256": "ba2af3257cbd6e611e3f202f8ef838a34bd3a66ca0c615aec740d21c6ee2eb49"
+      "bytes": 99299,
+      "sha256": "0268423b7436ae2e89eeb9334fe8647eba11ba118a1665d7c41f743ccc4d09e4"
     },
     {
       "path": "src/server/env.ts",
@@ -303,8 +313,8 @@
     },
     {
       "path": "test/unit.test.mjs",
-      "bytes": 7510,
-      "sha256": "bcee96863eb27035ad4a92a1be5efad46df2e493f74a205c2eae606a88b63cab"
+      "bytes": 59177,
+      "sha256": "29a6cfdf65a76ad9ad9473db453cb90f05efc4378419c6dff22c33afd98e21d6"
     },
     {
       "path": "tsconfig.client.json",

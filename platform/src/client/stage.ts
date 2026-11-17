@@ -5,6 +5,24 @@ let live: Live | null = null;
 let view: any = null;
 let status: ConnStatus = "connecting";
 let timer: number | null = null;
+let stableClearTimer: number | null = null;
+
+/** 連線穩定 60 秒後才清 evicted flag：避免多個大mon 互踢造成 reload 輪迴 */
+const EVICT_STABLE_MS = 60000;
+
+function armStableClear(): void {
+  disarmStableClear();
+  stableClearTimer = window.setTimeout(() => {
+    stableClearTimer = null;
+    sessionStorage.removeItem("hbd.evictedAt");
+  }, EVICT_STABLE_MS);
+}
+
+function disarmStableClear(): void {
+  if (stableClearTimer === null) return;
+  window.clearTimeout(stableClearTimer);
+  stableClearTimer = null;
+}
 
 const MODE_LABEL: Record<string, string> = {
   idle: "",
@@ -320,10 +338,28 @@ function finalHtml(v: any): string {
   </div>`;
 }
 
+function waitingHtml(v: any): string {
+  const mode = v?.stage?.mode ?? "";
+  const title = MODE_LABEL[mode] ?? (mode || "等主持");
+  return `<div class="stage-main stage-idle"><div class="stage-logo">等待主持…</div><div class="stage-sub">${esc(title)}</div></div>`;
+}
+
 function render(): void {
   const root = el<HTMLDivElement>("#stage-root");
   if (!root) return;
   const v = view;
+  let html: string;
+  try {
+    html = stageHtml(v);
+  } catch (err) {
+    console.warn("[stage] render 失敗，改顯示等待畫面", err);
+    html = waitingHtml(v);
+  }
+  root.innerHTML = html + connBanner(status, v);
+  updateTimers();
+}
+
+function stageHtml(v: any): string {
   let html = "";
   if (!v) {
     html = `<div class="stage-main stage-idle"><div class="stage-logo">連線中…</div></div>`;
@@ -389,11 +425,19 @@ function render(): void {
         html = idleHtml(v);
     }
   }
-  root.innerHTML = html + connBanner(status, v);
-  updateTimers();
+  return html;
 }
 
+/** 100ms interval 同 render 都經呢個 guard：timer 只係裝飾，唔可以拋砲炸死成個大mon */
 function updateTimers(): void {
+  try {
+    paintTimers();
+  } catch (err) {
+    console.warn("[stage] updateTimers 失敗", err);
+  }
+}
+
+function paintTimers(): void {
   if (!view) return;
   const endsAt = view.question?.endsAt ?? view.bid?.endsAt ?? null;
   const left = live?.msLeft(endsAt) ?? null;
@@ -409,7 +453,16 @@ function updateTimers(): void {
     const tot = q?.eligibleCount ?? t?.eligibleCount;
     if (n !== undefined) answeredNode.textContent = `已答 ${n}/${tot}`;
   }
-  showToast(view.toast);
+  paintToast(view.toast);
+}
+
+/** 100ms tick 都會行到：同一個 toast 唔可以每次都重設 3.2s timer，否則永遠唔會收（codex 第五輪 #3） */
+let lastToastText = "";
+function paintToast(text: string | null | undefined): void {
+  const t = (text ?? "").trim();
+  if (t === lastToastText) return;
+  lastToastText = t;
+  if (t) showToast(t);
 }
 
 function setStatus(s: ConnStatus): void {
@@ -436,13 +489,36 @@ async function boot(): Promise<void> {
       view = v;
       render();
     },
-    onStatus: setStatus,
+    onStatus: (s: ConnStatus) => {
+      setStatus(s);
+      if (s === "connected") armStableClear();
+      else disarmStableClear();
+    },
     onError: (c, m) => showToast(`${c}: ${m}`),
     onEvicted: () => {
+      disarmStableClear();
       showToast("已被另一個大mon 接管");
       const root = document.querySelector("#stage-root");
       if (root) {
-        root.innerHTML = `<div class="stage-main stage-idle"><div class="stage-logo">已被另一個大mon 接管</div><div class="stage-sub">同一時間最多 2 個大mon 分頁；請關閉其他分頁後 refresh。</div></div>`;
+        const prev = Number(sessionStorage.getItem("hbd.evictedAt") ?? "0");
+        const recent = prev > 0 && Date.now() - prev < 60000;
+        sessionStorage.setItem("hbd.evictedAt", String(Date.now()));
+        if (recent) {
+          root.innerHTML = `<div class="stage-main stage-idle"><div class="stage-logo">已被另一個大mon 接管</div><div class="stage-sub">短時間內重複被接管，已停止自動重新載入，以免多個大mon 互踢。</div><button id="evict-reload" class="btn">立即重新連線</button></div>`;
+        } else {
+          root.innerHTML = `<div class="stage-main stage-idle"><div class="stage-logo">已被另一個大mon 接管</div><div class="stage-sub"><span id="evict-count">5</span> 秒後自動重新載入（復原靠 reload，避免互踢）</div><button id="evict-reload" class="btn">立即重新連線</button></div>`;
+          let remain = 5;
+          const h = window.setInterval(() => {
+            remain -= 1;
+            const c = document.querySelector("#evict-count");
+            if (c) c.textContent = String(Math.max(0, remain));
+            if (remain <= 0) {
+              window.clearInterval(h);
+              location.reload();
+            }
+          }, 1000);
+        }
+        document.querySelector("#evict-reload")?.addEventListener("click", () => location.reload());
       }
     },
   });

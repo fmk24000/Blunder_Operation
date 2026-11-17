@@ -379,7 +379,8 @@ export function minutesToMidnightHK(closedAt: number): number {
   return Math.floor((dayMs - consumedMs) / 60000);
 }
 
-function closeRoundMutations(ctx: Ctx, round: Round, card: Card | undefined, auto: boolean): void {
+/** 回傳 true＝呢次收卷已經由搗蛋鬼計票結算咗（round 已 revealed），caller 唔好再蓋 tally State */
+function closeRoundMutations(ctx: Ctx, round: Round, card: Card | undefined, auto: boolean): boolean {
   const closedAt = Date.now();
   const patch: Partial<Round> = { state: "closed", closedAt };
   if (auto) patch.autoClosed = true;
@@ -394,10 +395,17 @@ function closeRoundMutations(ctx: Ctx, round: Round, card: Card | undefined, aut
   if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "closed" } } });
   setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: card?.id ?? null } });
   if (card && card.type === "choice") gradeChoiceRound(ctx, round, card);
+  // 搗蛋鬼投票卡：generic 收卷／auto-close 都要即刻計票結算，唔可以留低一個等 command 但 state 已撞死嘅 round
+  return card && card.gameId === "saboteur" ? tallySaboteurIfAny(ctx, round) : false;
 }
 
 
 /* ───────────── M2：media deck／AudioLease ／ M3：畫畫 ／ M4：搗蛋鬼 ───────────── */
+
+/** 每次入 preparing 都要重新起算 ready 期限；沿用舊值會被 tickLeases 即刻判 failed（codex 第五輪 #1b） */
+function audioReadyDeadline(): number {
+  return Date.now() + Number(process.env.AUDIO_READY_TIMEOUT_MS ?? 15_000);
+}
 
 function leaseDeck(ctx: Ctx, deckIdRaw: string | undefined): string {
   const deck = deckIdRaw || `${ctx.hostId}:deck`;
@@ -438,9 +446,34 @@ function saboteurState(store: Store): NonNullable<NonNullable<Room["gameState"]>
   return st;
 }
 
+type SaboteurRec = NonNullable<NonNullable<Room["gameState"]>["saboteur"]>;
+
 /** 深 copy 一份先改，commit（fsync）成功後記憶體先真正套用（§9.1.1：唔准改 live state 先過 journal） */
-function cloneSaboteur(store: Store): NonNullable<NonNullable<Room["gameState"]>["saboteur"]> {
-  return JSON.parse(JSON.stringify(saboteurState(store))) as NonNullable<NonNullable<Room["gameState"]>["saboteur"]>;
+function cloneSaboteur(store: Store): SaboteurRec {
+  return JSON.parse(JSON.stringify(saboteurState(store))) as SaboteurRec;
+}
+
+/** 兩輪「邏輯輪次」完成 → 搗蛋鬼潛伏成功 +5。st.finished 之後永遠唔會再派（+5 只頒一次）。
+ *  retry 會將舊 record 標 resolved＋decision='retry'，同 index 嘅新 record 再 resolve，唔可以計兩次。
+ *  回傳 true＝今次啱啱完結（caller 負責 push game.set／stage.set／toast）。 */
+function saboteurAwardsLatentOnce(ctx: Ctx, st: SaboteurRec): boolean {
+  if (st.finished) return false;
+  const roundsDone = new Set(st.rounds.filter((r) => r.state === "resolved" && r.decision !== "retry").map((r) => r.index)).size;
+  if (roundsDone < 2) return false;
+  st.finished = true;
+  st.revealedRole = "saboteur";
+  const sab = ctx.store.player(st.saboteurId ?? "");
+  if (sab) {
+    push(ctx, {
+      t: "ledger.append",
+      d: {
+        events: [
+          makeEvent({ target: { type: "player", id: sab.id }, gameId: "saboteur", delta: 5, reason: "搗蛋鬼・潛伏成功", by: "auto" }),
+        ],
+      },
+    });
+  }
+  return true;
 }
 
 /** 淘汰一位玩家（只改傳入嘅 clone；caller 負責 push game.set）；搗蛋鬼被淘汰＝揪中 */
@@ -497,21 +530,7 @@ function eliminateSaboteur(ctx: Ctx, st: NonNullable<NonNullable<Room["gameState
     return;
   }
   if (round) push(ctx, { t: "round.update", d: { roundId: decisiveRoundId, patch: { state: "revealed" } } });
-  const roundsDone = st.rounds.filter((r) => r.state === "resolved").length;
-  if (roundsDone >= 2) {
-    st.finished = true;
-    st.revealedRole = "saboteur";
-    const sab = store.player(st.saboteurId ?? "");
-    if (sab) {
-      push(ctx, {
-        t: "ledger.append",
-        d: {
-          events: [
-            makeEvent({ target: { type: "player", id: sab.id }, gameId: "saboteur", delta: 5, reason: "搗蛋鬼・潛伏成功", by: "auto" }),
-          ],
-        },
-      });
-    }
+  if (saboteurAwardsLatentOnce(ctx, st)) {
     push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
     push(ctx, { t: "stage.set", d: { stage: { mode: "role-reveal", payload: { caught: false, saboteurId: st.saboteurId }, prevMode: "vote" } } });
     toast(ctx, `兩輪都揪唔中：搗蛋鬼 +5`);
@@ -521,6 +540,96 @@ function eliminateSaboteur(ctx: Ctx, st: NonNullable<NonNullable<Room["gameState
     toast(ctx, `淘汰咗 ${target.name}（唔係搗蛋鬼），仲有第 2 輪`);
     ctx.result = { caught: false, finished: false, nextRound: 2, mode: "eliminate" };
   }
+}
+
+type SaboteurRoundRec = SaboteurRec["rounds"][number];
+
+/** 仲未結算（state !== 'resolved'）嘅搗蛋鬼輪次＝仍然等主持 saboteur.decide。
+ *  唔可以靠 current round 嘅 display state 判斷：generic card.reveal 會將 round 變 revealed，
+ *  但 record 仍然 closed／decision:null，於是下一輪就開得，偷走中間輪次。 */
+function unsettledSaboteurRounds(store: Store): SaboteurRoundRec[] {
+  const st = store.state.room.gameState?.saboteur;
+  if (!st) return [];
+  return st.rounds.filter((r) => {
+    if (r.state === "resolved") return false;
+    const live = store.round(r.roundId);
+    // 已被 rundown 轉關 void 咗（advanceRundown）：唔算等裁決，否則主持轉關之後永遠開唔返下一輪
+    return !live || live.state !== "void";
+  });
+}
+
+/** 搗蛋鬼計票＋結算嘅唯一入口：saboteur.closeRound、card.close／card.tally（closeRoundMutations）、tickAutoClose 都經呢度。
+ *  一個 round 只結算一次：已 resolved 直接 reject（唔會重複派分／重複淘汰）。
+ *  未過半／平票／全體棄權 → 留 rOut=closed 等主持 saboteur.decide（decide 只睇 rOut.state，唔會因為 round 已 closed 而卡死）。 */
+function tallySaboteurRound(
+  ctx: Ctx,
+  st: SaboteurRec,
+  round: Round,
+): { validVotes: number; top: { playerId: string; name: string; count: number }[]; mode: "eliminate" | "decide" | "none" } {
+  const store = ctx.store;
+  const rOut = st.rounds.find((r) => r.roundId === round.id);
+  if (!rOut) throw new CmdError("W_BAD_SCHEMA", "唔係搗蛋鬼 round");
+  if (rOut.state === "resolved") throw new CmdError("W_ALREADY_STATE", `第 ${rOut.index} 輪已結算`);
+  // finished 之後唔准再結算（finish 已經頒咗 +5；再 tally 會頒投票者 +3 而同 caught 矛盾）
+  if (st.finished) throw new CmdError("W_ALREADY_STATE", "搗蛋鬼遊戲已完結，唔可以再結算");
+  const subs = store.submissionsForRound(round.id).filter((x) => x.confirmed && x.kind === "vote");
+  const counts = new Map<string, number>();
+  for (const x of subs) {
+    const target = x.text ?? "";
+    if (!target) continue;
+    counts.set(target, (counts.get(target) ?? 0) + 1);
+  }
+  const validVotes = subs.filter((x) => x.text && x.text.length > 0).length;
+  rOut.votes = subs.map((x) => ({ voterId: x.playerId, targetId: x.text ?? null }));
+  rOut.state = "closed";
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || String(store.player(a[0])?.number ?? 0).localeCompare(String(store.player(b[0])?.number ?? 0)));
+  const top = ranked[0];
+  const topCount = top ? top[1] : 0;
+  const tied = ranked.filter(([, c]) => c === topCount);
+  const majority = validVotes > 0 && topCount >= Math.floor(validVotes / 2) + 1;
+  const mode: "eliminate" | "decide" | "none" = validVotes === 0 ? "none" : majority && tied.length === 1 ? "eliminate" : "decide";
+  const result = { validVotes, top: ranked.map(([id, count]) => ({ playerId: id, name: store.player(id)?.name ?? "?", count })), mode };
+  if (mode === "eliminate" && top) {
+    eliminateSaboteur(ctx, st, top[0], round.id);
+  } else if (mode === "none") {
+    // 全體棄票＝呢輪冇人淘汰，但一樣要結算：留低 closed＋decision:null 會令下一輪永遠 W_ALREADY_STATE
+    rOut.state = "resolved";
+    rOut.decision = "none";
+    rOut.eliminatedId = null;
+    push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "revealed", closedAt: round.closedAt ?? Date.now() } } });
+    const card0 = store.card(round.cardId);
+    if (card0) push(ctx, { t: "card.update", d: { cardId: card0.id, patch: { state: "revealed" } } });
+    const finished = saboteurAwardsLatentOnce(ctx, st);
+    push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+    if (finished) {
+      push(ctx, { t: "stage.set", d: { stage: { mode: "role-reveal", payload: { caught: false, saboteurId: st.saboteurId }, prevMode: "vote" } } });
+      toast(ctx, "兩輪都冇人揪中：搗蛋鬼 +5");
+      ctx.result = { caught: false, finished: true, mode: "none" };
+    } else {
+      setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: round.cardId, saboteurRound: rOut.index }, prevMode: "vote" });
+      toast(ctx, `第 ${rOut.index} 輪全體棄票：冇人淘汰（可以開下一輪）`);
+      ctx.result = { caught: false, finished: false, nextRound: rOut.index + 1, mode: "none" };
+    }
+  } else {
+    push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
+    push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "closed", closedAt: round.closedAt ?? Date.now() } } });
+    const card = store.card(round.cardId);
+    if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "tally" } } });
+    setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: round.cardId, saboteurRound: rOut.index }, prevMode: "vote" });
+  }
+  return result;
+}
+
+/** generic 收卷（card.close／card.tally／auto-close）收到搗蛋鬼投票卡時：即刻計票結算。
+ *  唔係搗蛋鬼 round／未派身份／已結算 → 乜都唔做（唔會阻住普通卡收卷）。 */
+function tallySaboteurIfAny(ctx: Ctx, round: Round): boolean {
+  const st0 = ctx.store.state.room.gameState?.saboteur;
+  const rOut0 = st0?.rounds.find((r) => r.roundId === round.id);
+  // 已完結（finish 頒咗 +5）或已結算：乜都唔做，只留返 generic 收卷本身
+  if (!st0 || st0.finished || !rOut0 || rOut0.state === "resolved") return false;
+  const st = cloneSaboteur(ctx.store);
+  tallySaboteurRound(ctx, st, round);
+  return st.rounds.some((r) => r.roundId === round.id && r.state === "resolved");
 }
 
 /** lease 到期／ready timeout／window 到期：server 側自動處理（防雙響＋播 15 秒真承諾） */
@@ -775,7 +884,7 @@ export function executeCommand(
         : (() => {
             const sid = reqStr(p, "submissionId");
             const s = store.state.submissions.find((x) => x.id === sid);
-            if (!s) throw new CmdError("W_BAD_SCHEMA", "冇呢份提交");
+            if (!s || s.roundId !== roundId || !s.confirmed) throw new CmdError("W_BAD_SCHEMA", "提交唔屬於呢個回合或未確認");
             return [s];
           })();
       const events: ScoreEvent[] = [];
@@ -1139,6 +1248,8 @@ export function executeCommand(
       const cardId = cmd.targetId ?? reqStr(p, "cardId");
       const card = store.card(cardId);
       if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      // 搗蛋鬼卡要用 saboteur.openRound：generic open 會開出一個唔喺 saboteur.rounds 註冊嘅 round（永遠結算唔到）
+      if (card.gameId === "saboteur") throw new CmdError("W_BAD_SCHEMA", "搗蛋鬼卡要用 saboteur.openRound 開（generic card.open 會開出未註冊嘅搗蛋鬼 round）");
       const openRound = store.currentRound();
       if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
         throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先 reveal 或 void");
@@ -1169,6 +1280,7 @@ export function executeCommand(
       const card = store.card(round.cardId);
       closeRoundMutations(ctx, round, card, false);
       toast(ctx, "收卷");
+      // 搗蛋鬼輪次若果喺收卷時已即場結算，狀態由 tallySaboteurRound 決定（revealed），唔再補 tally
       break;
     }
     case "card.tally": {
@@ -1178,10 +1290,12 @@ export function executeCommand(
       if (cardId && round.cardId !== cardId) throw new CmdError("W_STALE_COMMAND", "而家開住嘅唔係呢張卡");
       if (round.state !== "closed" && round.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 係 ${round.state}`);
       const card = store.card(round.cardId);
-      if (round.state === "open") closeRoundMutations(ctx, round, card, false);
-      push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "tally" } } });
-      push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "tally" } } });
-      setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: round.cardId } });
+      const settled = round.state === "open" ? closeRoundMutations(ctx, round, card, false) : false;
+      if (!settled) {
+        push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "tally" } } });
+        push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "tally" } } });
+        setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: round.cardId } });
+      }
       toast(ctx, "切去分佈");
       break;
     }
@@ -1193,6 +1307,10 @@ export function executeCommand(
       if (round.state !== "closed" && round.state !== "tally") throw new CmdError("W_WRONG_PHASE", `round 係 ${round.state}`);
       const card = store.card(round.cardId);
       if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      // generic reveal 對「未裁決嘅搗蛋鬼輪次」要拒絕：reveal 只會把 round 標 revealed（record 仍然
+      // closed／decision:null），之後 saboteur.openRound 就開得下一輪 → 中間輪次被偷走。
+      if (card.gameId === "saboteur" && unsettledSaboteurRounds(store).some((r) => r.roundId === round.id))
+        throw new CmdError("W_ALREADY_STATE", "搗蛋鬼輪次未裁決：請用 saboteur.decide（retry／eliminate），唔可以用 generic card.reveal");
       if (card.state !== "revealed") {
         push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
         push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "revealed" } } });
@@ -1209,6 +1327,10 @@ export function executeCommand(
       const cardId = cmd.targetId ?? reqStr(p, "cardId");
       const card = store.card(cardId);
       if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      // 已結算嘅搗蛋鬼卡唔准 generic reopen：會 void 投票者 +3、開新 round 但唔喺 saboteur.rounds 註冊，
+      // 而 caught／finished 仍然 true → 之後再也結算唔到。重投只能經 saboteur.decide（每輪一次）。
+      if (card.gameId === "saboteur")
+        throw new CmdError("W_BAD_SCHEMA", "搗蛋鬼卡唔准 generic reopen；未裁決請用 saboteur.decide { decision: 'retry' }，已結算請用 saboteur.openRound");
       if (card.state !== "revealed") throw new CmdError("W_STALE_COMMAND", "reopen 前置係 card.state=revealed（§6 狀態表）");
       const prevRound = [...room.rounds].reverse().find((r) => r.cardId === cardId && r.state !== "void");
       if (!prevRound) throw new CmdError("W_STALE_COMMAND", "呢張卡未開過");
@@ -1552,7 +1674,7 @@ export function executeCommand(
         window: win,
         by: hostName,
         revealedAt: null,
-        readyDeadline: Date.now() + Number(process.env.AUDIO_READY_TIMEOUT_MS ?? 15_000),
+        readyDeadline: audioReadyDeadline(),
       };
       push(ctx, { t: "media.set", d: { playback } });
       push(ctx, { t: "song.put", d: { song: { ...song, state: "played" } } });
@@ -1577,7 +1699,12 @@ export function executeCommand(
       const pb = store.state.playback;
       if (!pb || pb.deckId !== deckId) throw new CmdError("W_ALREADY_STATE", "唔係你部機");
       if (pb.state !== "paused") throw new CmdError("W_ALREADY_STATE", `而家係 ${pb.state}`);
-      push(ctx, { t: "media.set", d: { playback: { ...pb, state: "preparing", playStartedAt: 0, resumedAt: Date.now() } } });
+      // 入 preparing 一定要重新起算 readyDeadline：舊值（play 嗰刻）早就過咗，
+      // 下一個 tickLeases 會即刻轉 failed（codex 第五輪 #1b）
+      push(ctx, {
+        t: "media.set",
+        d: { playback: { ...pb, state: "preparing", playStartedAt: 0, resumedAt: Date.now(), readyDeadline: audioReadyDeadline() } },
+      });
       toast(ctx, "繼續播（等 ready）");
       break;
     }
@@ -1659,8 +1786,10 @@ export function executeCommand(
       const assetId = reqStr(p, "assetId");
       const card = store.card(cardId);
       if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      if (card.type !== "vote" || card.voteMode !== "works") throw new CmdError("W_BAD_SCHEMA", "呢張卡唔係畫畫投票卡");
       const asset = store.state.assets.find((a) => a.id === assetId);
-      if (!asset) throw new CmdError("W_BAD_SCHEMA", "冇呢張作品");
+      if (!asset || asset.kind !== "image" || !(card.options ?? []).includes(assetId))
+        throw new CmdError("W_BAD_SCHEMA", "作品唔屬於呢張投票卡");
       const authorId = asset.authorId;
       if (!authorId) throw new CmdError("W_BAD_SCHEMA", "作品冇作者");
       const points = Number(p.points ?? 0);
@@ -1738,10 +1867,14 @@ export function executeCommand(
       ensurePlaying(store);
       const st = cloneSaboteur(store);
       if (st.finished) throw new CmdError("W_ALREADY_STATE", "遊戲已完結");
+      // 獨立檢查未裁決嘅 saboteur record：唔可以靠 current round 嘅 display state
+      // （generic card.reveal／card.close 之後 round 已經 revealed／closed，但 record 仲等裁決）
+      const pending = unsettledSaboteurRounds(store)[0];
+      if (pending) throw new CmdError("W_ALREADY_STATE", `第 ${pending.index} 輪仲未裁決：先 saboteur.decide（retry／eliminate）`);
       const openRound = store.currentRound();
       if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
         throw new CmdError("W_ALREADY_STATE", "仲有回合未完成");
-      const index = st.rounds.length + 1;
+      const index = Math.max(0, ...st.rounds.map((r) => r.index)) + 1;
       const existingCard = store.gameCards("saboteur").find((c) => c.type === "vote" && c.voteMode === "players");
       let card: Card;
       if (existingCard) {
@@ -1795,41 +1928,21 @@ export function executeCommand(
       if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
       const round = store.round(roundId);
       if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
-      if (round.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 係 ${round.state}`);
       const st = cloneSaboteur(store);
       const rOut = st.rounds.find((r) => r.roundId === roundId);
       if (!rOut) throw new CmdError("W_BAD_SCHEMA", "唔係搗蛋鬼 round");
-      const subs = store.submissionsForRound(roundId).filter((x) => x.confirmed && x.kind === "vote");
-      const counts = new Map<string, number>();
-      for (const x of subs) {
-        const target = x.text ?? "";
-        if (!target) continue;
-        counts.set(target, (counts.get(target) ?? 0) + 1);
+      if (rOut.state === "resolved") throw new CmdError("W_ALREADY_STATE", `第 ${rOut.index} 輪已結算`);
+      // auto-close／card.tally 可能已經收咗卷（round=closed／tally）但未裁決：再撳「立即計票」照計，唔可以撞死
+      if (round.state !== "open" && round.state !== "closed" && round.state !== "tally")
+        throw new CmdError("W_ALREADY_STATE", `round 係 ${round.state}`);
+      if (round.state === "open") {
+        push(ctx, { t: "round.update", d: { roundId, patch: { state: "closed", closedAt: Date.now() } } });
+        push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "tally" } } });
+        setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId, cardId: round.cardId, saboteurRound: rOut.index }, prevMode: "vote" });
       }
-      const validVotes = subs.filter((x) => x.text && x.text.length > 0).length;
-      rOut.votes = subs.map((x) => ({ voterId: x.playerId, targetId: x.text ?? null }));
-      rOut.state = "closed";
-      push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
-      push(ctx, { t: "round.update", d: { roundId, patch: { state: "closed", closedAt: Date.now() } } });
-      const card = store.card(round.cardId);
-      push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "tally" } } });
-      setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId, cardId: round.cardId, saboteurRound: rOut.index }, prevMode: "vote" });
-      const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || String(store.player(a[0])?.number ?? 0).localeCompare(String(store.player(b[0])?.number ?? 0)));
-      const top = ranked[0];
-      const topCount = top ? top[1] : 0;
-      const tied = ranked.filter(([, c]) => c === topCount);
-      const majority = validVotes > 0 && topCount >= Math.floor(validVotes / 2) + 1;
-      let mode: "eliminate" | "decide" | "none";
-      if (validVotes === 0) mode = "none";
-      else if (majority && tied.length === 1) mode = "eliminate";
-      else mode = "decide";
-      toast(ctx, `第 ${rOut.index} 輪：有效票 ${validVotes}，最高 ${topCount} 票${mode === "eliminate" ? "（過半，即場淘汰）" : mode === "decide" ? "（未過半／平票，主持裁決）" : "（全體棄權）"}`);
-      ctx.result = { roundId, validVotes, top: ranked.map(([id, count]) => ({ playerId: id, name: store.player(id)?.name ?? "?", count })), mode };
-      if (mode === "eliminate" && top) {
-        eliminateSaboteur(ctx, st, top[0], roundId);
-      } else {
-        push(ctx, { t: "game.set", d: { gameState: { saboteur: st } } });
-      }
+      const tally = tallySaboteurRound(ctx, st, round);
+      toast(ctx, `第 ${rOut.index} 輪：有效票 ${tally.validVotes}，最高 ${tally.top[0]?.count ?? 0} 票${tally.mode === "eliminate" ? "（過半，即場淘汰）" : tally.mode === "decide" ? "（未過半／平票，主持裁決）" : "（全體棄權）"}`);
+      ctx.result = { ...(ctx.result ?? {}), roundId, ...tally };
       break;
     }
     case "saboteur.decide": {
@@ -1839,6 +1952,8 @@ export function executeCommand(
       const rOut = st.rounds.find((r) => r.roundId === roundId);
       if (!rOut) throw new CmdError("W_BAD_SCHEMA", "唔係搗蛋鬼 round");
       if (rOut.state === "resolved") throw new CmdError("W_ALREADY_STATE", "呢輪已裁決");
+      // finish 之後唔准再裁決（會改 caught／再派 +3，同 finish 嘅 +5 矛盾）
+      if (st.finished) throw new CmdError("W_ALREADY_STATE", "遊戲已完結，唔可以再裁決");
       const decision = optStr(p, "decision");
       if (decision === "retry") {
         if (rOut.retried) throw new CmdError("W_ALREADY_STATE", "每輪最多重投一次");
@@ -1893,6 +2008,20 @@ export function executeCommand(
       if (st.finished) throw new CmdError("W_ALREADY_STATE", "已經完結");
       st.finished = true;
       st.revealedRole = "saboteur";
+      // 原子終結所有未結算輪次：record → resolved（decision='none'），連帶把仲 open／closed／tally
+      // 嘅 round 同卡收成 revealed。唔可以留低一個 open round，否則之後 auto-close／card.close 會再
+      // tally 一次（caught=true＋投票者 +3），同 finish 頒嘅 +5 互相矛盾。
+      const finishedAt = Date.now();
+      for (const r of st.rounds) {
+        if (r.state === "resolved") continue;
+        r.state = "resolved";
+        r.decision = "none";
+        r.eliminatedId = null;
+        const live = store.round(r.roundId);
+        if (!live || (live.state !== "open" && live.state !== "closed" && live.state !== "tally")) continue;
+        push(ctx, { t: "round.update", d: { roundId: live.id, patch: { state: "revealed", closedAt: live.closedAt ?? finishedAt } } });
+        if (store.card(live.cardId)) push(ctx, { t: "card.update", d: { cardId: live.cardId, patch: { state: "revealed" } } });
+      }
       const sab = store.player(st.saboteurId ?? "");
       if (sab) {
         push(ctx, {

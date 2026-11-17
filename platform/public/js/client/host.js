@@ -29,19 +29,128 @@ let tab = "control";
 let loginError = "";
 let lastCmdError = "";
 let importReport = null;
-let deckId = "";
 let deckStatus = "未接管音源";
 let audioBlocked = false;
 let deckTimer = null;
 let leasePauseTimer = null;
-function ensureDeckId() {
-    if (!deckId) {
-        const saved = lsGet("hbd.deckId");
-        deckId = saved || `deck_${Math.random().toString(36).slice(2, 10)}`;
-        lsSet("hbd.deckId", deckId);
+// <client-block>deck-id
+/** 每個 document（tab／window）一條 deck ID：sessionStorage 每 tab 獨立、reload 後仍然係同一個。
+ *  localStorage 會令同一 browser 兩個 host window 共用一條 ID → 兩邊都當自己係 lease owner 雙重出聲。 */
+const DECK_ID_KEY = "hbd.deckId";
+let deckId = "";
+function newDeckId() {
+    return `deck_${Math.random().toString(36).slice(2, 10)}${Math.random().toString(36).slice(2, 6)}`;
+}
+/** 記住一條 deck ID 並寫返 sessionStorage（boot 嘅獨佔檢查換 ID 之後亦要寫返：reload 要沿用同一條） */
+function setDeckId(id) {
+    deckId = id;
+    try {
+        sessionStorage.setItem(DECK_ID_KEY, id);
+    }
+    catch {
+        /* 存唔到：用記憶體 ID（見 ensureDeckId） */
     }
     return deckId;
 }
+function ensureDeckId() {
+    if (deckId)
+        return deckId;
+    // 每次 document 開都生成全新 ID，唔重用 sessionStorage 舊值：
+    // 重用會令複製 tab／遲到 BroadcastChannel 訊息期間出現兩個 lease owner（同時出聲）。
+    setDeckId(newDeckId());
+    try {
+        localStorage.removeItem(DECK_ID_KEY);
+    }
+    catch {
+        /* localStorage 冇得寫：ignore */
+    }
+    return deckId;
+}
+// </client-block>
+// <client-block>deck-exclusive
+/** document 獨佔檢查：sessionStorage 雖然每 tab 獨立，但「複製 tab」同「有 opener 嘅新 window」會連 sessionStorage
+ *  一齊複製 → 兩個 document 讀到同一條 deck ID → 兩邊都當自己係 lease owner（雙重出聲）。
+ *  用 BroadcastChannel（同 origin 嘅 tab／window 互通）宣告自己條 ID：150ms 內有另一個 document 用同一條 ID
+ *  應答（taken）就即刻 rotate 一條新 ID、寫返 sessionStorage，再用新 ID 宣告一次。
+ *  讓路規則：document 開得早嘅贏（bornAt 舊），同時開就比 nonce —— 兩邊各自計出同一個結論，唔會一齊讓。
+ *  正常兩個獨立 tab 各有各 ID（冇人應答）→ 唔會誤 rotate；reload 時舊 document 已經拆咗 → 保持同一條 ID。
+ *  冇 BroadcastChannel 就照用（退化；唔會阻 boot）。 */
+const DECK_CLAIM_CHANNEL = "hbd.deck-claim";
+const DECK_CLAIM_TIMEOUT_MS = 150;
+const DECK_CLAIM_ROUNDS = 3;
+/** 應答係咪叫我讓：同一條 deck ID ＋ 指住我呢個 nonce（唔係我自己發嘅） */
+function deckClaimConflict(msg, deck, nonce) {
+    return !!msg && msg.t === "taken" && msg.deckId === deck && msg.to === nonce;
+}
+/** 邊個讓路：bornAt 舊（早過我開）嘅贏；同時開就比 nonce，兩邊計出同一個結果 */
+function deckClaimLoses(mine, theirs) {
+    if (mine.bornAt !== theirs.bornAt)
+        return mine.bornAt > theirs.bornAt;
+    return mine.nonce > theirs.nonce;
+}
+/** 留住宣告 channel（唔可以俾 GC 收返：boot 完之後仲要應遲到嘅複製 tab） */
+let deckClaimChannel = null;
+/** 宣告自己條 deck ID 並等 150ms 應答；有衝突就 rotate（最多 3 輪，防病態循環）。
+ *  channel 留住：遲過我 boot 嘅複製 tab 宣告同一條 ID 時仲要應佢。
+ *  第八輪 (#1)：boot 之後先送到嘅衝突一樣要讓路——被 suspend／busy 嘅 document 可能遲 200ms 才收到
+ *  claim，嗰陣 150ms 應答窗已經完（pending=null），唔可以就咁忽略，否則兩邊都留住同一條 ID 出聲。 */
+async function claimDeckIdExclusive(opts) {
+    const ch = opts.makeChannel(DECK_CLAIM_CHANNEL);
+    if (!ch)
+        return { deckId: opts.deckId, rotated: false, channel: null }; // 冇 BroadcastChannel：照用
+    let deck = opts.deckId;
+    let rotated = false;
+    let pending = null;
+    /** 輸咗一輪（taken 指住我／同 ID claim 而對方贏）：boot 期間交返俾 round() 去 rotate；
+     *  boot 完之後（pending 已經係 null）即刻自己 rotate──遲到嘅衝突唔可以就咁忽略。 */
+    const lose = () => {
+        if (pending) {
+            pending(true);
+            return;
+        }
+        const next = opts.newId();
+        deck = next; // 之後同舊 ID 有關嘅訊息一律唔關我事（deckId 唔再對得上）
+        opts.persist(next);
+        opts.onLateLoss?.(next);
+    };
+    ch.onmessage = (ev) => {
+        const msg = ev?.data ?? ev;
+        if (!msg || msg.deckId !== deck || msg.nonce === opts.nonce)
+            return;
+        if (deckClaimConflict(msg, deck, opts.nonce)) {
+            lose(); // 有人話呢條 ID 係佢嘅（佢開得早過我）→ 我讓
+            return;
+        }
+        if (msg.t === "claim" && !deckClaimLoses(opts, msg)) {
+            // 我早過佢開：留住條 ID，答佢令佢一定 rotate
+            ch.postMessage({ t: "taken", deckId: deck, nonce: opts.nonce, bornAt: opts.bornAt, to: msg.nonce });
+            return;
+        }
+        if (msg.t === "claim")
+            lose(); // 佢早過我：我讓
+    };
+    const round = () => new Promise((resolve) => {
+        const done = (v) => {
+            if (pending !== done)
+                return; // 過期嘅 timer 唔可以結算新一輪
+            pending = null;
+            resolve(v);
+        };
+        pending = done;
+        ch.postMessage({ t: "claim", deckId: deck, nonce: opts.nonce, bornAt: opts.bornAt });
+        setTimeout(() => done(false), opts.timeoutMs);
+    });
+    for (let i = 0; i < DECK_CLAIM_ROUNDS; i++) {
+        if (!(await round()))
+            break;
+        deck = opts.newId();
+        rotated = true;
+        opts.persist(deck); // 寫返 sessionStorage：reload 之後要沿用呢條新 ID
+    }
+    deckClaimChannel = ch;
+    return { deckId: deck, rotated, channel: ch };
+}
+// </client-block>
 function deckAudio() {
     return el("#deck-audio");
 }
@@ -59,11 +168,14 @@ function syncDeck() {
     ensureDeckId();
     const lease = v.audioLease;
     const pb = v.playback;
-    const mine = !!lease && lease.deckId === deckId;
+    // 過期／已放 lease 一律唔算 mine：否則 pauseDeckLocally→render→syncDeck→scheduleLeasePause 無限遞迴
+    const mine = isLeaseOwner(lease, deckId, live?.serverNow() ?? Date.now());
+    dropAckListener(); // 每次 sync 先清舊 canplaythrough listener；preparing 分支會即刻重新掛一個
     const song = pb ? (v.songs ?? []).find((x) => x.id === pb.songId) : undefined;
     if (!mine) {
         if (!a.paused)
             a.pause();
+        ackState.sentKey = ""; // 甩咗 lease：下次重新接管時同一個 attempt 仲要可以再 ACK
         deckStatus = lease ? `音源由 ${esc(lease.deckId)}（gen ${lease.generation}）出聲` : "未有音源 lease";
         return;
     }
@@ -86,13 +198,24 @@ function syncDeck() {
             a.src = abs;
             a.load();
         }
+        // 一次 preparation attempt 只 ACK 一次：局域 acked 每次 render 都新開，buffered 之後會連送幾個 ACK
+        const ackKey = prepAttemptKey(pb);
+        // 送唔出（disconnect 中）唔記 key：重連之後 retryPendingAck／下次 sync 仲會再試（codex 第七輪 #2）
         const onReady = () => {
-            const cur = view?.playback;
-            if (cur && cur.songId === pb.songId && cur.state === "preparing") {
-                live?.send({ type: "deck.ready", deckId, songId: pb.songId, positionMs: pb.positionMs });
-            }
+            sendDeckReadyOnce({
+                state: ackState,
+                ackKey,
+                conn: ackLink(live),
+                stillPreparing: prepStillCurrent(pb),
+                send: () => sendDeckReady(pb),
+            });
         };
-        a.addEventListener("canplaythrough", onReady, { once: true });
+        a.addEventListener("canplaythrough", onReady);
+        ackListener = () => a.removeEventListener("canplaythrough", onReady);
+        // 同一首歌已經 buffer 過（replay／resume）唔會再 fire canplaythrough：readyState 夠就即場 ACK，
+        // 否則永遠卡 preparing，等到 readyDeadline 就轉 failed（codex 第五輪 #1a）
+        if (a.readyState >= 3)
+            onReady();
         return;
     }
     if (pb.state === "playing") {
@@ -176,6 +299,85 @@ function scheduleLeasePause() {
         }
     }, msLeft + 10);
 }
+// <client-block>lease-owner
+/** lease 擁有權：只認每個 document 自己嘅 deckId（＋lease 未放、未到期）。
+ *  同一 browser 兩個 host window 一定唔同 deckId → 只有一個會出聲（兩邊都 play 就會雙響）。
+ *  唔用 lease.hostId 判 owner：每次 login 都新開一個（auth.ts:34 createHostSession newId("host")），
+ *  reload 後重新 login 會誤判自己唔係 owner。 */
+function isLeaseOwner(lease, deck, now) {
+    return !!lease && !!deck && lease.deckId === deck && !lease.releasedAt && lease.leaseUntil > now;
+}
+// </client-block>
+// <client-block>ack-key
+/** 一次 preparation attempt 嘅身分：server 每次入 preparing 都會換新 readyDeadline（commands.ts audioReadyDeadline），
+ *  所以 songId＋readyDeadline 可以分開「同一次 attempt 重複 render」同「新一次 attempt（replay／resume）」。 */
+function prepAttemptKey(pb) {
+    const deadline = Number(pb?.readyDeadline) || 0;
+    return `${pb?.songId ?? ""}@${deadline}`;
+}
+/** live（Live | null）→ 閘門要睇嘅連線狀態 */
+function ackLink(link) {
+    if (!link)
+        return null;
+    return { connected: link.connected === true, readyState: link.ws?.readyState ?? 0 };
+}
+function ackSendable(conn) {
+    return !!conn && conn.connected && conn.readyState === 1;
+}
+/** 一次 preparation attempt 只送一個 ACK；只有真送得出才記 state.sentKey（離線唔記，重連仲有機會）。
+ *  state 要放 module 層（跨 render 有效），唔可以喺 syncDeck 內新開。 */
+function sendDeckReadyOnce(opts) {
+    if (!opts.ackKey || !opts.stillPreparing)
+        return false;
+    if (opts.state.sentKey === opts.ackKey)
+        return false;
+    if (!ackSendable(opts.conn))
+        return false; // 離線：唔記 key，connected 時再試
+    if (!opts.send())
+        return false; // 真係送得出先算數
+    opts.state.sentKey = opts.ackKey;
+    return true;
+}
+// </client-block>
+const ackState = { sentKey: "" };
+let ackListener = null;
+function dropAckListener() {
+    if (!ackListener)
+        return;
+    ackListener();
+    ackListener = null;
+}
+/** 嗰次 preparation attempt 仲係 preparing 嗎（server 可能已經轉 playing／failed／換歌） */
+function prepStillCurrent(pb) {
+    const cur = view?.playback;
+    return !!cur && cur.songId === pb.songId && cur.state === "preparing";
+}
+/** 真係推出去才回 true（Live.send 喺 ws 未開時靜靜 drop：唔可以當送咗） */
+function sendDeckReady(pb) {
+    if (!live || !ackSendable(ackLink(live)))
+        return false;
+    live.send({ type: "deck.ready", deckId, songId: pb.songId, positionMs: pb.positionMs });
+    return true;
+}
+/** 重連之後補送漏咗嘅 ACK：離線期間 buffer 完成 → canplaythrough 已經 fire 過（唔會再 fire），
+ *  syncDeck 亦冇新 render → 要喺 status 變 connected 時主動再試一次（codex 第七輪 #2）。 */
+function retryPendingAck() {
+    const pb = view?.playback;
+    const a = deckAudio();
+    if (!pb || !a || pb.state !== "preparing")
+        return;
+    if (!isLeaseOwner(view?.audioLease, deckId, live?.serverNow() ?? Date.now()))
+        return;
+    if (a.readyState < 3)
+        return; // 未 buffer 好：等 canplaythrough（listener 仲掛住）
+    sendDeckReadyOnce({
+        state: ackState,
+        ackKey: prepAttemptKey(pb),
+        conn: ackLink(live),
+        stillPreparing: prepStillCurrent(pb),
+        send: () => sendDeckReady(pb),
+    });
+}
 let windowPausedForSong = "";
 function startDeckTimer() {
     if (deckTimer)
@@ -215,9 +417,11 @@ async function cmd(kind, targetId, payload = {}, expectedRevision) {
         if (res?.code === "W_STALE_COMMAND") {
             // 兩個 host 撞命令：靜默更新畫面，唔彈 error（§7）
             lastCmdError = "";
+            actFailed = true; // 今次提交冇落到：唔清主持打緊嘅欄
             live?.resync();
             return res;
         }
+        actFailed = true;
         lastCmdError = `${res?.code ?? "ERROR"}：${res?.message ?? "命令失敗"}`;
         showToast(lastCmdError);
     }
@@ -284,6 +488,8 @@ function startLive() {
         },
         onStatus: (s) => {
             status = s;
+            if (s === "connected")
+                retryPendingAck(); // 重連：離線期間 buffer 完嘅 ACK 補送一次
             render();
         },
         onHello: (msg) => {
@@ -383,30 +589,29 @@ function controlSection(v) {
 }
 function playersSection(v) {
     const groups = v.groups ?? [];
-    return `<section><h3>玩家（approved ${v.caps?.approved}/${v.caps?.maxApproved}・pending ${v.caps?.pending}/${v.caps?.maxPending}）</h3>
-    <div class="card-box">${(v.players ?? [])
-        .map((p) => `<div class="player-row">
+    const players = v.players ?? [];
+    const active = players.filter((p) => p.status !== "kicked");
+    const kicked = players.filter((p) => p.status === "kicked");
+    const row = (p) => `<div class="player-row">
           <span class="dot ${p.connected ? "on" : ""}"></span>
           <span class="pname">${avatarHtml(p.avatar, 30)} #${p.number} ${esc(p.name)}</span>
           <input type="text" placeholder="改編號" value="${p.number}" data-num="${p.id}" style="width:64px">
           <button class="btn-sm" data-act="player.number:${p.id}">改號</button>
           <input type="text" placeholder="改名" value="${esc(p.name)}" data-name="${p.id}">
           <button class="btn-sm" data-act="player.rename:${p.id}">改名</button>
-          ${groups.length
-        ? `<select data-group="${p.id}"><option value="">個人戰</option>${groups
-            .map((g) => `<option value="${g.id}" ${p.groupId === g.id ? "selected" : ""}>${esc(g.name)}</option>`)
-            .join("")}</select><button class="btn-sm" data-act="player.group:${p.id}">搬組</button>`
-        : ""}
+          ${groups.length ? `<select data-group="${p.id}"><option value="">個人戰</option>${groups.map((g) => `<option value="${g.id}" ${p.groupId === g.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select><button class="btn-sm" data-act="player.group:${p.id}">搬組</button>` : ""}
           <span class="pill">${p.status}</span>
-          ${p.status !== "approved" ? `<button class="btn-sm primary" data-act="player.approve:${p.id}">批准</button>` : ""}
+          ${p.status === "pending" ? `<button class="btn-sm primary" data-act="player.approve:${p.id}">批准</button>` : ""}
           ${p.status !== "kicked" ? `<button class="btn-sm danger" data-act="player.kick:${p.id}">踢</button>` : `<button class="btn-sm" data-act="player.approve:${p.id}">恢復</button>`}
           <span class="pscore">${p.score}</span>
           <button class="btn-sm" data-act="score.add:${p.id}:1">+1</button>
           <button class="btn-sm" data-act="score.add:${p.id}:2">+2</button>
           <button class="btn-sm" data-act="score.add:${p.id}:5">+5</button>
           <button class="btn-sm" data-act="score.add:${p.id}:-1">-1</button>
-        </div>`)
-        .join("")}</div>
+        </div>`;
+    return `<section><h3>玩家（approved ${v.caps?.approved}/${v.caps?.maxApproved}・pending ${v.caps?.pending}/${v.caps?.maxPending}）</h3>
+    <div class="card-box">${active.map(row).join("")}</div>
+    ${kicked.length ? `<details class="kicked-box"><summary>已踢 ${kicked.length}（撳開睇／還原）</summary><div class="card-box">${kicked.map(row).join("")}</div></details>` : ""}
   </section>`;
 }
 function groupsSection(v) {
@@ -489,14 +694,16 @@ function cardsSection(v) {
     const cards = cardIds.map((id) => (v.cards ?? []).find((c) => c.id === id)).filter(Boolean);
     const round = v.currentRound;
     const card = round ? (v.cards ?? []).find((c) => c.id === round.cardId) : null;
+    // 搗蛋鬼卡：generic 揭示／開卡都會繞過 saboteur.rounds（state 對唔上 → 偷輪次），只用下面搗蛋鬼面板
+    const curIsSab = card?.gameId === "saboteur";
     return `<section><h3>出卡：${esc(item?.title ?? "（未入關）")}</h3>
     <div class="card-box">
       ${round ? `<div class="row wrap"><span class="pill hot">currentRound ${esc(round.id)}・${round.state}</span><span class="muted">已答 ${(v.submissions ?? []).filter((s) => s.roundId === round.id && s.confirmed).length}/${round.eligiblePlayerIds.length}</span></div>
         <div class="row wrap"><button data-act="card.close" ${round.state !== "open" ? "disabled" : ""}>收卷</button>
         <button data-act="card.tally" ${round.state === "open" || round.state === "closed" ? "" : "disabled"}>切分佈</button>
-        <button class="primary" data-act="card.reveal" ${round.state === "closed" || round.state === "tally" ? "" : "disabled"}>揭曉</button>
-        <button data-act="card.reopen">重開（新 round）</button></div>` : `<div class="muted">未開卡</div>`}
-      ${cards.length ? `<div>${cards.map((c) => `<div class="ledger-row"><span class="pill ${round?.cardId === c.id ? "on" : ""}">${esc(c.type)}</span><span class="grow">${esc(c.prompt)}</span><span class="muted">${c.id}</span><button class="btn-sm primary" data-act="card.open:${c.id}" ${round && (round.state === "open" || round.state === "closed" || round.state === "tally") ? "disabled" : ""}>開</button></div>`).join("")}</div>` : `<div class="hint">呢關未有卡。用下面新增。</div>`}
+        ${curIsSab ? "" : `<button class="primary" data-act="card.reveal" ${round.state === "closed" || round.state === "tally" ? "" : "disabled"}>揭曉</button>`}
+        ${curIsSab ? "" : `<button data-act="card.reopen">重開（新 round）</button>`}</div>` : `<div class="muted">未開卡</div>`}
+      ${cards.length ? `<div>${cards.map((c) => `<div class="ledger-row"><span class="pill ${round?.cardId === c.id ? "on" : ""}">${esc(c.type)}</span><span class="grow">${esc(c.prompt)}</span><span class="muted">${c.id}</span>${c.gameId === "saboteur" ? `<span class="pill gray">用搗蛋鬼面板開輪</span>` : `<button class="btn-sm primary" data-act="card.open:${c.id}" ${round && (round.state === "open" || round.state === "closed" || round.state === "tally") ? "disabled" : ""}>開</button>`}</div>`).join("")}</div>` : `<div class="hint">呢關未有卡。用下面新增。</div>`}
       ${openGradingHtml(v)}
     </div>
   </section>
@@ -659,8 +866,11 @@ function drawSection(v) {
     const images = (v.assets ?? []).filter((a) => a.kind === "image");
     const round = v.currentRound;
     const curCard = round ? (v.cards ?? []).find((c) => c.id === round.cardId) : null;
-    const works = curCard?.type === "vote" && curCard.voteMode === "works"
-        ? (curCard.options ?? []).map((id) => images.find((a) => a.id === id)).filter(Boolean)
+    const worksCard = curCard?.type === "vote" && curCard.voteMode === "works" ? curCard : null;
+    // 評審掣只出畀「現時投票卡」入面嘅作品（server 亦會驗，client 唔好誘導主持撳無效掣）
+    const judgeable = new Set((worksCard?.options ?? []));
+    const works = worksCard
+        ? (worksCard.options ?? []).map((id) => images.find((a) => a.id === id)).filter(Boolean)
         : [];
     return `<section><h3>畫畫關：影相上牆／作品牆／評審</h3>
     <div class="card-box">
@@ -673,9 +883,12 @@ function drawSection(v) {
       <div class="works-grid" style="grid-template-columns:repeat(4,1fr)">${images
         .map((a) => {
         const author = (v.players ?? []).find((p) => p.id === a.authorId);
+        const judgeRow = judgeable.has(a.id)
+            ? `<div class="row" style="gap:4px;padding:0 8px 8px"><button class="btn-sm" data-act="draw.judge:${a.id}:1">+1</button><button class="btn-sm" data-act="draw.judge:${a.id}:2">+2</button><button class="btn-sm" data-act="draw.judge:${a.id}:0">0</button></div>`
+            : `<div class="row" style="gap:4px;padding:0 8px 8px"><span class="muted">唔喺現時投票卡</span></div>`;
         return `<div class="work"><img src="/media/${esc(a.file)}" alt=""><div class="cap"><span>${author ? `#${author.number} ${esc(author.name)}` : "未指定作者"}</span>
           <span class="row" style="gap:4px"><button class="btn-sm" data-act="draw.focus:${a.id}">放大</button></span></div>
-          <div class="row" style="gap:4px;padding:0 8px 8px"><button class="btn-sm" data-act="draw.judge:${a.id}:1">+1</button><button class="btn-sm" data-act="draw.judge:${a.id}:2">+2</button><button class="btn-sm" data-act="draw.judge:${a.id}:0">0</button></div></div>`;
+          ${judgeRow}</div>`;
     })
         .join("") || `<div class="muted">未有作品</div>`}</div>
       ${works.length ? `<div class="hint">投票卡作品：${works.length} 張（開卡後手機投「邊張最似」；reveal 後自動入人氣票＋最似獎）</div>` : ""}
@@ -781,6 +994,8 @@ function render() {
         body = awardsSection(v);
     else
         body = statusSection(v);
+    // 主持打緊字時，server patch 觸發嘅 render 唔可以食晒表單輸入（codex 第五輪 #2）
+    const formSnap = snapshotForm();
     root.innerHTML = `
     ${connBanner(status, v)}
     <div class="host-top">
@@ -796,8 +1011,160 @@ function render() {
     <div class="host-tabs"><div class="tabbar">${TABS.map(([id, label]) => `<button class="${tab === id ? "active" : ""}" data-act="tab:${id}">${label}</button>`).join("")}</div></div>
     <div class="host-wrap">${body}</div>
     <div id="toast"></div>`;
+    restoreForm(formSnap);
     bindDelegates();
     syncDeck();
+}
+/** 主持改過／打緊字嘅表單鍵：render() 換 innerHTML 之後要還原（codex 第五輪 #2） */
+const dirtyForm = new Set();
+/** 每個 key 最後一次真係打字（input／change）嘅時間：請求進行中打嘅字唔可以當提交咗（codex 第七輪 #3） */
+const dirtyAt = new Map();
+/** 穩定嘅表單鍵：有 id 用 id；其餘用 tag＋data-*（data-act 係按鈕屬性，唔算） */
+function formKey(node) {
+    if (node.id)
+        return `#${node.id}`;
+    const attrs = [];
+    for (const attr of Array.from(node.attributes)) {
+        if (attr.name.startsWith("data-") && attr.name !== "data-act")
+            attrs.push(`${attr.name}=${attr.value}`);
+    }
+    return attrs.length ? `${node.tagName.toLowerCase()}|${attrs.sort().join("|")}` : "";
+}
+const DIRTY_SCOPE = {
+    "card.create": { match: ["#new-card-"], recordArg: null },
+    "quiz.save": { match: ["data-q-"], recordArg: 1 },
+    "rules.save": { match: ["data-r-"], recordArg: 1 },
+    "groups.set": { match: ["#group-count"], recordArg: null },
+    "groups.custom": { match: ["#group-count"], recordArg: null },
+    "groups.assign": { match: ["data-assign-g", "data-assign-mode"], recordArg: 1 },
+    "score.custom": { match: ["#score-target", "#score-delta", "#score-reason"], recordArg: null },
+    "song.add": { match: ["#song-title", "#song-url"], recordArg: null },
+    "song.upload": { match: ["#song-upload-title"], recordArg: null },
+    "bid.card": { match: ["#bid-song", "#bid-prompt", "#bid-max", "#bid-seconds", "#bid-points"], recordArg: null },
+    "player.number": { match: ["data-num"], recordArg: 1 },
+    "player.rename": { match: ["data-name"], recordArg: 1 },
+    "player.group": { match: ["data-group"], recordArg: 1 },
+    "judge.actual": { match: ["#actual-answer"], recordArg: null },
+    "settings.maxbid": { match: ["#maxbid"], recordArg: null },
+    "sab.eliminate": { match: ["#sab-target"], recordArg: null },
+    "draw.upload": { match: ["#draw-file", "#draw-author"], recordArg: null },
+    "award.override": { match: ["data-award-target"], recordArg: 1 },
+};
+/** act 嘅 action id：<key>.<sub>（"quiz.save:q_1" → "quiz.save"；"tab:quiz" → "tab"） */
+function actIdOf(act) {
+    return act.split(":")[0] ?? "";
+}
+/** formKey 入面有冇一個 data-* 值係呢個記錄（"q_1" 對得上 "q_1" 同 "q_1:0"，唔可以對上 "q_10"） */
+function keyHasRecord(key, record) {
+    for (const part of key.split("|")) {
+        const eq = part.indexOf("=");
+        if (eq < 0)
+            continue;
+        const value = part.slice(eq + 1);
+        if (value === record || value.startsWith(`${record}:`))
+            return true;
+    }
+    return false;
+}
+/** 今次提交可以清邊啲 key：命中 match 片段 ＋（有 record 時）record 完全對得上。
+ *  唔識嘅 action、或者有 record 但抽唔到 id，一律唔清（寧願留住主持打緊嘅字）。 */
+function dirtyKeysFor(act, dirty) {
+    const scope = DIRTY_SCOPE[actIdOf(act)];
+    if (!scope)
+        return [];
+    const record = scope.recordArg === null ? null : act.split(":")[scope.recordArg] || null;
+    if (scope.recordArg !== null && !record)
+        return [];
+    const out = [];
+    for (const key of dirty) {
+        if (!scope.match.some((p) => key.includes(p)))
+            continue;
+        if (record && !keyHasRecord(key, record))
+            continue;
+        out.push(key);
+    }
+    return out;
+}
+/** 提交成功之後清相關欄。typedDuringRequest：請求進行中主持新打嘅字要留住（值同 request 開始時唔同）。
+ *  只喺提交成功先 call（失敗／驗證不過要留住主持打緊嘅字）。 */
+function clearDirtyFor(act, dirty, typedDuringRequest) {
+    for (const key of dirtyKeysFor(act, dirty)) {
+        if (typedDuringRequest?.(key))
+            continue;
+        dirty.delete(key);
+    }
+}
+function snapshotForm() {
+    const values = new Map();
+    const root = el("#host-root");
+    if (!root)
+        return { values, focus: "" };
+    const active = document.activeElement;
+    let focus = "";
+    for (const node of root.querySelectorAll("input,textarea,select")) {
+        const key = formKey(node);
+        if (!key)
+            continue;
+        const focused = active === node;
+        if (focused)
+            focus = key;
+        // 只保住主持真係改過嘅欄；未改過就跟 server 最新值（例如揭曉後清空）
+        if (!focused && !dirtyForm.has(key))
+            continue;
+        values.set(key, {
+            value: node.value,
+            checked: node.checked === true,
+            selStart: focused ? node.selectionStart ?? null : null,
+            selEnd: focused ? node.selectionEnd ?? null : null,
+        });
+    }
+    return { values, focus };
+}
+function restoreForm(snap) {
+    const root = el("#host-root");
+    if (!root || (!snap.values.size && !snap.focus))
+        return;
+    let focusNode = null;
+    for (const node of root.querySelectorAll("input,textarea,select")) {
+        const key = formKey(node);
+        if (!key)
+            continue;
+        if (key === snap.focus)
+            focusNode = node;
+        const s = snap.values.get(key);
+        if (!s)
+            continue;
+        const type = node.type ?? "";
+        if (type === "file")
+            continue; // file input 唔可以程式化還原
+        if (type === "checkbox" || type === "radio") {
+            if (node.checked !== s.checked)
+                node.checked = s.checked;
+        }
+        else if (node.value !== s.value) {
+            node.value = s.value;
+        }
+    }
+    const s = snap.values.get(snap.focus);
+    if (!focusNode || !s)
+        return;
+    focusNode.focus();
+    const el2 = focusNode;
+    if (s.selStart !== null && s.selEnd !== null && typeof el2.setSelectionRange === "function") {
+        try {
+            el2.setSelectionRange(s.selStart, s.selEnd);
+        }
+        catch {
+            /* number／select 唔支援 selection：位置還原唔到唔緊要 */
+        }
+    }
+}
+/** 今次 click 有冇失敗（client 驗證／command 失敗）：有就唔清 dirty fields */
+let actFailed = false;
+/** 驗證不過（唔會發 command）：記低失敗再彈 toast */
+function failAct(msg) {
+    actFailed = true;
+    showToast(msg);
 }
 function val(sel) {
     return (el(sel)?.value ?? "").trim();
@@ -805,18 +1172,71 @@ function val(sel) {
 function checked(sel) {
     return el(sel)?.checked === true;
 }
+/** 空／非數字／非整數 一律回 null（唔好靜靜當 0） */
+function parseIntStrict(raw) {
+    const s = (raw ?? "").trim();
+    if (!s)
+        return null;
+    const n = Number(s);
+    return Number.isInteger(n) ? n : null;
+}
+function parseGroupCount(raw) {
+    const n = parseIntStrict(raw);
+    return n !== null && n >= 0 && n <= 30 ? n : null;
+}
+let delegatesBound = false;
 function bindDelegates() {
     const root = el("#host-root");
     if (!root)
         return;
-    root.addEventListener("click", (ev) => {
-        const target = ev.target?.closest("[data-act]");
-        if (!target)
-            return;
-        const act = target.dataset.act ?? "";
-        void handleAct(act);
-    });
+    if (!delegatesBound) {
+        delegatesBound = true;
+        // 只 bind 一次：render() 會重寫 innerHTML，但 root 本身唔會換，重複 bind 會令一吓 click 發 N 次命令
+        // 記低主持改過嘅欄：patch render 之後還原，唔會清空打緊嘅字
+        const markDirty = (ev) => {
+            const node = ev.target;
+            if (!node)
+                return;
+            const tag = node.tagName?.toLowerCase();
+            if (tag !== "input" && tag !== "textarea" && tag !== "select")
+                return;
+            const key = formKey(node);
+            if (!key)
+                return;
+            dirtyForm.add(key);
+            dirtyAt.set(key, Date.now());
+        };
+        root.addEventListener("input", markDirty);
+        root.addEventListener("change", markDirty);
+        root.addEventListener("click", (ev) => {
+            const target = ev.target?.closest("[data-act]");
+            if (!target)
+                return;
+            const act = target.dataset.act ?? "";
+            // 撳掣＝表單交咗／唔再打緊字：下一版重繪照用 server 值（否則欄位永遠留住舊輸入）
+            // 但只清同呢個 action 有關嘅欄，而且要佢提交成功先清（失敗／驗證不過就留住主持打緊嘅字）
+            actFailed = false;
+            // 撳掣一刻嘅時間：請求進行中主持新打嘅字要留住（唔可以當佢已經提交咗）
+            const requestStartedAt = Date.now();
+            void handleAct(act)
+                .catch(() => {
+                actFailed = true;
+            })
+                .then(() => {
+                if (!actFailed) {
+                    clearDirtyFor(act, dirtyForm, (key) => (dirtyAt.get(key) ?? 0) > requestStartedAt);
+                    for (const key of Array.from(dirtyAt.keys()))
+                        if (!dirtyForm.has(key))
+                            dirtyAt.delete(key);
+                }
+                actFailed = false;
+            });
+        });
+    }
     for (const sel of root.querySelectorAll("[data-act='ticker.sort'],[data-act='ticker.scope'],[data-act='ticker.range']")) {
+        if (sel.__tickerBound)
+            continue;
+        sel.__tickerBound = true;
         sel.addEventListener("change", () => void tickerChange());
     }
 }
@@ -874,10 +1294,17 @@ async function refreshExport(format) {
     URL.revokeObjectURL(a.href);
 }
 async function handleAct(act) {
-    const [name, a1, a2] = act.split(":");
-    switch (name) {
+    // grammar: <key>.<sub>:<arg1>:<arg2>…（tab:<id> / logout 無 dot，保留舊制）
+    const seg = act.split(":");
+    const head = seg[0] ?? "";
+    const dot = head.indexOf(".");
+    const key = dot >= 0 ? head.slice(0, dot) : head;
+    const sub = dot >= 0 ? head.slice(dot + 1) : "";
+    const arg = seg[1] ?? "";
+    const arg2 = seg[2];
+    switch (key) {
         case "tab":
-            tab = a1 ?? "control";
+            tab = sub || arg || "control";
             render();
             return;
         case "logout":
@@ -887,94 +1314,113 @@ async function handleAct(act) {
             renderLogin();
             return;
         case "rd":
-            await cmd(`rundown.${a1}`);
+            await cmd(`rundown.${sub}`);
             break;
         case "room":
-            if (a1 === "start")
+            if (sub === "start")
                 await cmd("room.start");
-            else
-                await cmd("room.phase", undefined, { phase: a1 });
+            else if (sub === "phase")
+                await cmd("room.phase", undefined, { phase: arg });
             break;
         case "stage":
-            if (a1 === "nextPage")
+            if (sub === "nextPage")
                 await cmd("stage.page", undefined, { pageIndex: (view?.stage?.payload?.pageIndex ?? 0) + 1 });
-            else if (a1 === "prevPage")
+            else if (sub === "prevPage")
                 await cmd("stage.page", undefined, { pageIndex: Math.max(0, (view?.stage?.payload?.pageIndex ?? 0) - 1) });
-            else if (a1 === "lock")
+            else if (sub === "lock")
                 await cmd("stage.lock", undefined, { lock: !view?.stage?.lock });
-            else if (a1 === "blackout")
-                await cmd("stage.blackout", undefined, { on: a2 === "1" });
-            else if (a1 === "rules")
-                await cmd("stage.rules", undefined, { on: a2 === "1" });
-            else
-                await cmd("stage.set", undefined, { mode: a1 });
+            else if (sub === "blackout")
+                await cmd("stage.blackout", undefined, { on: arg === "1" });
+            else if (sub === "rules")
+                await cmd("stage.rules", undefined, { on: arg === "1" });
+            else if (sub === "mode")
+                await cmd("stage.set", undefined, { mode: arg });
             break;
         case "ticker":
-            if (a1 === "toggle")
+            if (sub === "toggle")
                 await cmd("stage.ticker", undefined, { visible: !view?.stage?.ticker?.visible });
             break;
         case "settings":
-            if (a1 === "autoclose")
-                await cmd("settings.set", undefined, { autoClose: a2 === "1" });
-            if (a1 === "maxbid")
+            if (sub === "autoclose")
+                await cmd("settings.set", undefined, { autoClose: arg === "1" });
+            if (sub === "maxbid")
                 await cmd("settings.set", undefined, { maxBid: Number(val("#maxbid")) });
             break;
         default:
             break;
     }
     // 第二段：需要 id 嘅 action
-    const parts = act.split(":");
-    const key = parts[0];
-    const id = parts[1] ?? "";
-    const arg = parts[2];
     if (key === "player") {
-        if (id === "approve" && arg)
+        if (sub === "approve" && arg)
             await cmd("player.approve", arg);
-        else if (id === "kick" && arg)
+        else if (sub === "kick" && arg)
             await cmd("player.kick", arg);
-        else if (id === "number" && arg)
+        else if (sub === "number" && arg)
             await cmd("player.update", arg, { number: Number(val(`[data-num="${arg}"]`)) });
-        else if (id === "rename" && arg)
+        else if (sub === "rename" && arg)
             await cmd("player.update", arg, { name: val(`[data-name="${arg}"]`) });
-        else if (id === "group" && arg)
+        else if (sub === "group" && arg)
             await cmd("groups.assign", undefined, { playerId: arg, groupId: val(`[data-group="${arg}"]`) || null, mode: "follow" });
     }
     else if (key === "groups") {
-        if (id === "set")
-            await cmd("groups.set", undefined, { count: Number(arg) });
-        else if (id === "custom")
-            await cmd("groups.set", undefined, { count: Number(val("#group-count")) });
-        else if (id === "assign" && arg)
+        if (sub === "set") {
+            const count = parseGroupCount(arg);
+            if (count === null) {
+                failAct("組數字要入 0–30 嘅整數");
+                return;
+            }
+            await cmd("groups.set", undefined, { count });
+        }
+        else if (sub === "custom") {
+            const count = parseGroupCount(val("#group-count"));
+            if (count === null) {
+                failAct("組數字要入 0–30 嘅整數");
+                return;
+            }
+            await cmd("groups.set", undefined, { count });
+        }
+        else if (sub === "assign" && arg)
             await cmd("groups.assign", undefined, { playerId: arg, groupId: val(`[data-assign-g="${arg}"]`) || null, mode: val(`[data-assign-mode="${arg}"]`) || "follow" });
     }
     else if (key === "score") {
-        if (id === "add" && arg)
-            await cmd("score.add", arg, { targetType: "player", delta: Number(arg) });
-        else if (id === "bulk" && arg)
+        if (sub === "add" && arg) {
+            const delta = parseIntStrict(arg2);
+            if (delta === null || delta === 0 || Math.abs(delta) > 1000) {
+                failAct("加減分要入非 0 整數（±1000）");
+                return;
+            }
+            await cmd("score.add", arg, { targetType: "player", delta });
+        }
+        else if (sub === "bulk" && arg)
             await cmd("score.bulk", undefined, { delta: Number(arg), reason: "全場分" });
-        else if (id === "void" && arg)
+        else if (sub === "void" && arg)
             await cmd("score.void", arg);
-        else if (id === "custom") {
+        else if (sub === "custom") {
+            const delta = parseIntStrict(val("#score-delta"));
+            if (delta === null || delta === 0 || Math.abs(delta) > 1000) {
+                failAct("加減分要入非 0 整數（±1000）");
+                return;
+            }
             await cmd("score.add", val("#score-target"), {
                 targetType: "player",
                 targetId: val("#score-target"),
-                delta: Number(val("#score-delta")),
+                delta,
                 reason: val("#score-reason") || "主持加分",
             });
         }
     }
     else if (key === "card") {
-        if (id === "open" && arg)
+        if (sub === "open" && arg)
             await cmd("card.open", arg);
-        else if (id === "close")
+        else if (sub === "close")
             await cmd("card.close");
-        else if (id === "tally")
+        else if (sub === "tally")
             await cmd("card.tally");
-        else if (id === "reveal")
+        else if (sub === "reveal")
             await cmd("card.reveal");
-        else if (id === "reopen")
+        else if (sub === "reopen")
             await cmd("card.reopen", view?.currentRound?.cardId);
-        else if (id === "create") {
+        else if (sub === "create") {
             const opts = val("#new-card-options").split("|").map((s) => s.trim()).filter(Boolean);
             await cmd("card.create", undefined, {
                 card: {
@@ -988,37 +1434,42 @@ async function handleAct(act) {
         }
     }
     else if (key === "judge") {
-        if (id === "actual") {
+        if (sub === "actual") {
             const round = view?.currentRound;
-            const val2 = Number(val("#actual-answer"));
+            const raw = val("#actual-answer");
+            if (!raw) {
+                failAct("要入真實答案數字");
+                return;
+            }
+            const val2 = Number(raw);
             if (!round || !Number.isFinite(val2)) {
-                showToast("要入真實答案數字");
+                failAct("要入真實答案數字");
                 return;
             }
             await cmd("quiz.setActualAnswer", undefined, { roundId: round.id, actualAnswer: val2 });
         }
-        else if (id === "all") {
+        else if (sub === "all") {
             await cmd("score.judge", undefined, { roundId: view?.currentRound?.id, allCorrect: true });
         }
         else if (arg) {
-            const points = Number(id);
+            const points = Number(sub);
             await cmd("score.judge", undefined, { roundId: view?.currentRound?.id, submissionId: arg, points, correct: points > 0 });
         }
     }
     else if (key === "quiz") {
-        if (id === "clearimport") {
+        if (sub === "clearimport") {
             importReport = null;
             render();
             return;
         }
-        if (id === "add") {
+        if (sub === "add") {
             await cmd("quiz.upsert", undefined, {
                 question: { type: arg, prompt: "新題目（改我）", category: "", seconds: arg === "choice" ? 20 : 45, points: arg === "choice" ? 1 : 2, openKind: arg === "open" ? "text" : undefined, options: arg === "choice" ? ["A", "B", "C", "D"] : undefined, correct: arg === "choice" ? 0 : undefined },
             });
         }
-        else if (id === "del" && arg)
+        else if (sub === "del" && arg)
             await cmd("quiz.delete", arg);
-        else if (id === "copy" && arg) {
+        else if (sub === "copy" && arg) {
             const q = (view.quiz ?? []).find((x) => x.id === arg);
             if (!q)
                 return;
@@ -1026,7 +1477,7 @@ async function handleAct(act) {
                 question: { type: q.type, category: q.category, prompt: `${q.prompt}（複製）`, options: q.options, correct: q.correct, explanation: q.explanation, hint: q.hint, openKind: q.openKind, referenceAnswer: q.referenceAnswer, seconds: q.seconds, points: q.points },
             });
         }
-        else if (id === "save" && arg) {
+        else if (sub === "save" && arg) {
             const q = (view.quiz ?? []).find((x) => x.id === arg);
             if (!q)
                 return;
@@ -1048,10 +1499,10 @@ async function handleAct(act) {
                 },
             });
         }
-        else if (id === "import") {
+        else if (sub === "import") {
             const res = await fetch("/quiz-legacy-mc.json").then((r) => r.json()).catch(() => null);
             if (!res) {
-                showToast("搵唔到舊 QUIZ 資料");
+                failAct("搵唔到舊 QUIZ 資料");
                 return;
             }
             const r2 = await cmd("quiz.import", undefined, { questions: res.questions });
@@ -1059,10 +1510,10 @@ async function handleAct(act) {
             showToast(r2?.ok ? `匯入完成：${res.questions.length} 題 MC（open 題唔會蓋）` : "匯入失敗");
             render();
         }
-        else if (id === "up" || id === "down") {
+        else if (sub === "up" || sub === "down") {
             const ids = (view.quiz ?? []).map((q) => q.id);
             const i = ids.indexOf(arg);
-            const j = id === "up" ? i - 1 : i + 1;
+            const j = sub === "up" ? i - 1 : i + 1;
             if (i >= 0 && j >= 0 && j < ids.length) {
                 const tmp = ids[i];
                 ids[i] = ids[j];
@@ -1072,34 +1523,35 @@ async function handleAct(act) {
         }
     }
     else if (key === "rules") {
-        if (id === "new" && arg) {
+        if (sub === "new" && arg) {
             await cmd("rules.upsert", undefined, {
                 page: { gameId: arg, title: "新規則頁", subtitle: "", blocks: [{ type: "heading", text: "玩法" }], order: (view.rulePages?.length ?? 0) + 1, enabled: true, autoAdvanceSeconds: 0 },
             });
         }
-        else if (id === "save" && arg) {
-            const version = Number(arg);
+        else if (sub === "save" && arg) {
+            const pageId = arg;
+            const version = Number(arg2);
             let blocks = [];
             try {
-                blocks = JSON.parse(val(`[data-r-blocks="${id}"]`) || "[]");
+                blocks = JSON.parse(val(`[data-r-blocks="${pageId}"]`) || "[]");
             }
             catch {
-                showToast("blocks JSON 格式錯");
+                failAct("blocks JSON 格式錯");
                 return;
             }
-            const page = (view.rulePages ?? []).find((p) => p.id === id);
+            const page = (view.rulePages ?? []).find((p) => p.id === pageId);
             if (!page)
                 return;
             const res = await cmd("rules.upsert", undefined, {
                 page: {
-                    id,
+                    id: pageId,
                     gameId: page.gameId,
-                    title: val(`[data-r-title="${id}"]`),
-                    subtitle: val(`[data-r-sub="${id}"]`),
+                    title: val(`[data-r-title="${pageId}"]`),
+                    subtitle: val(`[data-r-sub="${pageId}"]`),
                     blocks,
                     order: page.order,
-                    enabled: checked(`[data-r-enabled="${id}"]`),
-                    autoAdvanceSeconds: Number(val(`[data-r-auto="${id}"]`)) || 0,
+                    enabled: checked(`[data-r-enabled="${pageId}"]`),
+                    autoAdvanceSeconds: Number(val(`[data-r-auto="${pageId}"]`)) || 0,
                 },
                 expectedVersion: version,
             });
@@ -1108,39 +1560,39 @@ async function handleAct(act) {
                 live?.resync();
             }
         }
-        else if (id === "del" && arg)
+        else if (sub === "del" && arg)
             await cmd("rules.delete", arg);
-        else if (id === "show" && arg)
+        else if (sub === "show" && arg)
             await cmd("stage.rules", undefined, { on: true, rulePageId: arg });
-        else if (id === "reload")
+        else if (sub === "reload")
             live?.resync();
     }
     else if (key === "song") {
-        if (id === "add") {
+        if (sub === "add") {
             await cmd("song.upsert", undefined, { song: { title: val("#song-title"), url: val("#song-url") } });
         }
-        else if (id === "upload") {
+        else if (sub === "upload") {
             await uploadFile("audio", { title: val("#song-upload-title") }, "#song-file");
         }
-        else if (id === "play" && arg) {
+        else if (sub === "play" && arg) {
             await cmd("media.play", arg, { songId: arg, deckId, window: [0, 15000] });
         }
-        else if (id === "playFull" && arg) {
+        else if (sub === "playFull" && arg) {
             await cmd("media.play", arg, { songId: arg, deckId, fromStart: true, window: [0, 600000] });
         }
-        else if (id === "del" && arg)
+        else if (sub === "del" && arg)
             await cmd("song.delete", arg);
     }
     else if (key === "media") {
-        if (id === "pause")
+        if (sub === "pause")
             await cmd("media.pause", undefined, { deckId });
-        else if (id === "resume")
+        else if (sub === "resume")
             await cmd("media.resume", undefined, { deckId });
-        else if (id === "stop")
+        else if (sub === "stop")
             await cmd("media.stop", undefined, { deckId });
-        else if (id === "reveal")
+        else if (sub === "reveal")
             await cmd("media.reveal");
-        else if (id === "unlock") {
+        else if (sub === "unlock") {
             const a = deckAudio();
             a?.play().then(() => {
                 audioBlocked = false;
@@ -1149,7 +1601,7 @@ async function handleAct(act) {
         }
     }
     else if (key === "lease") {
-        if (id === "acquire") {
+        if (sub === "acquire") {
             const r = await cmd("lease.acquire", undefined, { deckId });
             if (r && !r.ok)
                 showToast(r.message ?? "接管失敗（等 margin）");
@@ -1157,7 +1609,7 @@ async function handleAct(act) {
                 deckStatus = "已申請音源";
             scheduleLeasePause();
         }
-        else if (id === "acquireOnline") {
+        else if (sub === "acquireOnline") {
             const r = await cmd("lease.acquire", undefined, { deckId, forceOnline: true });
             if (r && !r.ok)
                 showToast(r.message ?? "在線接管失敗");
@@ -1165,12 +1617,12 @@ async function handleAct(act) {
                 deckStatus = "在線接管成功（舊 deck 即時停）";
             scheduleLeasePause();
         }
-        else if (id === "release") {
+        else if (sub === "release") {
             await cmd("lease.release", undefined, { deckId });
         }
     }
     else if (key === "bid") {
-        if (id === "card") {
+        if (sub === "card") {
             await cmd("card.create", undefined, {
                 card: {
                     type: "bid",
@@ -1183,18 +1635,18 @@ async function handleAct(act) {
                 },
             });
         }
-        else if (id === "settle") {
+        else if (sub === "settle") {
             await cmd("bid.settle", undefined, { roundId: view?.currentRound?.id, correct: arg === "1" });
         }
-        else if (id === "settleBackup") {
+        else if (sub === "settleBackup") {
             await cmd("bid.settle", undefined, { roundId: view?.currentRound?.id, correct: false, backup: true });
         }
     }
     else if (key === "draw") {
-        if (id === "upload") {
+        if (sub === "upload") {
             await uploadFile("image", { authorId: val("#draw-author") }, "#draw-file");
         }
-        else if (id === "voteCard") {
+        else if (sub === "voteCard") {
             const images = (view?.assets ?? []).filter((a) => a.kind === "image");
             if (!images.length) {
                 showToast("先上載作品");
@@ -1212,59 +1664,122 @@ async function handleAct(act) {
                 },
             });
         }
-        else if (id === "judge") {
-            const seg = act.split(":");
-            const assetId = seg[2] ?? "";
-            const points = Number(seg[3] ?? "1");
-            await cmd("draw.judge", view?.currentRound?.cardId ?? "", { cardId: view?.currentRound?.cardId, assetId, points });
+        else if (sub === "judge" && arg) {
+            const assetId = arg;
+            const points = parseIntStrict(arg2 ?? "1");
+            const cardId = view?.currentRound?.cardId;
+            if (!cardId) {
+                showToast("先開投票卡");
+                return;
+            }
+            const card = (view?.cards ?? []).find((c) => c.id === cardId);
+            if (!card || card.type !== "vote" || card.voteMode !== "works") {
+                showToast("先開畫畫投票卡");
+                return;
+            }
+            if (points === null || ![0, 1, 2].includes(points)) {
+                showToast("評審分只可以 0／1／2");
+                return;
+            }
+            if (!(card.options ?? []).includes(assetId)) {
+                showToast("作品唔屬於呢張投票卡");
+                return;
+            }
+            await cmd("draw.judge", cardId, { cardId, assetId, points });
         }
-        else if (id === "focus") {
+        else if (sub === "focus") {
             await cmd("draw.focus", undefined, { assetId: arg || null });
         }
     }
     else if (key === "sab") {
-        if (id === "assign")
+        if (sub === "assign")
             await cmd("saboteur.assign");
-        else if (id === "open")
+        else if (sub === "open")
             await cmd("saboteur.openRound");
-        else if (id === "close")
+        else if (sub === "close")
             await cmd("saboteur.closeRound");
-        else if (id === "retry")
+        else if (sub === "retry")
             await cmd("saboteur.decide", undefined, { decision: "retry", roundId: view?.currentRound?.id });
-        else if (id === "eliminate")
+        else if (sub === "eliminate")
             await cmd("saboteur.decide", undefined, { decision: "eliminate", roundId: view?.currentRound?.id, targetId: val("#sab-target") });
-        else if (id === "finish")
+        else if (sub === "finish")
             await cmd("saboteur.finish");
-        else if (id === "reset")
+        else if (sub === "reset")
             await cmd("saboteur.reset");
     }
     else if (key === "delete") {
-        if (id === "card" && arg)
+        if (sub === "card" && arg)
             await cmd("card.delete", arg);
     }
     else if (key === "award") {
-        if (id === "compute")
+        if (sub === "compute")
             await cmd("award.compute");
-        else if (id === "reset")
+        else if (sub === "reset")
             await cmd("award.reset");
-        else if (id === "reveal" && arg)
+        else if (sub === "reveal" && arg)
             await cmd("award.reveal", undefined, { id: arg });
-        else if (id === "override" && arg)
+        else if (sub === "override" && arg)
             await cmd("award.override", undefined, { id: arg, targetId: val(`[data-award-target="${arg}"]`) || null });
     }
     else if (key === "export") {
-        if (id === "csv")
+        if (sub === "csv")
             await refreshExport("csv");
-        else if (id === "room")
+        else if (sub === "room")
             await refreshExport("room");
-        else if (id === "all") {
+        else if (sub === "all") {
             await refreshExport("json");
             showToast("已寫入 server data/export（同時下載）");
         }
     }
 }
-function boot() {
-    ensureDeckId();
+/** boot 時間（獨佔檢查嘅讓路規則：同一個 browser 入面開得早嘅 document 留住條 ID） */
+const DECK_BOOT_AT = Date.now();
+/** boot 時嘅 document 獨佔檢查（codex 第七輪 #1）：複製 tab／有 opener 嘅新 window 會連 sessionStorage
+ *  一齊複製 → 同一條 deck ID → 兩邊都當自己係 lease owner 雙重出聲。
+ *  用 BroadcastChannel 宣告自己條 ID，150ms 內有另一個 document 用同一條 ID 應答就即刻 rotate
+ *  一條新 ID 並寫返 sessionStorage，rotate 後再用新 ID 宣告一次。冇 BroadcastChannel 就照用。 */
+async function ensureDeckIdExclusive() {
+    ensureDeckId(); // 先有 sessionStorage／記憶體版本嘅 ID：獨佔檢查出錯都仲有一條可用
+    try {
+        const res = await claimDeckIdExclusive({
+            deckId,
+            nonce: `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`,
+            bornAt: DECK_BOOT_AT,
+            timeoutMs: DECK_CLAIM_TIMEOUT_MS,
+            makeChannel: (name) => {
+                const BC = globalThis.BroadcastChannel;
+                try {
+                    return typeof BC === "function" ? new BC(name) : null;
+                }
+                catch {
+                    return null; // BroadcastChannel 被封（部分私密模式）：照用
+                }
+            },
+            newId: newDeckId,
+            persist: (id) => {
+                setDeckId(id); // 寫返 sessionStorage：reload 要沿用呢條新 ID
+            },
+            /** boot 之後先送到嘅衝突（例如被 suspend 嘅 document 遲 200ms 才收到 claim）：
+             *  舊 ID 已經唔係我 → 即刻收聲、重設 ACK、叫 server 重發 snapshot 令 lease 畫面跟新 ID。
+             *  唔處理就會兩個 document 都當自己係 lease owner（雙重出聲）。 */
+            onLateLoss: (nextId) => {
+                const a = deckAudio();
+                if (a && !a.paused)
+                    a.pause();
+                ackState.sentKey = ""; // 新 ID 要重新 ACK（同一個 attempt 亦要再送）
+                deckStatus = `偵測到另一個 document 搶咗條 deck ID → 已換新 ID（${nextId}）`;
+                live?.resync();
+            },
+        });
+        if (res.rotated)
+            deckStatus = `偵測到另一個 document 用同一條 deck ID → 已換新 ID（${res.deckId}）`;
+    }
+    catch {
+        /* 檢查出錯唔可以阻 boot：照用 sessionStorage 嘅 ID */
+    }
+}
+async function boot() {
+    await ensureDeckIdExclusive();
     startDeckTimer();
     const saved = lsGet("hbd.hostToken");
     if (saved?.token) {
