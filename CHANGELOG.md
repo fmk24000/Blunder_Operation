@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.1.6 — 2026-11-18
+
+### Added — 畫畫關：臥底投票（紙本出題，手機投票）
+- 主持台「臥底投票」面板：列出所有已批准玩家，主持可以 untick 已 foul 嘅人（佢哋唔會出現喺候選名單，但仍然可以投票）；可設定 5–60 秒（預設 10 秒）。
+- 撳「開始臥底投票」→ 大mon 顯示「請投出你心目中嘅臥底」＋倒數＋已投人數；玩家手機會見到候選人（自己除外，頭像＋名）＋同一個倒數。
+- 10 秒到自動開票（亦可「立即開票」）：大mon 顯示每位候選人得票 bar＋逐個玩家投咗邊個；主持台同步顯示結果，可「再開一輪」。
+- 新 `undercover.start` / `undercover.reveal` command、`tickUndercover` 自動開票；結果完全由 round + submissions 推導（journal replay 一致）。
+- 投票唔計分，純顯示。
+
+### Changed
+- 預設關卡次序改為「畫畫 → 估歌 → 搗蛋鬼 → 問答」（新房間）。
+- 規則頁 tab 新增「關卡次序」：每關 ▲▼ 調次序＋「還原預設」掣，改完即刻套用（rundown 同步重排，標題會重新編號）。
+- 大mon「畫畫」mode 群組新增「臥底投票」。
+- 前端資產版本 `?v=20261118j`。
+
+### Fixed（codex audit 揪出）
+- host 收唔到 undercover 更新（HOST_SECTIONS 漏咗）、「再開一輪」無效、手動選 undercover mode 被拒、被踢玩家仍可投票、搗蛋鬼淘汰名單誤套用落臥底投票、generic 收卷／切分佈會令投票卡死、開始新投票會棄掉未完成回合、轉關殘留上一關結果、票數名單用今日 roster、deadline 後仍收票、重排後標題關數錯。
+
+### Known Issues
+- 主持台規則頁頁碼 pill 喺預覽頁被 disable／delete 之後會顯示舊頁數（cosmetic）。
+- `stage.rules{pageIndex}` API 一律由第 0 頁開始（UI 用 `stage.page` 翻頁）。
+- 音源未做真 mp3 瀏覽器 E2E（repo media 係 stub）。
+
 ## v0.1.5 — 2026-11-18
 
 ### Changed — 主持台大mon 控制分組
