@@ -11,7 +11,7 @@ import { Hub } from "./hub.js";
 import { registerWs } from "./ws.js";
 import { registerHttp } from "./http.js";
 import { bootstrapMutations } from "./seed.js";
-import { tickAutoClose, tickLeases } from "./commands.js";
+import { tickAutoClose, tickLeases, tickUndercover } from "./commands.js";
 import { newId } from "./store.js";
 import { buildHostView } from "./views.js";
 
@@ -102,6 +102,7 @@ const tickTimer = setInterval(() => {
   try {
     tickAutoClose(store);
     tickLeases(store);
+    tickUndercover(store);
   } catch (err) {
     app.log.error({ err }, "tick error");
   }

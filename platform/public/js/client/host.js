@@ -22,6 +22,9 @@ let live = null;
 let view = null;
 let status = "connecting";
 let token = null;
+/** 臥底投票：結果面板撳「再開一輪」後要返去設定表單 */
+let ucConfiguring = false;
+let ucConfiguringRound = "";
 let hostName = "";
 let hostId = "";
 let roomCode = "";
@@ -397,6 +400,7 @@ function startDeckTimer() {
     scheduleLeasePause();
 }
 const MODE_LABEL = {
+    undercover: "臥底投票",
     idle: "Idle", rules: "規則頁", scoreboard: "分數板", question: "問題", tally: "分佈", reveal: "揭曉",
     "draw-wall": "作品牆", "draw-focus": "作品放大", bid: "競投", vote: "投票", "role-reveal": "身份揭曉",
     song: "聽歌", leaderboard: "排行榜", finale: "結算", award: "頒獎", timer: "計時", blackout: "黑屏",
@@ -547,7 +551,7 @@ function controlSection(v) {
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
         ${group("問答", ["question", "tally", "reveal"])}
         ${group("估歌", ["bid", "song"], `<button data-act="media.reveal" class="${mode === "reveal" && v.stage?.payload?.songTitle ? "active" : ""}">開估（揭曉歌名）</button>`)}
-        ${group("畫畫", ["draw-wall", "draw-focus", "vote"])}
+        ${group("畫畫", ["draw-wall", "draw-focus", "vote", "undercover"])}
         ${group("搗蛋鬼／其他", ["role-reveal", "timer", "blackout"])}
         ${group("結算／頒獎", ["finale", "award"])}
       </div>
@@ -588,9 +592,35 @@ function controlSection(v) {
           </div>
         </div>
       </details>
+
       <div class="hint">Activity：${(v.activity ?? []).slice(-4).map((a) => esc(a.text)).join("｜") || "—"}</div>
     </div>
+    ${undercoverPanel(v)}
   </section>`;
+}
+function undercoverPanel(v) {
+    const u = v.undercover;
+    const players = (v.players ?? []).filter((p) => p.status === "approved");
+    if (u && u.phase === "voting") {
+        return `<div class="card-box" style="margin-top:10px"><h4>臥底投票（進行中）</h4>
+      <div class="row wrap"><span class="pill">已投 ${u.answeredCount}／${u.eligibleCount}</span>
+      <button class="primary" data-act="uc.reveal">立即開票</button></div>
+      <div class="hint">大mon 顯示「請投出你心目中嘅臥底」＋${u.durationSeconds} 秒倒數；時到自動開票。</div></div>`;
+    }
+    if (u && u.phase === "result" && !(ucConfiguring && ucConfiguringRound === String(v.currentRound?.id ?? ""))) {
+        return `<div class="card-box" style="margin-top:10px"><h4>臥底投票結果</h4>
+      ${u.candidates.map((c) => `<div class="ledger-row"><span class="grow">#${c.number} ${esc(c.name)}</span><b>${c.count} 票</b></div>`).join("")}
+      <div class="hint">${u.ballots.map((b) => `${esc(b.voterName)}→${esc(b.targetName)}`).join("｜")}</div>
+      <div class="btn-row"><button class="primary" data-act="uc.new">再開一輪</button><button data-act="stage.qr">大mon 返 QR</button></div></div>`;
+    }
+    const rows = players
+        .map((p) => `<label class="row" style="gap:6px"><input type="checkbox" data-uc-p="${p.id}" checked>#${p.number} ${esc(p.name)}</label>`)
+        .join("");
+    return `<div class="card-box" style="margin-top:10px"><h4>臥底投票（畫畫關・紙本出題）</h4>
+    <div class="hint">剔走已 foul／唔玩嘅人：佢哋唔會出現喺候選名單（仍然可以投票）。</div>
+    <div class="row wrap">${rows || `<span class="muted">未有已批准玩家</span>`}</div>
+    <div class="btn-row"><label class="row">秒數 <input id="uc-seconds" type="number" min="5" max="60" value="10" style="width:80px"></label>
+    <button class="primary" data-act="uc.start">開始臥底投票</button></div></div>`;
 }
 function playersSection(v) {
     const groups = v.groups ?? [];
@@ -772,6 +802,13 @@ function rulesSection(v) {
       <div class="btn-row">${["auction", "draw", "saboteur", "quiz"].map((g) => `<button data-act="rules.new:${g}">加 ${esc(g)} 頁</button>`).join("")}
       <button data-act="rules.reload">載入最新</button></div>
       <div class="hint">兩個 host 同時改同一頁：second 會收 W_RULES_CONFLICT，再載入最新（唔會蓋走）。字數上限：每 block 120 字／全頁 1200 字／blocks ≤20。</div>
+    </div>
+    <div class="card-box" style="margin-top:10px"><h4>關卡次序（改完即刻套用）</h4>
+      <div class="hint">用 ▲▼ 調次序；預設係「畫畫 → 估歌」。改完大mon／rundown 即刻跟新次序。</div>
+      ${(v.rundown ?? []).map((it, i) => `<div class="ledger-row"><span class="grow">${i + 1}. ${esc(it.title)}</span>
+        <button class="btn-sm" data-act="rd.moveup:${i}" ${i === 0 ? "disabled" : ""}>▲</button>
+        <button class="btn-sm" data-act="rd.movedown:${i}" ${i === (v.rundown ?? []).length - 1 ? "disabled" : ""}>▼</button></div>`).join("")}
+      <div class="btn-row"><button class="btn-sm" data-act="rd.resetOrder">還原預設（畫畫先・估歌後）</button></div>
     </div>
     ${pages
         .map((p) => `<div class="quiz-item">
@@ -1319,7 +1356,41 @@ async function handleAct(act) {
             renderLogin();
             return;
         case "rd":
-            await cmd(`rundown.${sub}`);
+            if (sub === "moveup" || sub === "movedown") {
+                const ids = (view?.rundown ?? []).map((x) => x.id);
+                const i = Number(arg);
+                const j = sub === "moveup" ? i - 1 : i + 1;
+                if (!Number.isInteger(i) || i < 0 || j < 0 || i >= ids.length || j >= ids.length)
+                    return;
+                [ids[i], ids[j]] = [ids[j], ids[i]];
+                await cmd("rundown.reorder", undefined, { ids });
+            }
+            else if (sub === "resetOrder") {
+                const order = ["draw", "auction", "saboteur", "quiz"];
+                const ids = (view?.rundown ?? [])
+                    .slice()
+                    .sort((a, b) => order.indexOf(a.gameId) - order.indexOf(b.gameId))
+                    .map((x) => x.id);
+                await cmd("rundown.reorder", undefined, { ids });
+            }
+            else
+                await cmd(`rundown.${sub}`);
+            break;
+        case "uc":
+            if (sub === "start") {
+                ucConfiguring = false;
+                const secs = Number(val("#uc-seconds")) || 10;
+                const approved = (view?.players ?? []).filter((p) => p.status === "approved");
+                const exclude = approved.filter((p) => !checked(`[data-uc-p="${p.id}"]`)).map((p) => p.id);
+                await cmd("undercover.start", undefined, { excludePlayerIds: exclude, durationSeconds: secs });
+            }
+            else if (sub === "reveal")
+                await cmd("undercover.reveal");
+            else if (sub === "new") {
+                ucConfiguring = true;
+                ucConfiguringRound = String(view?.currentRound?.id ?? "");
+                render();
+            }
             break;
         case "room":
             if (sub === "start")

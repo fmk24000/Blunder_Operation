@@ -246,6 +246,15 @@ export function registerWs(app: FastifyInstance, store: Store, hub: Hub, env: En
         err(conn, hub, "W_BAD_SCHEMA", "冇呢張卡");
         return;
       }
+      const meNow = store.player(playerId);
+      if (!meNow || meNow.status !== "approved") {
+        err(conn, hub, "W_FORBIDDEN_ROLE", "你已經唔喺名單");
+        return;
+      }
+      if (card.gameId === "draw" && card.voteMode === "players" && round.endsAt !== null && Date.now() >= round.endsAt) {
+        hub.send(conn, { type: "submit.result", roundId: msg.roundId, submissionId: msg.submissionId, status: "rejected", code: "W_ROUND_CLOSED", message: "投票時間已過" });
+        return;
+      }
       const existingById = store.state.submissions.find((s) => s.id === msg.submissionId);
       if (existingById) {
         const computed = sha256(JSON.stringify(msg.payload ?? {}));
@@ -283,9 +292,12 @@ export function registerWs(app: FastifyInstance, store: Store, hub: Hub, env: En
           if (targetId === playerId) throw new CmdError("W_SELF_VOTE", "唔可以投自己");
           const target = store.player(targetId);
           if (!target || target.status !== "approved") throw new CmdError("W_BAD_SCHEMA", "呢個人唔存在");
-          const eliminated = store.state.room.gameState?.saboteur?.eliminatedIds ?? [];
-          if (eliminated.includes(targetId)) throw new CmdError("W_BAD_SCHEMA", "呢個人已被淘汰");
-          if (eliminated.includes(playerId)) throw new CmdError("W_FORBIDDEN_ROLE", "你已被淘汰，唔可以投票");
+          if (card.options && card.options.length && !card.options.includes(targetId)) throw new CmdError("W_BAD_SCHEMA", "呢個人唔喺候選名單");
+          if (card.gameId === "saboteur") {
+            const eliminated = store.state.room.gameState?.saboteur?.eliminatedIds ?? [];
+            if (eliminated.includes(targetId)) throw new CmdError("W_BAD_SCHEMA", "呢個人已被淘汰");
+            if (eliminated.includes(playerId)) throw new CmdError("W_FORBIDDEN_ROLE", "你已被淘汰，唔可以投票");
+          }
         }
       } catch (error) {
         if (error instanceof CmdError) {

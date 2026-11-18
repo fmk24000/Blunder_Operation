@@ -50,6 +50,7 @@ type Ctx = {
 };
 
 const MODES: StageMode[] = [
+  "undercover",
   "idle",
   "rules",
   "scoreboard",
@@ -210,6 +211,12 @@ function setStageIfUnlocked(ctx: Ctx, stage: Partial<StageState>): void {
   stageSet(ctx, stage);
 }
 
+/** 重排後按 index 重寫「第 N 關」前綴，避免次序改咗但標題仍然寫舊關數 */
+function renumberTitle(title: string, idx: number): string {
+  const m = title.match(/^第\s*\d+\s*關\s*・\s*(.*)$/);
+  return m ? `第 ${idx + 1} 關・${m[1]}` : title;
+}
+
 /** 入關／轉關：自動出規則頁（lock=true 唔 override） */
 function advanceRundown(ctx: Ctx, targetIndex: number, mode: "next" | "prev" | "skip"): void {
   const store = ctx.store;
@@ -235,8 +242,11 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: "next" | "prev" | "
   const allDone = rundown.every((i) => i.state === "done" || i.state === "skipped");
   // 未完 round 一律 void
   const round = store.currentRound();
-  if (round && (round.state === "open" || round.state === "closed" || round.state === "tally")) {
-    push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "void" } } });
+  if (round) {
+    if (round.state === "open" || round.state === "closed" || round.state === "tally") {
+      push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "void" } } });
+    }
+    // 任何轉關都唔可以留住上一關嘅 round（revealed 都唔得，否則手機／主持會見到上一關結果）
     push(ctx, { t: "round.current", d: { currentRoundId: null } });
   }
   const newPhase = allDone ? "final" : "playing";
@@ -677,6 +687,8 @@ export function tickAutoClose(store: Store): boolean {
   if (!round || round.state !== "open") return false;
   const card = store.card(round.cardId);
   if (!card) return false;
+  // 臥底投票由 tickUndercover 固定時間開票（唔跟 autoClose，亦唔可以俾 generic auto-close 搶先收卷變 tally 畫面）
+  if (card.gameId === "draw" && card.voteMode === "players" && card.options?.length) return false;
   const nowMs = Date.now();
   // §3.1：auto-close 關咗就只可以主持手動收（時間到都唔自動收）
   const timeUp = store.state.settings.autoClose && round.endsAt !== null && nowMs >= round.endsAt;
@@ -688,6 +700,32 @@ export function tickAutoClose(store: Store): boolean {
   const ctx: Ctx = { store, hostId: "system", hostName: "系統", cmd: { commandId: "auto", kind: "auto.close", payload: {} }, muts };
   push(ctx, { t: "activity.add", d: { toast: { id: newId("act"), ts: nowMs, hostName: "系統", text: timeUp ? "時間到，自動收卷" : "全員答完，自動收卷" } } });
   closeRoundMutations(ctx, round, card, true);
+  store.commit(muts, { bumpRevision: true });
+  return true;
+}
+
+/* ── 臥底投票（畫畫關：紙本出題，手機投票） ── */
+const UNDERCOVER_PROMPT = "請投出你心目中嘅臥底";
+
+function finalizeUndercover(ctx: Ctx, round: Round, card: Card, auto: boolean): void {
+  const closedAt = Date.now();
+  push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "revealed", closedAt } } });
+  push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
+  setStageIfUnlocked(ctx, { mode: "undercover", payload: { roundId: round.id, cardId: card.id } });
+  toast(ctx, auto ? "投票時間到，開票！" : "開票！");
+}
+
+/** 固定投票時間到就自動開票（唔跟 settings.autoClose：派對固定 10 秒流程） */
+export function tickUndercover(store: Store): boolean {
+  const round = store.currentRound();
+  if (!round || round.state !== "open") return false;
+  const card = store.card(round.cardId);
+  if (!card || card.gameId !== "draw" || card.voteMode !== "players") return false;
+  if (round.endsAt === null || Date.now() < round.endsAt) return false;
+  const muts: Mutation[] = [];
+  const ctx: Ctx = { store, hostId: "system", hostName: "系統", cmd: { commandId: "auto", kind: "undercover.auto", payload: {} }, muts };
+  push(ctx, { t: "activity.add", d: { toast: { id: newId("act"), ts: Date.now(), hostName: "系統", text: "投票時間到，自動開票" } } });
+  finalizeUndercover(ctx, round, card, true);
   store.commit(muts, { bumpRevision: true });
   return true;
 }
@@ -1184,7 +1222,7 @@ export function executeCommand(
       const rundown = room.rundown
         .map((i) => ({ ...i }))
         .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
-        .map((i, idx) => ({ ...i, index: idx }));
+        .map((i, idx) => ({ ...i, index: idx, title: renumberTitle(i.title, idx) }));
       push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
       toast(ctx, "Rundown：重排咗");
       break;
@@ -1255,6 +1293,57 @@ export function executeCommand(
       toast(ctx, "改咗一張卡");
       break;
     }
+    case "undercover.start": {
+      ensurePlaying(store);
+      const excludeRaw = p.excludePlayerIds;
+      const exclude = Array.isArray(excludeRaw) ? (excludeRaw as string[]) : [];
+      const durRaw = Number(p.durationSeconds ?? 10);
+      const durationSeconds = Math.max(5, Math.min(60, Math.round(Number.isFinite(durRaw) ? durRaw : 10)));
+      const openRound = store.currentRound();
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先開票或 void");
+      const candidates = store.approvedPlayers().filter((x) => !exclude.includes(x.id));
+      if (candidates.length < 2) throw new CmdError("W_BAD_SCHEMA", "至少要兩個候選人");
+      const ucCardId = `card_undercover_${Date.now()}`;
+      const ucCard: Card = {
+        id: ucCardId,
+        type: "vote",
+        gameId: "draw",
+        voteMode: "players",
+        prompt: UNDERCOVER_PROMPT,
+        options: candidates.map((c) => c.id),
+        seconds: durationSeconds,
+        points: 0,
+        version: 1,
+        state: "draft",
+      };
+      push(ctx, { t: "card.put", d: { card: ucCard } });
+      const ucRound: Round = {
+        id: `${ucCardId}#1`,
+        cardId: ucCardId,
+        cardVersion: 1,
+        endsAt: Date.now() + durationSeconds * 1000,
+        closedAt: null,
+        state: "open",
+        eligiblePlayerIds: store.approvedPlayers().map((x) => x.id),
+      };
+      push(ctx, { t: "round.put", d: { round: ucRound, currentRoundId: ucRound.id } });
+      push(ctx, { t: "card.update", d: { cardId: ucCardId, patch: { state: "open" } } });
+      setStageIfUnlocked(ctx, { mode: "undercover", payload: { roundId: ucRound.id, cardId: ucCardId } });
+      toast(ctx, `臥底投票開始（${durationSeconds} 秒）`);
+      ctx.result = { roundId: ucRound.id, cardId: ucCardId, durationSeconds, candidates: candidates.map((c) => c.id) };
+      break;
+    }
+    case "undercover.reveal": {
+      const ucCur = store.currentRound();
+      if (!ucCur) throw new CmdError("W_ALREADY_STATE", "冇開住嘅回合");
+      const ucCurCard = store.card(ucCur.cardId);
+      if (!ucCurCard || ucCurCard.gameId !== "draw" || ucCurCard.voteMode !== "players" || !ucCurCard.options?.length)
+        throw new CmdError("W_BAD_SCHEMA", "而家唔係臥底投票");
+      if (ucCur.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 已經係 ${ucCur.state}`);
+      finalizeUndercover(ctx, ucCur, ucCurCard, false);
+      break;
+    }
     case "card.open": {
       ensurePlaying(store);
       const cardId = cmd.targetId ?? reqStr(p, "cardId");
@@ -1290,6 +1379,10 @@ export function executeCommand(
       if (cardId && round.cardId !== cardId) throw new CmdError("W_STALE_COMMAND", "而家開住嘅唔係呢張卡");
       if (round.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 已經係 ${round.state}`);
       const card = store.card(round.cardId);
+      if (card && card.gameId === "draw" && card.voteMode === "players" && card.options?.length) {
+        finalizeUndercover(ctx, round, card, false);
+        break;
+      }
       closeRoundMutations(ctx, round, card, false);
       toast(ctx, "收卷");
       // 搗蛋鬼輪次若果喺收卷時已即場結算，狀態由 tallySaboteurRound 決定（revealed），唔再補 tally
@@ -1302,6 +1395,11 @@ export function executeCommand(
       if (cardId && round.cardId !== cardId) throw new CmdError("W_STALE_COMMAND", "而家開住嘅唔係呢張卡");
       if (round.state !== "closed" && round.state !== "open") throw new CmdError("W_ALREADY_STATE", `round 係 ${round.state}`);
       const card = store.card(round.cardId);
+      if (card && card.gameId === "draw" && card.voteMode === "players" && card.options?.length) {
+        if (round.state === "open" || round.state === "closed") finalizeUndercover(ctx, round, card, false);
+        else toast(ctx, "已經開咗票");
+        break;
+      }
       const settled = round.state === "open" ? closeRoundMutations(ctx, round, card, false) : false;
       if (!settled) {
         push(ctx, { t: "card.update", d: { cardId: round.cardId, patch: { state: "tally" } } });

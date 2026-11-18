@@ -555,3 +555,14 @@ body.play { min-height: 100vh; background: var(--bg); }
 .kicked-box summary{cursor:pointer;color:var(--muted,#888);font-size:13px;padding:4px 0}
 .kicked-box[open] summary{margin-bottom:4px}
 #evict-reload{margin-top:10px}
+
+
+/* 臥底投票（畫畫關） */
+.uc-cands { display: grid; gap: 10px; margin: 18px 0; }
+.uc-cand { display: grid; grid-template-columns: 260px 1fr 70px; align-items: center; gap: 14px; font-size: 30px; }
+.uc-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uc-bar { background: rgba(0,0,0,.08); border-radius: 999px; height: 26px; overflow: hidden; }
+.uc-bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.uc-count { text-align: right; font-size: 32px; }
+.uc-ballots { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 18px; font-size: 22px; }
+.uc-ballot { display: flex; gap: 8px; align-items: baseline; background: rgba(0,0,0,.04); padding: 6px 12px; border-radius: 10px; }

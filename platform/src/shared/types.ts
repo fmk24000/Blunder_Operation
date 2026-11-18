@@ -16,6 +16,7 @@ export type StageMode =
   | "draw-focus"
   | "bid"
   | "vote"
+  | "undercover"
   | "role-reveal"
   | "song"
   | "leaderboard"
@@ -371,6 +372,17 @@ export type DrawWork = {
   createdAt: number;
 };
 
+export type UndercoverView = {
+  phase: "voting" | "result";
+  prompt: string;
+  endsAt: number | null;
+  durationSeconds: number;
+  candidates: { id: string; number: number; name: string; avatar: Avatar; count: number }[];
+  ballots: { voterId: string; voterNumber: number; voterName: string; targetId: string | null; targetName: string }[];
+  eligibleCount: number;
+  answeredCount: number;
+};
+
 export type StageView = {
   role: "stage";
   serverNow: number;
@@ -402,6 +414,7 @@ export type StageView = {
   tally: StageTally | null;
   reveal: StageReveal | null;
   vote: { roundId: string; cardId: string; prompt: string; options: { id: string; label: string }[]; counts: number[]; answeredCount: number; eligibleCount: number } | null;
+  undercover: UndercoverView | null;
   bid: { roundId: string; cardId: string; prompt: string; maxBid: number; endsAt: number | null; bidCount: number; eligibleCount: number; closed: boolean; settled: boolean; winnerName: string | null; winnerAmount: number | null } | null;
   drawWall: { works: DrawWork[]; focusId: string | null } | null;
   song: { songIndex: number; totalSongs: number; state: string; title: string | null } | null;
@@ -505,6 +518,7 @@ export type HostView = {
   rounds: Round[];
   cards: Card[];
   quiz: Card[];
+  undercover: UndercoverView | null;
   songs: Song[];
   playback: MediaPlayback | null;
   audioLease: AudioLease | null;

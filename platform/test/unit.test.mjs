@@ -7,7 +7,7 @@ import path from "node:path";
 
 import ts from "typescript";
 
-import { minutesToMidnightHK, executeCommand, tickAutoClose, tickLeases } from "../dist/server/commands.js";
+import { minutesToMidnightHK, executeCommand, tickAutoClose, tickLeases, tickUndercover } from "../dist/server/commands.js";
 import { buildStageView } from "../dist/server/views.js";
 import { Store } from "../dist/server/store.js";
 import { Journal } from "../dist/server/journal.js";
@@ -1299,4 +1299,103 @@ test("A 邊界：揀中嘅頁 disabled／archived → 照舊 fallback currentIte
   assert.equal(buildStageView(store).rulePage?.id, "rp_quiz", "archived 頁唔可以上大mon");
   run(store, "stage.set", { mode: "rules", payload: { rulePageId: "rp_off" } });
   assert.equal(buildStageView(store).rulePage?.id, "rp_quiz", "disabled 頁唔可以上大mon");
+});
+
+
+test("undercover.start：建卡＋round＋大mon 轉 undercover，exclude 只影響候選名單", () => {
+  const { store } = makeStore("uc-start");
+  const players = addPlayers(store, 3);
+  run(store, "room.start");
+  const res = run(store, "undercover.start", { excludePlayerIds: [players[2].id], durationSeconds: 10 });
+  assert.equal(res.ok, true);
+  const round = store.round(res.result.roundId);
+  assert.equal(round.state, "open");
+  const card = store.card(round.cardId);
+  assert.equal(card.voteMode, "players");
+  assert.equal(card.gameId, "draw");
+  assert.deepEqual(card.options, [players[0].id, players[1].id], "被 exclude 嘅唔可以做候選");
+  assert.equal(round.eligiblePlayerIds.length, 3, "被 exclude 嘅仍然可以投票");
+  assert.equal(store.state.room.stage.mode, "undercover");
+});
+
+test("undercover.start：duration clamp 5–60 秒", () => {
+  const { store } = makeStore("uc-clamp");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  const low = run(store, "undercover.start", { durationSeconds: 1 });
+  assert.equal(store.card(store.round(low.result.roundId).cardId).seconds, 5);
+  run(store, "undercover.reveal");
+  const high = run(store, "undercover.start", { durationSeconds: 999 });
+  assert.equal(store.card(store.round(high.result.roundId).cardId).seconds, 60);
+});
+
+test("undercover：tickUndercover 到時自動開票，票數同 ballots 正確", () => {
+  const { store } = makeStore("uc-tick");
+  const players = addPlayers(store, 3);
+  run(store, "room.start");
+  const res = run(store, "undercover.start", { excludePlayerIds: [players[2].id], durationSeconds: 10 });
+  const roundId = res.result.roundId;
+  const cardId = store.round(roundId).cardId;
+  vote(store, { roundId, cardId, voterId: players[0].id, targetId: players[1].id });
+  vote(store, { roundId, cardId, voterId: players[1].id, targetId: players[0].id });
+  vote(store, { roundId, cardId, voterId: players[2].id, targetId: players[1].id });
+  store.commit([{ t: "round.update", d: { roundId, patch: { endsAt: Date.now() - 1 } } }]);
+  assert.equal(tickUndercover(store), true);
+  assert.equal(store.round(roundId).state, "revealed");
+  const view = buildStageView(store);
+  assert.equal(view.undercover.phase, "result");
+  const counts = Object.fromEntries(view.undercover.candidates.map((c) => [c.id, c.count]));
+  assert.equal(counts[players[0].id], 1);
+  assert.equal(counts[players[1].id], 2);
+  assert.equal(view.undercover.ballots.length, 3);
+  const byVoter = Object.fromEntries(view.undercover.ballots.map((b) => [b.voterId, b.targetName]));
+  assert.equal(byVoter[players[0].id], players[1].name);
+  assert.equal(byVoter[players[2].id], players[1].name);
+});
+
+test("undercover.reveal：提早開票", () => {
+  const { store } = makeStore("uc-reveal");
+  const players = addPlayers(store, 2);
+  run(store, "room.start");
+  const res = run(store, "undercover.start", { durationSeconds: 60 });
+  const roundId = res.result.roundId;
+  vote(store, { roundId, cardId: store.round(roundId).cardId, voterId: players[0].id, targetId: players[1].id });
+  assert.equal(run(store, "undercover.reveal").ok, true);
+  assert.equal(store.round(roundId).state, "revealed");
+  assert.equal(buildStageView(store).undercover.phase, "result");
+});
+
+
+test("undercover：generic 收卷／切分佈都要開票（唔可以留 closed／tally）", () => {
+  const { store } = makeStore("uc-generic-close");
+  const players = addPlayers(store, 2);
+  run(store, "room.start");
+  const a = run(store, "undercover.start", { durationSeconds: 60 });
+  assert.equal(run(store, "card.close").ok, true);
+  assert.equal(store.round(a.result.roundId).state, "revealed");
+  assert.equal(buildStageView(store).undercover.phase, "result");
+  const b = run(store, "undercover.start", { durationSeconds: 60 });
+  assert.equal(run(store, "card.tally").ok, true);
+  assert.equal(store.round(b.result.roundId).state, "revealed");
+  // closed 狀態嘅 undercover round（例如由舊版 restore）撳切分佈都要開票，唔可以卡死
+  const c = run(store, "undercover.start", { durationSeconds: 60 });
+  store.commit([{ t: "round.update", d: { roundId: c.result.roundId, patch: { state: "closed" } } }]);
+  assert.equal(run(store, "card.tally").ok, true);
+  assert.equal(store.round(c.result.roundId).state, "revealed");
+  void players;
+});
+
+test("undercover：轉關會清走 revealed round（唔會殘留下一關）", () => {
+  const { store } = makeStore("uc-advance");
+  addPlayers(store, 2);
+  store.commit([{ t: "rundown.set", d: { rundown: [
+    { id: "rd_draw", index: 0, gameId: "draw", title: "第 1 關・畫畫", state: "running", cardIds: [] },
+    { id: "rd_auction", index: 1, gameId: "auction", title: "第 2 關・估歌", state: "todo", cardIds: [] },
+  ], currentItemId: "rd_draw", phase: "playing" } }]);
+  const res = run(store, "undercover.start", { durationSeconds: 60 });
+  run(store, "undercover.reveal");
+  assert.equal(store.round(res.result.roundId).state, "revealed");
+  run(store, "rundown.next");
+  assert.equal(store.state.room.currentRoundId, null, "轉關要清 currentRoundId");
+  assert.equal(buildStageView(store).undercover, null);
 });

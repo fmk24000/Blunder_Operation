@@ -233,6 +233,34 @@ function worksGrid(works: any[], counts: number[] | null): string {
     .join("")}</div>`;
 }
 
+function undercoverHtml(v: any): string {
+  const u = v.undercover;
+  if (!u) {
+    return `<div class="stage-main stage-idle"><div class="stage-mode-title">臥底投票</div><div class="stage-sub">等主持開始…</div>${scoreBar(v)}</div>`;
+  }
+  if (u.phase === "voting") {
+    return `<div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
+      <div class="stage-mode-title">請投出你心目中嘅臥底</div>
+      <div class="countdown" data-countdown="1">--</div>
+      <div class="stage-sub">已投 ${u.answeredCount}／${u.eligibleCount}</div>
+    </div>`;
+  }
+  const max = Math.max(1, ...u.candidates.map((c: any) => c.count));
+  return `<div class="stage-main">
+    <div class="stage-mode-title">投票結果</div>
+    <div class="uc-cands">${u.candidates
+      .map(
+        (c: any) => `<div class="uc-cand"><span class="uc-name">#${c.number} ${esc(c.name)}</span>
+          <span class="uc-bar"><i style="width:${Math.round((c.count / max) * 100)}%"></i></span><b class="uc-count">${c.count}</b></div>`,
+      )
+      .join("")}</div>
+    <div class="uc-ballots">${u.ballots
+      .map((b: any) => `<div class="uc-ballot"><span>#${b.voterNumber} ${esc(b.voterName)}</span><span class="muted">→</span><b>${esc(b.targetName)}</b></div>`)
+      .join("")}</div>
+    ${scoreBar(v)}
+  </div>`;
+}
+
 function voteHtml(v: any): string {
   const vote = v.vote;
   const works = v.drawWall?.works ?? [];
@@ -394,6 +422,9 @@ function stageHtml(v: any): string {
       case "vote":
         html = voteHtml(v);
         break;
+      case "undercover":
+        html = undercoverHtml(v);
+        break;
       case "draw-wall": {
         const works = v.drawWall?.works ?? [];
         html = `<div class="stage-main"><div class="stage-mode-title">作品牆（${works.length} 張）</div>${
@@ -443,7 +474,7 @@ function updateTimers(): void {
 
 function paintTimers(): void {
   if (!view) return;
-  const endsAt = view.question?.endsAt ?? view.bid?.endsAt ?? null;
+  const endsAt = view.question?.endsAt ?? view.bid?.endsAt ?? view.undercover?.endsAt ?? null;
   const left = live?.msLeft(endsAt) ?? null;
   for (const node of document.querySelectorAll<HTMLElement>("[data-countdown]")) {
     node.textContent = left === null ? "—" : fmtClock(left);

@@ -53,6 +53,7 @@ const HOST_SECTIONS = [
   "currentRound",
   "rounds",
   "cards",
+  "undercover",
   "quiz",
   "songs",
   "playback",

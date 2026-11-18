@@ -17,6 +17,7 @@ import type {
   StageReveal,
   StageTally,
   StageView,
+  UndercoverView,
   Submission,
   PlayerSelfView,
   DrawWork,
@@ -143,6 +144,44 @@ function currentQuestion(store: Store) {
 }
 
 /** 大mon（StageView） */
+function buildUndercover(store: Store): UndercoverView | null {
+  const round = store.currentRound();
+  const card = round ? store.card(round.cardId) : undefined;
+  if (!round || !card || card.gameId !== "draw" || card.voteMode !== "players" || !card.options?.length) return null;
+  const subs = store.state.submissions.filter((x) => x.roundId === round.id && x.confirmed && x.kind === "vote");
+  const counts = new Map<string, number>();
+  for (const x of subs) {
+    const target = x.text ?? "";
+    if (target) counts.set(target, (counts.get(target) ?? 0) + 1);
+  }
+  const candidates = card.options
+    .map((id) => store.player(id))
+    .filter((x): x is Player => !!x)
+    .map((x) => ({ id: x.id, number: x.number, name: x.name, avatar: x.avatar, count: counts.get(x.id) ?? 0 }));
+  const revealed = round.state !== "open";
+  const ballots = revealed
+    ? round.eligiblePlayerIds
+        .map((id) => store.player(id))
+        .filter((x): x is Player => !!x)
+        .map((v) => {
+        const sub = subs.find((x) => x.playerId === v.id);
+        const targetId = sub?.text ?? null;
+        const target = targetId ? store.player(targetId) : undefined;
+        return { voterId: v.id, voterNumber: v.number, voterName: v.name, targetId, targetName: target ? target.name : "（冇投）" };
+      })
+    : [];
+  return {
+    phase: revealed ? "result" : "voting",
+    prompt: card.prompt,
+    endsAt: round.endsAt,
+    durationSeconds: card.seconds ?? 10,
+    candidates,
+    ballots,
+    eligibleCount: round.eligiblePlayerIds.length,
+    answeredCount: subs.length,
+  };
+}
+
 export function buildStageView(store: Store): StageView {
   const room = store.state.room;
   const stage = room.stage;
@@ -401,6 +440,7 @@ export function buildStageView(store: Store): StageView {
     tally,
     reveal,
     vote,
+    undercover: buildUndercover(store),
     bid,
     drawWall,
     song,
@@ -479,6 +519,21 @@ export function buildPlayerView(store: Store, playerId: string): PlayerSelfView 
           kind: "vote",
           prompt: card.prompt,
           voteOptions: works.map((w, wi) => ({ id: String(wi), label: `#${w.authorNumber} ${w.authorName}` })),
+          endsAt: round.endsAt,
+          seconds: card.seconds,
+        };
+      } else if (card.options && card.options.length) {
+        // 臥底投票：候選名單由主持揀（card.options），自己唔可以投自己
+        task = {
+          roundId: round.id,
+          cardId: card.id,
+          kind: "vote",
+          prompt: card.prompt,
+          voteOptions: card.options
+            .filter((id) => id !== playerId)
+            .map((id) => store.player(id))
+            .filter((x): x is Player => !!x)
+            .map((x) => ({ id: x.id, label: x.name, avatar: x.avatar })),
           endsAt: round.endsAt,
           seconds: card.seconds,
         };
@@ -588,6 +643,7 @@ export function buildHostView(store: Store, hostId: string, hostName: string, co
     currentRound: cur,
     rounds: room.rounds.map((r) => ({ ...r })),
     cards: store.state.cards.map((c) => ({ ...c })),
+    undercover: buildUndercover(store),
     quiz: store.quizCards().map((c) => ({ ...c })),
     songs: store.state.songs.map((s) => ({ ...s })),
     playback: store.state.playback ? ({ ...store.state.playback } as MediaPlayback) : null,

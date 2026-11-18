@@ -102,7 +102,7 @@ export const GAME_TITLES: Record<string, string> = {
 };
 
 export function defaultRundown(quizCardIds: string[]): RundownItem[] {
-  const games = ["auction", "draw", "saboteur", "quiz"];
+  const games = ["draw", "auction", "saboteur", "quiz"];
   return games.map((gameId, i) => {
     const item: RundownItem = {
       id: `rd_${gameId}`,
