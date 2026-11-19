@@ -2789,8 +2789,11 @@ test("A4-9：主持台大mon 控制有同步狀態／鎖定紅 pill；畫畫組�
   assert.match(src, /大mon 已鎖定/, "鎖定時要出「大mon 已鎖定」pill");
   assert.match(src, /background:var\(--red\)/, "鎖定 pill 要用紅色");
   assert.match(src, /ROUND_ZH/, "要有回合狀態中文（唔好出 raw state）");
-  // A3-1：畫畫組只留純換畫面嘅兩個掣（真投票喺一圖多人面板）
-  assert.match(src, /group\("畫畫", \["draw-wall", "draw-focus"\]\)/, "畫畫組只留兩個掣");
+  // A3-1：畫畫組唔再用「純換畫面」mode 組（v0.4.2 用戶第二輪投訴：只剩作品牆／作品放大＝投票投臥底好似冇咗）
+  // → 換成一條真 flow block（① 揀題目 ② 公佈好人題目 ③ 開始投票）；下面兩條「唔准放 vote／undercover mode」照舊成立
+  assert.ok(!/group\("畫畫",\s*\[/.test(src), "唔准再留低純換畫面嘅畫畫組");
+  assert.match(src, /function drawFlowBlock\(v: any\): string \{/, "畫畫要有真 flow block（① ② ③）");
+  assert.match(src, /data-act="ucm\.pickTopic"/, "flow block 要有「揀題目」真 command");
   assert.ok(!/group\("畫畫", \[[^\]]*"vote"/.test(src), "唔可以再放 vote（冇 round 會 TypeError）");
   assert.ok(!/group\("畫畫", \[[^\]]*"undercover"/.test(src), "唔可以再放 undercover（死胡同）");
   // A3-4：流程卡三種清楚狀態＋重設流程
@@ -3286,4 +3289,155 @@ test("K1：規則頁 steps 拆成多個 block 時，大mon 序號要跨 block �
   const src = clientSrc("stage.ts");
   assert.match(src, /let stepCursor = 0/, "要有跨 block 嘅 step cursor");
   assert.match(src, /<ol class="rb-list" start="\$\{start\}">/, "ol 要用 start 屬性接住上一個 block");
+});
+
+/* ───────── v0.4.2 畫畫關：① 揀題目 → ② 公佈好人題目 → ③ 投票投臥底（一條 flow） ───────── */
+
+test("v042-1：uc.topic.pick 套用本題題目（promptCardId／topicIds[questionNo]／usedTopicIds／promptRevealed=false）", () => {
+  const { store } = ucSetup("v042-pick", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const cur = st0.promptCardId;
+  // 揀一對「未用過」嘅題目（唔係而家嗰張）
+  const other = store
+    .gameCards("draw")
+    .filter((c) => c.undercoverPrompt && c.id !== cur)
+    .find((c) => !(st0.topicIds ?? []).includes(c.id));
+  assert.ok(other, "題庫要有第 4 對題目");
+  const res = run(store, "uc.topic.pick", {}, other.id);
+  assert.equal(res.ok, true);
+  assert.equal(res.result.cardId, other.id);
+  assert.equal(res.result.questionNo, st0.questionNo + 1, "questionNo 係「第幾題」嘅人話講法（1 開始）");
+  assert.equal(res.result.prompt, other.prompt);
+  assert.equal(res.result.undercoverPrompt, other.undercoverPrompt);
+  const st = store.state.room.gameState.undercover;
+  assert.equal(st.promptCardId, other.id);
+  assert.equal(st.topicIds[st.questionNo], other.id, "本題（第 N 題）要保持係呢一對");
+  assert.ok(st.usedTopicIds.includes(other.id), "用過要記低");
+  assert.equal(st.promptRevealed, false, "換題要重新公佈");
+  // 唔准改局嘅其他嘢
+  assert.deepEqual(st.participantIds, st0.participantIds);
+  assert.deepEqual(st.undercoverIds, st0.undercoverIds);
+  assert.deepEqual(st.eliminatedIds, st0.eliminatedIds);
+  assert.equal(st.roundId, st0.roundId);
+});
+
+test("v042-2：uc.topic.pick 之後 uc.prompt.reveal 上大mon 係新題目", () => {
+  const { store } = ucSetup("v042-pick-reveal", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const other = store
+    .gameCards("draw")
+    .filter((c) => c.undercoverPrompt && c.id !== st0.promptCardId && !(st0.topicIds ?? []).includes(c.id))[0];
+  run(store, "uc.topic.pick", {}, other.id);
+  run(store, "uc.prompt.reveal");
+  const sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "message");
+  assert.equal(sv.message.title, "好人題目");
+  assert.deepEqual(sv.message.lines, [other.prompt], "大mon 要出新題目（唔係舊嗰對）");
+  // 注意：種子題目嘅「臥底題關鍵詞」本身係好人題嘅 substring（例：同翹妹去迪士尼／翹妹），
+  // 所以只可以驗「大mon payload 冇 undercoverPrompt 欄」，唔可以驗文字 substring。
+  assert.equal(JSON.stringify(sv.message).includes("undercoverPrompt"), false, "臥底題唔准上大mon");
+  assert.equal(JSON.stringify(sv.message).includes('"undercoverIds"'), false, "臥底名單唔准上大mon");
+});
+
+test("v042-3：投票 open 緊 → uc.topic.pick 擋住（W_ALREADY_STATE），題目不變", () => {
+  const { store } = ucSetup("v042-pick-voting", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  run(store, "uc.vote.start");
+  const before = store.state.room.gameState.undercover.promptCardId;
+  const other = store.gameCards("draw").find((c) => c.undercoverPrompt && c.id !== before);
+  assert.throws(() => run(store, "uc.topic.pick", {}, other.id), isCmdError("W_ALREADY_STATE", /投票進行中/));
+  assert.equal(store.state.room.gameState.undercover.promptCardId, before);
+  // 開票之後就換得
+  run(store, "card.close");
+  assert.equal(run(store, "uc.topic.pick", {}, other.id).ok, true);
+});
+
+test("v042-4：uc.topic.pick 揀非一圖多人卡（quiz）→ W_BAD_SCHEMA", () => {
+  const { store } = ucSetup("v042-pick-bad", 6);
+  run(store, "uc.match.start");
+  putCard(store, { id: "q_bad_schema", type: "choice", gameId: "quiz", prompt: "1+1=?", options: ["1", "2"] });
+  const before = store.state.room.gameState.undercover.promptCardId;
+  assert.throws(() => run(store, "uc.topic.pick", {}, "q_bad_schema"), isCmdError("W_BAD_SCHEMA", /一圖多人題目/));
+  assert.throws(() => run(store, "uc.topic.pick", {}, "no_such_card"), isCmdError("W_BAD_SCHEMA"));
+  assert.equal(store.state.room.gameState.undercover.promptCardId, before);
+  // 未開局都擋
+  const fresh = ucSetup("v042-pick-nomatch", 3);
+  const anyTopic = fresh.store.gameCards("draw").find((c) => c.undercoverPrompt);
+  assert.throws(() => run(fresh.store, "uc.topic.pick", {}, anyTopic.id), isCmdError("W_ALREADY_STATE", /未開局/));
+});
+
+test("v042-5：uc.topic.reroll 抽到另一對（未用過）＋寫入 usedTopicIds", () => {
+  const { store } = ucSetup("v042-reroll", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const before = st0.promptCardId;
+  const res = run(store, "uc.topic.reroll");
+  assert.equal(res.ok, true);
+  assert.notEqual(res.result.cardId, before, "重抽要換一對（題庫有 7 對）");
+  const st = store.state.room.gameState.undercover;
+  assert.equal(st.promptCardId, res.result.cardId);
+  assert.ok(st.usedTopicIds.includes(res.result.cardId), "重抽到嘅題目要入 usedTopicIds");
+  assert.equal(st.promptRevealed, false);
+  assert.equal(st.topicIds[st.questionNo], res.result.cardId);
+  // 再抽一次都仲抽到（唔會 throw）
+  assert.equal(run(store, "uc.topic.reroll").ok, true);
+});
+
+test("v042-6：揀完題目流程冇斷：uc.prompt.reveal → uc.vote.start → 開票 → uc.vote.foulTop", () => {
+  const { store } = ucSetup("v042-flow", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const other = store
+    .gameCards("draw")
+    .filter((c) => c.undercoverPrompt && c.id !== st0.promptCardId && !(st0.topicIds ?? []).includes(c.id))[0];
+  run(store, "uc.topic.pick", {}, other.id);
+  run(store, "uc.prompt.reveal");
+  const started = run(store, "uc.vote.start");
+  assert.equal(started.ok, true);
+  const round = store.round(started.result.roundId);
+  const card = store.card(round.cardId);
+  const victim = st0.undercoverIds[0];
+  const voters = st0.participantIds.filter((id) => id !== victim).slice(0, 2);
+  for (const voterId of voters) vote(store, { roundId: round.id, cardId: card.id, voterId, targetId: victim });
+  run(store, "card.close");
+  const foul = run(store, "uc.vote.foulTop");
+  assert.equal(foul.result.targetId, victim, "最高票 → foul 佢");
+  assert.equal(foul.result.wasUndercover, true);
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [victim]);
+});
+
+test("v042-7：host.ts 畫畫 group 換成一條 flow（冇 draw-wall／draw-focus 掣；panel 搬去 drawSection）", () => {
+  const src = clientSrc("host.ts");
+  assert.ok(!/group\("畫畫",\s*\[/.test(src), "唔准再留低 group(\"畫畫\", [...]) 純換畫面掣組");
+  const flow = src.slice(src.indexOf("function drawFlowBlock"), src.indexOf("function playersSection"));
+  assert.equal(/draw-wall|draw-focus/.test(flow), false, "畫畫 flow block 唔准再有作品牆／作品放大掣");
+  assert.match(flow, /data-act="ucm\.start"/, "未開局要有「開新一局」");
+  // 三個 flow 掣嘅真 data-act
+  assert.match(src, /data-act="ucm\.pickTopic"/, "① 揀題目（dropdown）");
+  assert.match(src, /data-act="ucm\.pickTopic:\$\{esc\(c\.id\)\}"/, "① 題庫每行「用呢對」");
+  assert.match(src, /data-act="ucm\.rerollTopic"/, "① 重抽一對");
+  assert.match(src, /data-act="ucm\.reveal"/, "② 公佈好人題目");
+  assert.match(src, /data-act="ucm\.vote"/, "③ 開始投票");
+  assert.match(src, /data-act="ucm\.revealRound"/, "③ 投票中：立即開票");
+  assert.match(src, /data-act="ucm\.foultop"/, "③ 已開票：Foul 最高票");
+  assert.match(src, /重開投票/, "已開票／同票要有「重開投票」逃生掣（換過題目唔會卡死）");
+  // ① ② ③ 要喺同一個 block 編號出現
+  assert.match(src, /① 揀題目/);
+  assert.match(src, /② 公佈好人題目（大mon）/);
+  assert.match(src, /③ 開始投票（10 秒）/);
+  // panel 只喺 drawSection 出，controlSection 唔再出（避免同一個 panel 出兩次）
+  const control = src.slice(src.indexOf("function controlSection"), src.indexOf("function drawFlowBlock"));
+  const draw = src.slice(src.indexOf("function drawSection"), src.indexOf("function cardListSummary"));
+  assert.equal(/undercoverMatchPanel\(v\)/.test(control), false, "controlSection 唔准再出 undercoverMatchPanel");
+  assert.match(draw, /undercoverMatchPanel\(v\)/, "drawSection 要出完整面板");
+  // dispatch 接真 command
+  assert.match(src, /else if \(sub === "pickTopic"\)[\s\S]{0,200}?cmd\("uc\.topic\.pick"/, "pickTopic 要 call uc.topic.pick");
+  assert.match(src, /else if \(sub === "rerollTopic"\) await cmd\("uc\.topic\.reroll"\)/, "rerollTopic 要 call uc.topic.reroll");
+  // 唔准刪舊投票 command
+  for (const k of ["uc.match.start", "uc.prompt.reveal", "uc.vote.start", "uc.vote.foulTop", "uc.match.next", "uc.match.settle"]) {
+    assert.ok(src.includes(`"${k}"`), `唔准刪 ${k}`);
+  }
 });

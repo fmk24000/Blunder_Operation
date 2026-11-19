@@ -677,7 +677,7 @@ function controlSection(v: any): string {
           ["bid", "song"],
           `<button data-act="media.reveal" class="${mode === "reveal" && v.stage?.payload?.songTitle ? "active" : ""}">開估（揭曉歌名）</button>`,
         )}
-        ${group("畫畫", ["draw-wall", "draw-focus"])}
+        ${drawFlowBlock(v)}
         ${group("搗蛋鬼／其他", ["role-reveal", "timer", "blackout"])}
         ${group("結算／頒獎", ["finale", "award", "game-scores"])}
       </div>
@@ -723,7 +723,6 @@ function controlSection(v: any): string {
 
       <div class="hint">Activity：${(v.activity ?? []).slice(-4).map((a: any) => esc(a.text)).join("｜") || "—"}</div>
     </div>
-    ${undercoverMatchPanel(v)}
     ${killerPanel(v)}
     ${bidPanel(v)}
   </section>`;
@@ -867,6 +866,24 @@ function undercoverMatchPanel(v: any): string {
         <span class="pill hot">臥底題（關鍵詞）：${esc(c?.undercoverPrompt ?? "?")}</span></div>`;
     })
     .join("");
+  // v0.4.2：題庫全部一圖多人題目（主持真係換得到本題用邊一對；command＝uc.topic.pick／uc.topic.reroll）
+  const topicLib = cards.filter(
+    (c: any) => c.gameId === "draw" && typeof c.undercoverPrompt === "string" && c.undercoverPrompt.length > 0,
+  );
+  const usedSet = new Set<string>(st.usedTopicIds ?? []);
+  const topicLibRows = topicLib
+    .map((c: any) => {
+      const current = c.id === st.promptCardId;
+      const wasUsed = usedSet.has(c.id);
+      return `<div class="ledger-row" ${current ? 'style="background:var(--bg-soft);font-weight:700"' : ""}>
+        <span class="pill ${current ? "on" : "gray"}">${current ? "現在" : wasUsed ? "用過" : "未用"}</span>
+        <span class="grow">好人題：${esc(c.prompt)}</span>
+        <span class="pill hot">臥底題（關鍵詞）：${esc(c.undercoverPrompt)}</span>
+        <button class="btn-sm ${current ? "" : "primary"}" style="white-space:nowrap" data-act="ucm.pickTopic:${esc(c.id)}" ${
+          current || st.settled ? "disabled" : ""
+        } title="${current ? "本題已經用緊呢一對" : "換本題用呢一對（會重新公佈題目）"}">用呢對</button></div>`;
+    })
+    .join("");
   const tallyRows = counts
     .map((c: any) => {
       const top = topCount > 0 && c.count === topCount;
@@ -906,6 +923,14 @@ function undercoverMatchPanel(v: any): string {
     <div class="row wrap">${status}</div>
     <div class="row wrap"><span class="pill hot">臥底（主持專用）</span>${undercoverList}</div>
     <div style="margin-top:6px"><div class="muted">本局題目（派卡用：好人題＋臥底題各一張；現時嗰對高亮）</div>${topicRows || '<div class="muted">（未抽題）</div>'}</div>
+    <details class="ctrl-settings" open>
+      <summary>① 揀題目：題庫全部 ${topicLib.length} 對（撳「用呢對」換本題）</summary>
+      <div class="ctrl-settings-body" style="max-height:320px;overflow:auto">
+        <div class="row wrap"><button class="primary" data-act="ucm.rerollTopic" ${st.settled ? "disabled" : ""}>重抽一對</button>
+          <span class="muted">由未用過嘅題目隨機抽一對；題庫用晒就循環再用（唔會抽唔到）。</span></div>
+        ${topicLibRows || '<div class="muted">（題庫冇一圖多人題目）</div>'}
+      </div>
+    </details>
     <div class="row wrap"><span class="muted">已出局：</span>${eliminated.join("") || '<span class="muted">（未有）</span>'}</div>
     <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
       <div class="row wrap"><span class="pill">本題投票</span></div>
@@ -926,6 +951,124 @@ function undercoverMatchPanel(v: any): string {
       <span class="muted">（大mon 會即刻講中／唔中）</span>
     </div>
     <div class="hint">每題流程：公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票嗰個（同票就要主持揀）→ 下一題。最多 3 題；兩個臥底都出局＝好人勝。計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
+  </div>`;
+}
+
+/** v0.4.2：畫畫關「一條 flow」控制（喺「大mon 控制」下面）。
+ *  用戶第二輪投訴：舊時呢度只剩一組「作品牆／作品放大」純換畫面掣，
+ *  「投票投臥底」個 function 睇落好似冇咗。呢個 block 直接擺返成一條 flow：
+ *  ① 揀題目（真 command uc.topic.pick／uc.topic.reroll）→ ② 公佈好人題目（大mon）
+ *  → ③ 開始投票（10 秒）→ 立即開票 → Foul 最高票。
+ *  詳細面板（臥底身份／票軌／取消淘汰／下一題／結算）喺「進階 → 畫畫」tab，呢度唔重複出。 */
+function drawFlowBlock(v: any): string {
+  const st = v.undercoverMatch;
+  const u = v.undercover;
+  const approved: any[] = (v.players ?? []).filter((p: any) => p.status === "approved");
+  const nameOf = (id: string): string => {
+    const p = approved.find((x: any) => x.id === id);
+    return p ? `#${p.number} ${esc(p.name)}` : id;
+  };
+  const topics: any[] = (v.cards ?? []).filter(
+    (c: any) => c.gameId === "draw" && typeof c.undercoverPrompt === "string" && c.undercoverPrompt.length > 0,
+  );
+  const active = !!st && (st.participantIds ?? []).length > 0;
+  const settled = !active || st.settled === true;
+  const remaining = active ? (st.undercoverIds ?? []).filter((id: string) => !st.eliminatedIds.includes(id)).length : 0;
+  const voting = active && !st.settled && u?.phase === "voting";
+  const revealed = active && !st.settled && u?.phase === "result";
+  const counts: any[] = revealed ? [...(u.candidates ?? [])].sort((a: any, b: any) => b.count - a.count) : [];
+  const topCount = counts.length ? Math.max(...counts.map((c: any) => c.count)) : 0;
+  const tops = topCount > 0 ? counts.filter((c: any) => c.count === topCount) : [];
+  const questionDone = active && Object.values(st.eliminatedByQuestion ?? {}).some((q: any) => q === st.questionNo);
+  const used = new Set<string>(active ? (st.usedTopicIds ?? []) : []);
+  const status = (
+    [
+      active ? `第 ${st.matchNo} 局` : st ? `下一局：第 ${st.matchNo} 局` : "未開局",
+      active ? `第 ${st.questionNo + 1}／3 題` : "",
+      active ? `仲有 ${remaining} 個臥底未出局` : "",
+      active ? (st.promptRevealed ? "已公佈題目" : "未公佈題目") : "",
+      voting ? `投票中（已投 ${u.answeredCount}／${u.eligibleCount}）` : revealed ? "已開票" : active && !settled ? "未開始投票" : "",
+      st?.settled ? `已結算${st.result ? `（${st.result === "good" ? "好人勝" : "臥底勝"}）` : ""}` : "",
+    ] as string[]
+  )
+    .filter(Boolean)
+    .map((x) => `<span class="pill">${esc(x)}</span>`)
+    .join("");
+  const topicOptions = topics
+    .map((c: any) => {
+      const cur = active && c.id === st.promptCardId;
+      const wasUsed = used.has(c.id);
+      return `<option value="${esc(c.id)}" ${cur ? "selected" : ""}>${cur ? "▶ " : ""}好人題：${esc(c.prompt)}／臥底題：${esc(
+        c.undercoverPrompt,
+      )}${wasUsed ? "（用過）" : ""}</option>`;
+    })
+    .join("");
+  const pickDisabled = settled || voting;
+  const pickTitle = !active
+    ? "未開局：先撳「開新一局」（抽 2 個臥底＋3 對題）"
+    : st.settled
+      ? "本局已結算（撳「清走本局」再開一局）"
+      : voting
+        ? "投票進行中：等開票先換題目"
+        : "用 dropdown 揀嗰一對做本題題目（會重新公佈）";
+  const revealDisabled = settled;
+  const revealTitle = !active
+    ? "未開局：先撳「開新一局」"
+    : st.settled
+      ? "本局已結算（撳「清走本局」再開一局）"
+      : st.promptRevealed
+        ? "已經公佈咗（再撳會再推一次上大mon）"
+        : "只推好人題目上大mon；臥底題永遠唔會出手機／大mon";
+  let voteBtn: string;
+  if (!active || st.settled) {
+    voteBtn = `<button class="primary" data-act="ucm.vote" disabled title="${!active ? "未開局：先撳「開新一局」" : "本局已結算"}">③ 開始投票（10 秒）</button>`;
+  } else if (voting) {
+    voteBtn = `<button class="primary" data-act="ucm.revealRound">立即開票（已投 ${u.answeredCount}／${u.eligibleCount}）</button>`;
+  } else if (revealed && questionDone) {
+    voteBtn = `<button data-act="ucm.foultop" disabled title="本題已經 foul 咗一個：撳「下一題／結算」">③ 本題已 foul（等下一題）</button>`;
+  } else if (revealed && tops.length === 1) {
+    voteBtn = `<button class="primary" data-act="ucm.foultop">Foul 最高票：${nameOf(tops[0].id)}（一人出局）</button>
+      <button class="btn-sm" data-act="ucm.vote" title="換過題目／想再投一次：重開 10 秒投票（會覆蓋本題上一次嘅票）">重開投票</button>`;
+  } else if (revealed) {
+    const candidates = st.participantIds.filter((id: string) => !st.eliminatedIds.includes(id));
+    voteBtn = `<span class="pill hot">${
+      tops.length > 1 ? `同票（${tops.map((c: any) => esc(c.name)).join("、")}）：請主持揀` : "冇票：請主持揀"
+    }</span>
+      <select id="ucm-target">${candidates.map((id: string) => `<option value="${esc(id)}">${nameOf(id)}</option>`).join("")}</select>
+      <button class="danger" data-act="ucm.eliminate" ${candidates.length ? "" : "disabled"}>淘汰佢</button>
+      <button class="btn-sm" data-act="ucm.vote" title="換過題目／想再投一次：重開 10 秒投票（會覆蓋本題上一次嘅票）">重開投票</button>`;
+  } else if (questionDone) {
+    voteBtn = `<button data-act="ucm.vote" disabled title="本題已經 foul 咗一個：撳「下一題／結算」">③ 本題已 foul（等下一題）</button>`;
+  } else {
+    voteBtn = `<button class="primary" data-act="ucm.vote" ${st.promptRevealed ? "" : "disabled"} title="${
+      st.promptRevealed ? "開 10 秒投票：手機一人一票投邊個係臥底" : "先撳②公佈好人題目"
+    }">③ 開始投票（10 秒）</button>`;
+  }
+  return `<div class="mode-group">
+    <div class="mg-label">畫畫（一圖多人）・一條 flow：① 揀題目 → ② 公佈好人題目 → ③ 投票投臥底</div>
+    <div class="row wrap">${status}</div>
+    <div class="row wrap" style="margin-top:8px">
+      <span class="pill hot">① 揀題目</span>
+      <select id="uc-topic" style="flex:1 1 320px">${topicOptions || `<option value="">（題庫冇一圖多人題目）</option>`}</select>
+      <button class="primary" data-act="ucm.pickTopic" ${pickDisabled ? "disabled" : ""} title="${esc(pickTitle)}">用呢對</button>
+      <button data-act="ucm.rerollTopic" ${pickDisabled ? "disabled" : ""} title="${esc(pickTitle)}">重抽一對</button>
+    </div>
+    <div class="row wrap" style="margin-top:8px">
+      <button class="${active && !st.promptRevealed && !settled ? "primary" : ""}" data-act="ucm.reveal" ${
+        revealDisabled ? "disabled" : ""
+      } title="${esc(revealTitle)}">② 公佈好人題目（大mon）</button>
+      ${voteBtn}
+    </div>
+    <div class="row wrap" style="margin-top:8px">
+      ${
+        active
+          ? `<button data-act="ucm.next" title="撳一次＝下一題；兩個臥底都出局／打完 3 題就會自動結算">下一題／結算</button>
+             <button class="danger" data-act="ucm.reset">清走本局（再開一局）</button>`
+          : `<label class="row">臥底數 <input id="ucm-count" type="number" min="1" max="4" value="2" style="width:70px"></label>
+             <button class="primary" data-act="ucm.start">開新一局</button>`
+      }
+    </div>
+    <div class="hint">主持檯呢度就係全部：① 揀邊對題目 → ② 好人題目推上大mon（手機見唔到）→ ③ 開 10 秒投票 → 立即開票睇票數 → Foul 最高票嗰個。臥底身份／票軌／取消淘汰／分數結算喺「進階 → 畫畫」tab（唔喺呢度重複出）。</div>
   </div>`;
 }
 
@@ -1301,7 +1444,15 @@ function drawSection(v: any): string {
   const works = worksCard
     ? ((worksCard.options ?? []) as string[]).map((id: string) => images.find((a: any) => a.id === id)).filter(Boolean)
     : [];
-  return `<section><h3>畫畫關：影相上牆／作品牆／評審</h3>
+  // v0.4.2：畫畫 tab 最上面＝完整「一圖多人」面板（揀題目／公佈／投票／票數／下一題／結算）；
+  // 舊嘅影相上牆／作品牆／評審收埋喺 details（功能保留，但唔再擺喺主要位置）。
+  return `<section style="grid-column:1/-1"><h3>畫畫（一圖多人）</h3>
+    ${undercoverMatchPanel(v)}
+  </section>
+  <details class="ctrl-settings" style="grid-column:1/-1">
+    <summary>舊：影相上牆／作品牆／評審（唔用，撳開先見到）</summary>
+    <div class="ctrl-settings-body">
+  <section><h3>畫畫關：影相上牆／作品牆／評審</h3>
     <div class="card-box">
       <div class="row wrap"><input type="file" id="draw-file" accept="image/jpeg,image/png,image/webp" style="flex:1 1 200px">
         <select id="draw-author">${(v.players ?? []).filter((p: any) => p.status === "approved").map((p: any) => `<option value="${p.id}">#${p.number} ${esc(p.name)}</option>`).join("")}</select>
@@ -1323,7 +1474,9 @@ function drawSection(v: any): string {
       ${works.length ? `<div class="hint">投票卡作品：${works.length} 張（開卡後手機投「邊張最似」；reveal 後自動入人氣票＋最似獎）</div>` : ""}
     </div>
   </section>
-  <section><h3>作品投票卡</h3><div class="card-box">${cardListSummary(v)}</div></section>`;
+  <section><h3>作品投票卡</h3><div class="card-box">${cardListSummary(v)}</div></section>
+    </div>
+  </details>`;
 }
 
 function cardListSummary(v: any): string {
@@ -1480,6 +1633,9 @@ const DIRTY_SCOPE: Record<string, DirtyScope> = {
   "settings.maxbid": { match: ["#maxbid"], recordArg: null },
   "sab.eliminate": { match: ["#sab-target"], recordArg: null },
   "draw.upload": { match: ["#draw-file", "#draw-author"], recordArg: null },
+  // v0.4.2：揀完題目 dropdown 要跟 server 最新值（唔好還原返舊選項）
+  "ucm.pickTopic": { match: ["#uc-topic"], recordArg: null },
+  "ucm.rerollTopic": { match: ["#uc-topic"], recordArg: null },
   "award.override": { match: ["data-award-target"], recordArg: 1 },
 };
 
@@ -1789,6 +1945,16 @@ async function handleAct(act: string): Promise<void> {
         }
         await cmd("uc.eliminate", undefined, { playerId: val("#ucm-target") });
       } else if (sub === "undo") await cmd("uc.eliminate.undo");
+      // v0.4.2：① 揀題目（真 command：server 寫 promptCardId／topicIds[questionNo]／usedTopicIds）
+      // 兩個入口：題庫每行嘅 ucm.pickTopic:<cardId>（用 arg）＋ flow block 嘅 dropdown（用 val("#uc-topic")）
+      else if (sub === "pickTopic") {
+        const topicId = arg || val("#uc-topic");
+        if (!topicId) {
+          failAct("先揀一對題目（或者撳「重抽一對」）");
+          return;
+        }
+        await cmd("uc.topic.pick", topicId);
+      } else if (sub === "rerollTopic") await cmd("uc.topic.reroll");
       else if (sub === "next") await cmd("uc.match.next");
       else if (sub === "settle") await cmd("uc.match.settle");
       else if (sub === "reset") await cmd("uc.match.reset");

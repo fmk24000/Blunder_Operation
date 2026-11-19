@@ -984,6 +984,30 @@ function ucEliminateOne(ctx: Ctx, targetId: string): { targetId: string; wasUnde
   return { targetId, wasUndercover, remaining };
 }
 
+/** v0.4.2：畫畫關「揀題目」共用邏輯（uc.topic.pick／uc.topic.reroll 同一條路）。
+ *  只改題目相關欄位：promptCardId／topicIds[questionNo]／usedTopicIds／promptRevealed；
+ *  唔准掂 participants／undercoverIds／eliminatedIds／round（換題唔等於換局）。 */
+function ucApplyTopic(ctx: Ctx, card: Card): { cardId: string; questionNo: number; prompt: string; undercoverPrompt: string } {
+  const store = ctx.store;
+  const st = cloneUcMatch(store);
+  if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算，唔可以換題目");
+  if (card.gameId !== "draw" || typeof card.undercoverPrompt !== "string" || card.undercoverPrompt.length === 0)
+    throw new CmdError("W_BAD_SCHEMA", "呢張卡唔係一圖多人題目（要 gameId=draw 兼有 undercoverPrompt）");
+  if ((st.participantIds ?? []).length === 0) throw new CmdError("W_ALREADY_STATE", "未開局（先撳「開新一局」）");
+  const liveRound = st.roundId ? store.round(st.roundId) : undefined;
+  if (liveRound && liveRound.state === "open")
+    throw new CmdError("W_ALREADY_STATE", "投票進行中，唔可以換題目（等開票或者撳「立即開票」先）");
+  st.promptCardId = card.id;
+  const topicIds = [...(st.topicIds ?? [])];
+  topicIds[st.questionNo] = card.id;
+  st.topicIds = topicIds;
+  st.usedTopicIds = [...new Set([...(st.usedTopicIds ?? []), card.id])];
+  st.promptRevealed = false; // 換題要重新公佈（大mon 唔會殘留上一對嘅好人題）
+  push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+  toast(ctx, `第 ${st.questionNo + 1} 題用咗：${card.prompt}`);
+  return { cardId: card.id, questionNo: st.questionNo + 1, prompt: card.prompt, undercoverPrompt: card.undercoverPrompt };
+}
+
 /** 一圖多人結算：好人勝→全部好人 +1／臥底勝→全部臥底 +1；未出局者每人 +2（同上面疊加）。
  *  冪等：matchId 去重 ＋ settled 擋，重複撳唔會再加。 */
 function settleUndercoverMatch(ctx: Ctx, st: UcMatch, result: "good" | "undercover"): { added: number; result: "good" | "undercover" } {
@@ -1938,6 +1962,34 @@ export function executeCommand(
       });
       toast(ctx, "已公佈好人題目");
       ctx.result = { promptCardId: card.id, questionNo: st.questionNo + 1 };
+      break;
+    }
+    /* ── v0.4.2：畫畫關「揀題目」（主持真係換到本題用邊一對；唔止係 dropdown 裝飾） ── */
+    case "uc.topic.pick": {
+      ensurePlaying(store);
+      ucMatchState(store); // 未開局／已清走本局 → W_ALREADY_STATE
+      const pickId = (cmd.targetId ?? optStr(p, "cardId") ?? "").trim();
+      if (!pickId) throw new CmdError("W_BAD_SCHEMA", "要 cardId（一圖多人題目卡 id）");
+      const pickCard = store.card(pickId);
+      if (!pickCard) throw new CmdError("W_BAD_SCHEMA", "冇呢張題目卡");
+      ctx.result = ucApplyTopic(ctx, pickCard);
+      break;
+    }
+    case "uc.topic.reroll": {
+      ensurePlaying(store);
+      const st0 = ucMatchState(store); // 未開局先 throw
+      const all = store
+        .gameCards("draw")
+        .filter((c) => typeof c.undercoverPrompt === "string" && c.undercoverPrompt.length > 0);
+      if (all.length === 0) throw new CmdError("W_ALREADY_STATE", "題庫冇一圖多人題目（檢查 undercover.seed.json）");
+      const used = new Set(st0.usedTopicIds ?? []);
+      const cur = st0.promptCardId;
+      // 先揀未用過嘅；題庫用晒就循環再用（唔好 throw）
+      let pool = all.filter((c) => !used.has(c.id) && c.id !== cur);
+      if (pool.length === 0) pool = all.filter((c) => c.id !== cur);
+      if (pool.length === 0) pool = all;
+      const picked = shuffled(pool)[0] as Card;
+      ctx.result = ucApplyTopic(ctx, picked);
       break;
     }
     case "uc.vote.start": {
