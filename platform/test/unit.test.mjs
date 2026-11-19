@@ -1193,7 +1193,7 @@ test("host.ts：控制台有 primary「大mon 返 QR／入場頁」掣，撳完�
     /<button class="primary" data-act="stage\.qr">大mon 返 QR／入場頁/,
     "要有明確、primary 樣式嘅返 QR 掣（唔止係 mode 格仔）",
   );
-  assert.match(src, /if \(sub === "qr"\) await cmd\("stage\.set", undefined, \{ mode: "idle" \}\)/, "一撳要送 stage.set idle");
+  assert.match(src, /if \(sub === "qr"\) await cmd\("stage\.qr"\)/, "一撳要送 stage.qr（逃生門：大mon 鎖定時都撳得）");
   const idxQuick = src.indexOf('data-act="stage.qr"');
   const idxGroups = src.indexOf('<div class="mode-groups">');
   assert.ok(idxQuick >= 0 && idxQuick < idxGroups, "掣要放喺流程／畫面區頂部（mode 格仔之上）");
@@ -3160,4 +3160,74 @@ test("v04-D・大mon／手機 gating：只出題目階段唔會出選項、冇�
   assert.match(hostSrc, /題目監控|問答進度：已出/, "主持台要有題目進度／下一題監控");
   assert.match(hostSrc, /id="quiz-jump"/, "要有 dropdown 跳題");
   assert.match(hostSrc, /id="quiz-clearscores"/, "要有『順便清走問答分』checkbox");
+});
+
+/* ───────── v0.4.1 整合修正（codex audit A／B 嘅 findings） ───────── */
+
+test("I1：stage.qr 係逃生門——大mon 鎖定時仍然返得去 QR", () => {
+  const { store } = aSetup("i1-qr");
+  run(store, "room.start");
+  run(store, "stage.lock", { lock: true });
+  // 普通 stage.set 照舊要被擋
+  assert.throws(() => run(store, "stage.set", { mode: "idle" }), isCmdError("W_STAGE_LOCKED", /大mon 已鎖定/));
+  // 但緊急逃生門要通
+  const qr = run(store, "stage.qr");
+  assert.equal(qr.ok, true, "stage.qr 唔應該被 lock 擋");
+  assert.equal(store.state.room.stage.mode, "idle", "大mon 要返到 QR／入場頁");
+  assert.equal(store.state.room.stage.lock, true, "唔可以順手解鎖（主持自己決定）");
+});
+
+test("I2：rundown.reset 會清走各關局面（唔會殘留舊一圖多人局擋住重玩）", () => {
+  const { store } = ucSetup("i2-reset-state", 6);
+  const started = run(store, "uc.match.start", { undercoverCount: 2 });
+  assert.equal(started.ok, true);
+  assert.ok(store.state.room.gameState?.undercover, "先要有進行中嘅一圖多人局");
+  const reset = run(store, "rundown.reset");
+  assert.equal(reset.ok, true);
+  assert.equal(store.state.room.gameState?.undercover ?? null, null, "重設流程要清走 undercover 局");
+  // 清咗之後即刻可以再開新一局（唔會再 W_ALREADY_STATE）
+  const again = run(store, "uc.match.start", { undercoverCount: 2 });
+  assert.equal(again.ok, true, `重設流程之後要開得返新局：${JSON.stringify(again)}`);
+});
+
+test("I3：由 final 重新開始 → 大mon 一定要出第一關規則頁（唔好跳去 idle）", () => {
+  const { store } = aSetup("i3-final-start");
+  run(store, "room.start");
+  // 直接用 room.phase 去 final，令 currentItem 仍然係第一關（codex audit A 重現嘅情境）
+  const fin = run(store, "room.phase", { phase: "final" });
+  assert.equal(fin.ok, true);
+  const restart = run(store, "room.start");
+  assert.equal(restart.ok, true);
+  assert.equal(store.currentItem()?.id, "rd_draw", "要返第一關");
+  assert.equal(store.state.room.stage.mode, "rules", "同 gameId 重入都要出規則頁（唔好 idle）");
+});
+
+test("I4：有進行中一圖多人局時，舊 undercover.start 要跟局（排除出局者＋寫 st.roundId）", () => {
+  const { store } = ucSetup("i4-legacy-start", 6);
+  const started = run(store, "uc.match.start", { undercoverCount: 2 });
+  assert.equal(started.ok, true);
+  const st0 = store.state.room.gameState.undercover;
+  const victim = st0.participantIds[0];
+  st0.eliminatedIds = [victim];
+  store.commit([{ t: "game.set", d: { gameState: { undercover: st0 } } }]);
+  const legacy = run(store, "undercover.start", { durationSeconds: 10 });
+  assert.equal(legacy.ok, true, JSON.stringify(legacy));
+  const round = store.currentRound();
+  assert.ok(round, "要有新 round");
+  assert.ok(!round.eligiblePlayerIds.includes(victim), "已出局者唔可以再做候選／選民");
+  assert.equal(store.state.room.gameState.undercover.roundId, round.id, "要寫返 st.roundId，主持台才認得結果");
+  assert.equal(round.cardId, "card_ucmatch", "要重用一圖多人投票卡");
+  // 之後主持台嘅 foul 流程唔會 W_WRONG_PHASE
+  assert.ok(store.card(round.cardId), "投票卡要存在");
+});
+
+test("I5：舊 undercover.start 喺本局已結算時要清楚報錯（唔好開出一個孤兒 round）", () => {
+  const { store } = ucSetup("i5-legacy-settled", 6);
+  run(store, "uc.match.start", { undercoverCount: 2 });
+  const st = store.state.room.gameState.undercover;
+  st.settled = true;
+  st.result = "good";
+  store.commit([{ t: "game.set", d: { gameState: { undercover: st } } }]);
+  assert.throws(() => run(store, "undercover.start", { durationSeconds: 10 }), isCmdError("W_ALREADY_STATE", /已結算/));
+  assert.ok(!store.currentRound(), "唔可以靜靜開一個孤兒 round");
 });

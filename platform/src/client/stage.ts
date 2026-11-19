@@ -491,11 +491,18 @@ function finalHtml(v: any): string {
  * catch 到就出「大mon 出錯」＋保留分數條（黑屏除外，唔可以自己漏光）。
  */
 function errorHtml(v: any): string {
+  // v0.4.1（codex audit A）：錯誤畫面本身唔可以再炸（例如原錯誤就喺 scoreBar 入面）
+  let bar = "";
+  try {
+    bar = v ? scoreBar(v) : "";
+  } catch {
+    bar = "";
+  }
   return `<div class="stage-main stage-idle">
     <div class="stage-mode-title">大mon 出錯</div>
-    <div class="stage-sub">呢一版畫面砌唔到，等主持撳「大mon 返 QR／入場頁」</div>
+    <div class="stage-sub">呢一版畫面砌唔到，等主持撳「大mon 返 QR／入場頁」（大mon 鎖定時先解鎖）</div>
     <div class="helptext">如果一直係咁，refresh 大mon 一次</div>
-    ${v ? scoreBar(v) : ""}
+    ${bar}
   </div>`;
 }
 
@@ -513,7 +520,14 @@ function render(): void {
     html = v?.stage?.mode === "blackout" ? `<div class="blackout"></div>` : errorHtml(v);
   }
   // 黑屏要真全黑：斷線 banner 都唔可以浮喺黑色 overlay 上面（非黑屏照舊顯示）
-  root.innerHTML = html + (v?.stage?.mode === "blackout" ? "" : connBanner(status, v));
+  try {
+    root.innerHTML = html + (v?.stage?.mode === "blackout" ? "" : connBanner(status, v));
+  } catch (err) {
+    // v0.4.1（codex audit A）：連寫入／banner 都唔可以令大mon 停留喺舊 frame
+    console.warn("[stage] 寫入畫面失敗，改用純文字錯誤畫面", err);
+    const plain = v?.stage?.mode === "blackout" ? " " : "大mon 出錯：等主持撳「大mon 返 QR」。";
+    root.textContent = plain;
+  }
   updateTimers();
 }
 

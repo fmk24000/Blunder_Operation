@@ -1,5 +1,66 @@
 # Changelog
 
+## v0.4.0 — 2026-11-19
+
+> 用戶實試 v0.3.3 之後報嘅四個問題，逐個修＋重寫規則頁。
+> 四個 team（builder＝deepseek-v4.1-flash／checker＝GLM-5.3／codex CLI audit）並行，最後由 Lead 合併。
+
+### Fixed — 主持台撳「開始遊戲」冇反應、左邊 panel 同大mon 脫節
+- **成因**：`room.start` 一開頭 `if (phase === "playing") throw W_ALREADY_STATE`。試完一次之後房間一直係
+  `playing`，所以之後每次撳「開始遊戲」都靜靜 throw，rundown 永遠「未開始」，大mon 亦唔會轉。
+- 而家：`room.start` 唔會再 throw。未開始／`currentItemId` 係 null／final／award → 一律**由第一關開始**
+  （設 playing＋rundown 第一項 running＋大mon 出第一關規則頁）；已經進行緊 → toast「已經開始咗：X」，唔會跳關。
+- 新增「**重設流程（返第一關）**」：全部 rundown 返 todo、void 未完成 round、**清走各關局面**
+  （一圖多人／笨蛋殺手／搗蛋鬼），測試完想重新玩唔使開新房。
+- 流程卡 pill 分三種清楚狀態（進行中／未開始（撳「開始遊戲」）／已完成（可以重玩）），
+  完成狀態唔會再被殘留 `currentItem` 遮住。
+- 大mon 控制加**同步狀態一行**（`大mon：模式・回合・鎖定`），鎖定時紅色 pill。
+- 大mon 鎖定時 `stage.set` 會回 `W_STAGE_LOCKED`「大mon 已鎖定，請先解鎖」，唔再靜靜冇反應。
+  另外新增 `stage.qr`：**緊急逃生門**，鎖定時主持仍然返得去 QR／入場頁。
+
+### Fixed — 大mon 死畫面（畫畫嗰幾個掣冇一個有用）
+- **成因**：`vote`／`undercover` 兩個掣只係 `stage.set`（冇開 round），stage `voteHtml()` 讀
+  `v.vote.options` 但 `v.vote` 係 null → TypeError → 大mon 凍結。
+- 移除「畫畫」組重複／死路嘅 `投票`、`臥底投票` 兩粒掣（真投票搬去一圖多人面板）。
+- `stage.ts` 所有 mode 加 null guard＋粵語佔位（vote／tally／reveal／question／bid／song／role-reveal／finale 等），
+  冇資料時出「等主持…」而唔會炸。
+- `render()` 加 error boundary：任何 render 錯誤都出「大mon 出錯」＋保留分數條＋教主持撳邊粒掣；
+  連寫入畫面／分數條本身出錯都有最後純文字防線。
+
+### Changed — 一圖多人投票：用返舊「投臥底」，跟 FLOW foul 走已被投走嘅人
+- 主持台**刪走**「舊：臥底投票」details 同重複掣；一圖多人面板變成**唯一投票入口**：
+  公佈好人題目 → 開始投票（10 秒）→ 已投 x/y＋立即開票 → **票數表＋票軌** → **Foul 最高票** → 下一題。
+- 票數／票軌全部讀 server 嘅 `v.undercover`，主持台唔自己再計。
+- server 統一成一條 `startDrawVote()`：候選＝approved ∩ 局內參賽者 − 已出局；
+  **選民＝候選**（修正舊 bug：舊 `undercover.start` 令已出局者一樣投得票）。
+- 新增 `uc.vote.foulTop`：server 自己計最高票再 foul；**同票**回 `W_TIE`、**0 票**回 `W_NO_VOTES`，
+  主持可以用 dropdown 手動揀人。重複 foul／重複結算都唔會 double count。
+- 舊 `undercover.start` 保留（API 兼容），但**有進行中一局時一律跟局**（排除出局者＋寫返 `roundId`），
+  本局已結算就清楚報錯，唔會開出孤兒 round。
+
+### Added — 問答流程：出題目同 30 秒作答分開、可以重玩、有題目監控
+- `ctrl-quiz` 由三個掣變五個：**出題目（只上大mon・唔倒數）**／**開始 30 秒作答**／公佈分佈／公佈答案／**重設問答**。
+  - `quiz.show`：大mon **只出題目文字**（唔出選項、唔倒數、唔開 round），手機維持等主持——主持可以慢慢讀題。
+  - `quiz.open`：真正開 30 秒 round，大mon＋手機先一齊出選項同倒數。
+  - 開卷中誤撳「出題目／跳題」再撳「開始作答」會**返去開緊嗰題**，唔會卡死。
+- **題目監控 panel**（題庫 tab）：已出 X／13、下一題 Q幾、當前題狀態、每題狀態 pill，
+  加 **dropdown 跳去任何一題**（只出題目，可以 fallback／重讀）。
+- **重設問答（可以再玩）**：13 題返 draft、void 未完成 round、可選「順便清走問答分」；
+  重設之後即刻可以再出 Q1（修正「RUN 咗一次就冇得再答」）。
+
+### Changed — 四頁規則頁跟壽星 FLOW 逐條重寫
+- 一圖多人／拍賣時間估歌／笨蛋殺手／問答四頁，按 `design/26party.xlsx`（第 8–72 行）重寫：
+  5 秒輪流畫、10 秒投票、foul 晒好人贏／3 題後仲有臥底＝臥底贏、拍賣最少秒數先聽＋同秒最後撳先＋指壓板 ×2、
+  笨蛋殺手 3 粒子彈殺兩人＋主持手動加分、問答 30 秒＋先分佈後答案、Q12 ±2 尺／Q13 主持即場入答案。
+- 每頁一屏放得落（1920×1080），加 test 鎖住字數／block type 白名單／一屏高度。
+- 對照表：`platform/docs/RULES-v0.4.md`。
+
+### 其他
+- 資產版本 `?v=20261120a`（強制大mon／主持台／手機重新下載新 JS）。
+- Tests **116 → 149**（新增 33 條：Team A 9、Team B 6、Team C 1、Team D 12、整合修正 5）。
+- 驗收：`node --test` 149/149、E2E 59/59（真 command＋真 WS 投票＋真 30 秒回合），
+  host／stage／play 真 browser 截圖。
+
 ## v0.3.3 — 2026-11-19
 
 ### Changed — 問答：收卷唔再派分，開正確答案先派分

@@ -565,10 +565,11 @@ function controlSection(v) {
         ? `<span class="pill" style="background:var(--red);color:#fff;border-color:var(--red)">大mon 已鎖定</span>`
         : "<b>正常</b>"}`;
     // A3-4：三種清楚狀態（唔好喺 playing 時仍然大大隻「未開始」）
-    const flowPill = cur
-        ? `<span class="pill on">進行中：${esc(cur.title)}</span>`
-        : v.phase === "final" || v.phase === "award"
-            ? `<span class="pill off">已完成（撳「開始遊戲」可以重玩）</span>`
+    // v0.4.1（codex audit A）：先睇 phase，唔好被殘留嘅 currentItem 遮住「已經完結」
+    const flowPill = v.phase === "final" || v.phase === "award"
+        ? `<span class="pill off">已完成（撳「開始遊戲」可以重玩）</span>`
+        : cur
+            ? `<span class="pill on">進行中：${esc(cur.title)}</span>`
             : `<span class="pill">未開始（撳「開始遊戲」）</span>`;
     // extraHtml：容許喺同一組尾插額外掣（例如估歌組嘅「開估」唔係 stage.mode，而係 media.reveal）
     const group = (label, modes, extraHtml = "") => `<div class="mode-group"><div class="mg-label">${label}</div><div class="stage-mode-grid">${modes
@@ -769,6 +770,11 @@ function undercoverMatchPanel(v) {
     const topCount = counts.length ? Math.max(...counts.map((c) => c.count)) : 0;
     const topCandidates = topCount > 0 ? counts.filter((c) => c.count === topCount) : [];
     const topLabel = topCandidates.length === 1 ? label(topCandidates[0].id) : "";
+    // v0.4.1（codex audit B）：掣嘅 enabled 條件要同 server 前置檢查一致，
+    // 唔好令主持撳咗必然失敗（未開票／已 foul／已結算／換咗題都唔應該撳得）。
+    const lastElimId = st.eliminatedIds[st.eliminatedIds.length - 1] ?? "";
+    const canUndo = !!lastElimId && !st.settled && (st.eliminatedByQuestion?.[lastElimId] ?? st.questionNo) === st.questionNo;
+    const canManualFoul = revealed && !questionDone && !st.settled && candidates.length > 0;
     const status = [
         `第 ${st.matchNo} 局`,
         `第 ${st.questionNo + 1}／3 題`,
@@ -832,7 +838,7 @@ function undercoverMatchPanel(v) {
     <div class="btn-row">
       <button data-act="ucm.redraw">重抽臥底</button>
       <button class="${st.promptRevealed ? "" : "primary"}" data-act="ucm.reveal" ${st.settled ? "disabled" : ""}>公佈好人題目</button>
-      <button data-act="ucm.undo" ${st.eliminatedIds.length ? "" : "disabled"}>取消上一個淘汰</button>
+      <button data-act="ucm.undo" ${canUndo ? "" : "disabled"} title="${canUndo ? "取消本題嘅淘汰" : "冇可取消嘅淘汰（或者已經換咗題／已結算）"}">取消上一個淘汰</button>
       <button class="primary" data-act="ucm.next">下一題／結算</button>
       <button data-act="ucm.settle" ${canSettle ? "" : "disabled"} title="${canSettle ? "判勝負＋加分" : "仲未夠 3 題／仲有臥底未出局（請撳「下一題／結算」）"}">分數結算</button>
       <button data-act="ucm.reset">清走本局（再開一局）</button>
@@ -840,7 +846,7 @@ function undercoverMatchPanel(v) {
     <div class="row wrap">
       <span class="muted">手動揀人 foul（同票／主持想改；已出局者唔會出現）：</span>
       <select id="ucm-target">${candidates.map((id) => `<option value="${esc(id)}">${label(id)}</option>`).join("")}</select>
-      <button class="danger" data-act="ucm.eliminate" ${candidates.length ? "" : "disabled"}>淘汰佢</button>
+      <button class="danger" data-act="ucm.eliminate" ${canManualFoul ? "" : "disabled"} title="${canManualFoul ? "foul 呢個人出局" : "要先開票兼未 foul 過，先可以手動淘汰"}">淘汰佢</button>
       <span class="muted">（大mon 會即刻講中／唔中）</span>
     </div>
     <div class="hint">每題流程：公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票嗰個（同票就要主持揀）→ 下一題。最多 3 題；兩個臥底都出局＝好人勝。計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
@@ -1725,7 +1731,7 @@ async function handleAct(act) {
         case "stage":
             // 一撳即返 QR／入場頁：stage.set 已經可以離開黑屏（唔使先撳「恢復畫面」）
             if (sub === "qr")
-                await cmd("stage.set", undefined, { mode: "idle" });
+                await cmd("stage.qr");
             else if (sub === "nextPage")
                 await cmd("stage.page", undefined, { pageIndex: (view?.stage?.payload?.pageIndex ?? 0) + 1 });
             else if (sub === "prevPage")

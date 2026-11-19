@@ -274,7 +274,9 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: RundownMove): void 
     setStageIfUnlocked(ctx, { mode: "finale", payload: {}, prevMode: "idle" });
   } else {
     // §6.1：轉去另一個 gameId 才自動出規則頁（同 game 連續 item 唔重彈）
-    const curGame = cur?.gameId;
+    // v0.4.1（codex audit A）：由 final／award「重新開始」時 cur 可能同 next 同 gameId（或者 cur 係封存咗），
+    // 一定要出返規則頁，唔好變咗流程 running 但大mon 跳去 idle（又再「兩邊各有各」）。
+    const curGame = mode === "start" ? undefined : cur?.gameId;
     if (!curGame || next.gameId !== curGame) {
       const rs = rulesStageForItem(ctx, next);
       if (rs) setStageIfUnlocked(ctx, rs);
@@ -1708,6 +1710,12 @@ export function executeCommand(
       const round = store.currentRound();
       if (round && round.state !== "void") push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "void" } } });
       if (room.currentRoundId) push(ctx, { t: "round.current", d: { currentRoundId: null } });
+      // v0.4.1（codex audit A）：重設流程＝真正重玩。只清 rundown 會殘留一圖多人／笨蛋殺手／搗蛋鬼
+      // 嘅局面（例如舊 match 未 settled → 之後 uc.match.start 會 W_ALREADY_STATE，主持以為壞咗）。
+      const hadGameState = Boolean(
+        room.gameState && (room.gameState.undercover || room.gameState.killer || room.gameState.saboteur),
+      );
+      if (hadGameState) push(ctx, { t: "game.set", d: { gameState: { undercover: null, killer: null, saboteur: null } } });
       push(ctx, { t: "rundown.set", d: { rundown, currentItemId: null, phase: "playing" } });
       const first = rundown[0];
       if (first) {
@@ -1716,7 +1724,7 @@ export function executeCommand(
       } else {
         setStageIfUnlocked(ctx, { mode: "idle", payload: {} });
       }
-      toast(ctx, first ? `流程重設：返「${first.title}」` : "流程重設（rundown 係空）");
+      toast(ctx, `${first ? `流程重設：返「${first.title}」` : "流程重設（rundown 係空）"}${hadGameState ? "（各關局面已清）" : ""}`);
       break;
     }
 
@@ -1764,13 +1772,30 @@ export function executeCommand(
     }
     case "undercover.start": {
       ensurePlaying(store);
-      // v0.4.0：同 uc.vote.start 行同一條 path（backward compat：舊 API 仍然開新卡）
+      // v0.4.1（codex audit B）：有進行中一圖多人局時，舊入口一律跟局——
+      // 只用局內參賽者、排除已出局者、並且寫返 st.roundId（否則主持台認唔到呢個結果，
+      // 之後 uc.eliminate 亦必然 W_WRONG_PHASE，形成死路）。
+      const match = store.state.room.gameState?.undercover ?? null;
+      if (match?.settled)
+        throw new CmdError("W_ALREADY_STATE", "本局已結算：要再投票請先喺一圖多人面板撳「開新一局」");
       const excludeRaw = p.excludePlayerIds;
       const exclude = Array.isArray(excludeRaw) ? (excludeRaw as string[]) : [];
-      const v = startDrawVote(ctx, {
-        excludeIds: exclude,
+      const opts: StartDrawVoteOpts = {
         durationSeconds: Number(p.durationSeconds ?? 10),
-      });
+      };
+      if (match) {
+        opts.participantIds = match.participantIds;
+        opts.excludeIds = [...(match.eliminatedIds ?? []), ...exclude];
+        opts.cardId = "card_ucmatch";
+      } else {
+        opts.excludeIds = exclude;
+      }
+      const v = startDrawVote(ctx, opts);
+      if (match) {
+        const st = cloneUcMatch(store);
+        st.roundId = v.round.id;
+        push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      }
       const durationSeconds = v.card.seconds ?? 10;
       toast(ctx, `臥底投票開始（${durationSeconds} 秒）`);
       ctx.result = {
@@ -1778,6 +1803,8 @@ export function executeCommand(
         cardId: v.card.id,
         durationSeconds,
         candidates: v.candidates,
+        matchNo: match?.matchNo ?? null,
+        questionNo: match ? match.questionNo + 1 : null,
       };
       break;
     }
@@ -2185,6 +2212,13 @@ export function executeCommand(
         stageSet(ctx, { mode, payload, prevMode });
       }
       toast(ctx, `大mon → ${MODE_TOAST_LABEL[mode] ?? mode}`);
+      break;
+    }
+    case "stage.qr": {
+      // v0.4.1（codex audit A）：緊急逃生門。大mon 鎖定時主持仍然要返得去 QR／入場頁，
+      // 否則「大mon 出錯」畫面教人撳嘅嗰粒掣會被 W_STAGE_LOCKED 擋住。
+      stageSet(ctx, { mode: "idle", payload: {}, prevMode: "idle" });
+      toast(ctx, "大mon 返 QR／入場頁");
       break;
     }
     case "stage.lock": {
