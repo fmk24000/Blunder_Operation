@@ -33,7 +33,7 @@ function renderJoin() {
         return;
     root.innerHTML = `
     <div class="play-wrap">
-      <div class="play-head"><span>壽星黑歷史</span><span>房碼 ${esc(roomCode || "…")}</span></div>
+      <div class="play-head"><span>圍威喂</span><span>房碼 ${esc(roomCode || "…")}</span></div>
       <div class="play-card">
         <div class="play-q">你叫咩名？</div>
         <input id="join-name" maxlength="12" placeholder="名（最多 12 字）" autocomplete="off">

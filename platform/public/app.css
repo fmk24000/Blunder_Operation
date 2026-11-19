@@ -1357,3 +1357,12 @@ body.host .tabbar button.active { background: var(--ink); color: #fff; }
 
 /* 大mon 倒數：最後 5 秒成粒轉紅（白字），唔再紅字藍底 */
 .countdown.is-urgent { background: var(--red); color: #fff; }
+
+/* 分數條：玩家名（墨黑）同分數（primary 藍）分色＋細分隔線，唔會再讀成「名＋數」一串 */
+.tick-name { color: var(--text); }
+.tick-score {
+  color: var(--lime); font-weight: 700;
+  margin-left: 2px; margin-right: 12px; padding-left: 10px;
+  border-left: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}

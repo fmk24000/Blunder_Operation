@@ -75,7 +75,7 @@ function idleHtml(v) {
     const players = (v.players ?? []).filter((p) => p.status !== "kicked");
     return `
   <div class="stage-main stage-idle">
-    <div class="stage-logo">關於我初試策劃<span class="accent">壽星黑歷史</span>這檔事</div>
+    <div class="stage-logo">關於我初試策劃<span class="accent">圍威喂</span>這檔事</div>
     <div class="stage-sub">用手機掃 QR 入場，等主持開始</div>
     <div class="idle-cols">
       <div>
