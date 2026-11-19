@@ -153,3 +153,13 @@ node scripts/make-manifest.mjs      # 更新 DELIVERY-MANIFEST.json
 - `stage.html` 保留 `<link rel=preload>`，其餘三頁移除（手機唔會白載 1.43MB）
 - `.pill` 改 `font-family: inherit`，主持台技術 chips 回復 mono
 - 大mon 內文 `font-weight: 600`（中文唔受影響，主要令 fallback 數字同中文視重一致）
+
+
+## v3.7 LINE Seed（主持台／手機，2026-11-19 晚）
+
+- 字型來源：`fonts/LINE_Seed_JP.zip`、`LINE_Seed_TW.zip`（官方 Web/WOFF2）。
+- **揀字規則**：JP 版覆蓋唔到本專案 **61 個用字**（你、佢、冇、嘅、喺、啲、咗、呢、咁、搵、撳、畀、哋、脷…）→ 唔能夠「出得哂所有中文」，所以**用 TW**。
+- TW 仍缺 **10 個粵字**（吓、咗、哋、啱、啲、喺、嗰、嘅、嚟、脷）→ 用 fallback stack（PingFang HK／Noto Sans TC／JhengHei）補，唔會 tofu。
+- 只套用 `body.host`、`body.play`；大mon 繼續用思緒重生體，landing 繼續系統字（未揀）。
+- 檔案：`public/fonts/line-seed-tw-rg.woff2`（3.3MB）、`line-seed-tw-bd.woff2`（3.5MB）；`font-display: swap`，冇 preload（手機唔想被 3.5MB 擋住）。
+- 前端資產版本 `?v=20261119p5`。

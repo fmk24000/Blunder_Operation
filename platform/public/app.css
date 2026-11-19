@@ -1366,3 +1366,24 @@ body.host .tabbar button.active { background: var(--ink); color: #fff; }
   border-left: 1px solid var(--line);
   font-variant-numeric: tabular-nums;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   LINE Seed（TW）— 主持台／手機（2026-11-19）
+   JP 版覆蓋唔到 61 個本專案用字（你／佢／冇／嘅／喺／啲…），所以照規則用 TW；
+   TW 仍缺 10 個粵字（吓咗哋啱啲喺嗰嘅嚟脷）→ fallback 去 PingFang HK／JhengHei。
+   ═══════════════════════════════════════════════════════════════════════════ */
+@font-face {
+  font-family: "LineSeed";
+  src: url("/fonts/line-seed-tw-rg.woff2") format("woff2");
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: "LineSeed";
+  src: url("/fonts/line-seed-tw-bd.woff2") format("woff2");
+  font-weight: 700; font-style: normal; font-display: swap;
+}
+:root {
+  --font-line: "LineSeed", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
+    "PingFang HK", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Helvetica Neue", sans-serif;
+}
+body.host, body.play { font-family: var(--font-line); }

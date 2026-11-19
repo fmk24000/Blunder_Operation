@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-19T07:49:56.110Z",
+  "generatedAt": "2026-11-19T08:37:06.788Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -109,12 +109,22 @@
     {
       "path": "package.json",
       "bytes": 973,
-      "sha256": "2718a2e9ff855bac96a6095b809a00083b29ad9face24a32ac7156deaac9f369"
+      "sha256": "6dfb70971bc181dec27a7f03988ccc1fd34ce30e99678db41d41aebcd8a1896d"
     },
     {
       "path": "public/app.css",
-      "bytes": 68581,
-      "sha256": "03acd65f3ad77013e2e2da67c8ec75689457131bbc03c7be3562076c3fe0e0ba"
+      "bytes": 69900,
+      "sha256": "e181b771cd58fc7ac67fd2a4352d97ce960ab5f51f7657772b6a50d5a5dadfe8"
+    },
+    {
+      "path": "public/fonts/line-seed-tw-bd.woff2",
+      "bytes": 3604524,
+      "sha256": "83735d5360de86634a13ba071ce7622e345d5748a2add308f0bca2b6bc111aa3"
+    },
+    {
+      "path": "public/fonts/line-seed-tw-rg.woff2",
+      "bytes": 3426920,
+      "sha256": "e5cd8a010917520af6c557fea5f259014fed46605f9ef9c175f763c97e849f7a"
     },
     {
       "path": "public/fonts/reborn.woff2",
@@ -124,7 +134,7 @@
     {
       "path": "public/host.html",
       "bytes": 501,
-      "sha256": "b0bcc5b14a8128fb12cc280d5b42c1ae83a20f035a879f909c82258540e44c41"
+      "sha256": "044515ddd2b1b643d99cbf7918785f6950d4b4357bdca9911a7be12ed7dfd08d"
     },
     {
       "path": "public/icon.svg",
@@ -134,7 +144,7 @@
     {
       "path": "public/index.html",
       "bytes": 1446,
-      "sha256": "f31460974417af8a2ffa00f7e4b6e6cbb9d3fd818d0ec52e309668539cb23902"
+      "sha256": "53f06f183dd8de3dc81bc8a48f9b869e6fe53af9c4dfc23494a54f7175c5e251"
     },
     {
       "path": "public/js/client/common.js",
@@ -174,7 +184,7 @@
     {
       "path": "public/play.html",
       "bytes": 682,
-      "sha256": "a4165932939dc432b36c811e816f7929142a9ceafc6765f993e3e6b2c388db56"
+      "sha256": "fe30c8e56638a0e021b07eee35c3eb8d629a01909c06d70421eb4284b43fc03a"
     },
     {
       "path": "public/quiz-legacy-mc.json",
@@ -184,7 +194,7 @@
     {
       "path": "public/stage.html",
       "bytes": 604,
-      "sha256": "4a69a54dd4f745cdd0b0b4de85b0b0acac7f667410cfffd1e59527cef5708ecc"
+      "sha256": "5bc95f80378aa4d84149e12c34af7dcb8219880346f1c2564d53fc4d09cd93e6"
     },
     {
       "path": "scripts/make-manifest.mjs",
