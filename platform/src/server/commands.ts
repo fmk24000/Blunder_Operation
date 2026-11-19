@@ -225,8 +225,11 @@ function renumberTitle(title: string, idx: number): string {
   return m ? `第 ${idx + 1} 關・${m[1]}` : title;
 }
 
+/** start＝由第一關重來（room.start 用）：唔會靜靜 throw，亦唔會留低上一關嘅 running */
+type RundownMove = "next" | "prev" | "skip" | "start";
+
 /** 入關／轉關：自動出規則頁（lock=true 唔 override） */
-function advanceRundown(ctx: Ctx, targetIndex: number, mode: "next" | "prev" | "skip"): void {
+function advanceRundown(ctx: Ctx, targetIndex: number, mode: RundownMove): void {
   const store = ctx.store;
   const room = store.state.room;
   if (room.rundown.length === 0) throw new CmdError("W_ALREADY_STATE", "rundown 係空");
@@ -234,7 +237,9 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: "next" | "prev" | "
   const curIndex = cur ? cur.index : -1;
   // 舊 item 狀態
   const rundown = room.rundown.map((i) => ({ ...i }));
-  if (cur) {
+  if (mode === "start") {
+    for (const i of rundown) if (i.state === "running") i.state = "todo";
+  } else if (cur) {
     const old = rundown.find((i) => i.id === cur.id);
     if (old) {
       old.state = mode === "skip" ? "skipped" : "done";
@@ -242,7 +247,8 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: "next" | "prev" | "
     }
   }
   let nextIndex: number;
-  if (mode === "prev") nextIndex = Math.max(0, curIndex - 1);
+  if (mode === "start") nextIndex = 0;
+  else if (mode === "prev") nextIndex = Math.max(0, curIndex - 1);
   else nextIndex = Math.min(rundown.length - 1, curIndex + 1);
   const next = rundown.find((i) => i.index === nextIndex);
   if (!next) throw new CmdError("W_ALREADY_STATE", "冇下一項");
@@ -276,7 +282,8 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: "next" | "prev" | "
       stageSet(ctx, { mode: "idle", payload: {} });
     }
   }
-  toast(ctx, `${mode === "skip" ? "Skip" : mode === "prev" ? "上一項" : "下一項"}：${next.title}`);
+  const moveLabel = mode === "skip" ? "Skip" : mode === "prev" ? "上一項" : mode === "start" ? "開始" : "下一項";
+  toast(ctx, `${moveLabel}：${next.title}`);
 }
 
 /** choices 卡揭曉時自動計分（同 round 只派一次） */
@@ -1545,6 +1552,23 @@ export function executeCommand(
       toast(ctx, `插入咗「${item.title}」`);
       break;
     }
+    case "rundown.reset": {
+      // 派對中途想由第一關重玩／測試完想重來：唔使開新房
+      const rundown = room.rundown.map((i, idx) => ({ ...i, index: idx, state: "todo" as const }));
+      const round = store.currentRound();
+      if (round && round.state !== "void") push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "void" } } });
+      if (room.currentRoundId) push(ctx, { t: "round.current", d: { currentRoundId: null } });
+      push(ctx, { t: "rundown.set", d: { rundown, currentItemId: null, phase: "playing" } });
+      const first = rundown[0];
+      if (first) {
+        const rs = rulesStageForItem(ctx, first);
+        if (rs) setStageIfUnlocked(ctx, rs);
+      } else {
+        setStageIfUnlocked(ctx, { mode: "idle", payload: {} });
+      }
+      toast(ctx, first ? `流程重設：返「${first.title}」` : "流程重設（rundown 係空）");
+      break;
+    }
 
     /* ── 出卡流程（§6 狀態機） ── */
     case "card.create": {
@@ -2007,6 +2031,8 @@ export function executeCommand(
     case "stage.set": {
       const mode = p.mode as StageMode | undefined;
       if (!mode || !MODES.includes(mode)) throw new CmdError("W_BAD_SCHEMA", "mode 唔合法");
+      // A1：大mon 鎖住嘅時候唔好靜靜 return（主持撳完冇反應，就係「兩邊脫節」嘅感覺）
+      if (room.stage.lock) throw new CmdError("W_STAGE_LOCKED", "大mon 已鎖定，請先解鎖");
       // 黑屏期間唔准出規則頁（同 stage.rules 一致；其他 mode 照樣放行，QR 逃生門不受影響）
       if (room.stage.mode === "blackout" && mode === "rules") throw new CmdError("W_STAGE_LOCKED", "blackout 期間唔准出規則頁");
       if (mode === "rules" && room.phase !== "playing") throw new CmdError("W_WRONG_PHASE", "rules 只准 playing phase");
@@ -2100,10 +2126,24 @@ export function executeCommand(
 
     /* ── 房間流程 ── */
     case "room.start": {
-      if (room.phase === "playing") throw new CmdError("W_ALREADY_STATE", "已經 playing");
-      push(ctx, { t: "room.phase", d: { phase: "playing" } });
-      setStageIfUnlocked(ctx, { mode: "scoreboard", payload: {} });
-      toast(ctx, "開始");
+      // A1：真正「開始遊戲」＝轉 playing＋入第一關。
+      // 以前 phase 已經 playing 就 throw，主持撳完咩都唔變（用戶回報「click 咗開始但冇反應」）。
+      if (room.rundown.length === 0) {
+        // 極端：rundown 空（未灌 seed）。照舊轉 phase，唔好令主持撳完冇反應。
+        if (room.phase !== "playing") push(ctx, { t: "room.phase", d: { phase: "playing" } });
+        setStageIfUnlocked(ctx, { mode: "scoreboard", payload: {} });
+        toast(ctx, "開始（rundown 係空，未有關卡）");
+        break;
+      }
+      const startedItem = store.currentItem();
+      if (room.phase === "playing" && startedItem) {
+        // 已經進行緊：唔 throw，但要講清楚而家進行到邊（唔好靜靜死）
+        toast(ctx, `已經開始咗：${startedItem.title}`);
+        break;
+      }
+      // lobby／idle／final／award，或者 playing 但 currentItemId=null（用戶撞到嘅情境）
+      // → 一律由第一關開始（advanceRundown 會 void 舊 round、出第一關規則頁）
+      advanceRundown(ctx, 0, "start");
       break;
     }
     case "room.phase": {

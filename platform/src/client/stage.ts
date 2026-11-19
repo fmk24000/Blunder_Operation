@@ -46,6 +46,18 @@ const MODE_LABEL: Record<string, string> = {
   blackout: "",
 };
 
+/**
+ * A2：冇資料時嘅友善佔位畫面。
+ * 大mon 最怕「死畫面」——寧願講清楚等主持做乜，都唔可以 throw 或者留白。
+ */
+function placeholder(v: any, title: string, text: string): string {
+  return `<div class="stage-main stage-idle">
+    <div class="stage-mode-title">${esc(title)}</div>
+    <div class="stage-sub">${esc(text)}</div>
+    ${v ? scoreBar(v) : ""}
+  </div>`;
+}
+
 function blocksHtml(page: any): string {
   if (!page) return "";
   return (page.blocks ?? [])
@@ -155,6 +167,7 @@ function boardHtml(v: any): string {
 
 function questionHtml(v: any): string {
   const q = v.question;
+  if (!q) return placeholder(v, "答題中", "等主持喺主持台開下一題…");
   const opts = q.options ?? [];
   return `
   <div class="stage-main">
@@ -181,6 +194,7 @@ function questionHtml(v: any): string {
 
 function tallyHtml(v: any): string {
   const t = v.tally;
+  if (!t) return placeholder(v, "答案分佈", "等主持喺主持台開投票／收卷…");
   const correct = v.stage.mode === "tally" ? undefined : undefined;
   void correct;
   return `
@@ -212,6 +226,7 @@ function revealHtml(v: any): string {
     return `<div class="stage-main" style="align-items:center;justify-content:center;text-align:center"><div class="stage-mode-title">歌名揭曉</div><div class="song-big">${esc(songTitle)}</div><div class="song-sub">主持會俾分</div>${scoreBar(v)}</div>`;
   }
   const r = v.reveal;
+  if (!r) return placeholder(v, "揭曉", "等主持喺主持台揭曉答案…");
   const opts = r.options ?? [];
   // v0.3.3：長題目（Q4／Q8／Q10）＋長解釋要喺 1080p 一屏放得落 →
   // 正解放大一嚿，其餘選項壓成一行，解釋放最後並限制行數。
@@ -303,6 +318,8 @@ function undercoverHtml(v: any): string {
 
 function voteHtml(v: any): string {
   const vote = v.vote;
+  // A2：冇開 round 就出佔位（以前 vote.options 直接 TypeError，成個大mon 凍結）
+  if (!vote) return placeholder(v, "投票", "等主持喺主持台開投票…");
   const works = v.drawWall?.works ?? [];
   if (works.length) {
     return `<div class="stage-main"><div class="stage-mode-title">投票：邊張最似（${vote.answeredCount}/${vote.eligibleCount}）</div>
@@ -324,6 +341,7 @@ function voteHtml(v: any): string {
 
 function bidHtml(v: any): string {
   const b = v.bid;
+  if (!b) return placeholder(v, "競投中", "等主持喺主持台開競投…");
   const ranking: any[] = b.ranking ?? [];
   if (ranking.length) {
     // 公佈競投結果：最少秒數排第一；而家由邊個聽
@@ -361,6 +379,7 @@ function bidHtml(v: any): string {
 
 function songHtml(v: any): string {
   const s = v.song;
+  if (!s) return placeholder(v, "聽歌", "等主持喺主持台開始播歌…");
   return `
   <div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
     <div class="stage-mode-title">聽歌・第 ${s.songIndex}／${s.totalSongs} 首</div>
@@ -372,6 +391,7 @@ function songHtml(v: any): string {
 
 function roleRevealHtml(v: any): string {
   const r = v.roleReveal;
+  if (!r) return placeholder(v, "身份揭曉", "等主持喺主持台揭曉身份…");
   return `
   <div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
     <div class="stage-mode-title">身份揭曉</div>
@@ -426,7 +446,7 @@ function gameScoresHtml(v: any): string {
 
 function finalHtml(v: any): string {
   const f = v.finale;
-  if (!f) return "";
+  if (!f) return placeholder(v, "結算", "等主持喺主持台撳「去結算」…");
   const stats = f.stats ?? {};
   const awardRows = (f.awards ?? [])
     .map((a: any) => {
@@ -452,10 +472,17 @@ function finalHtml(v: any): string {
   </div>`;
 }
 
-function waitingHtml(v: any): string {
-  const mode = v?.stage?.mode ?? "";
-  const title = MODE_LABEL[mode] ?? (mode || "等主持");
-  return `<div class="stage-main stage-idle"><div class="stage-logo">等待主持…</div><div class="stage-sub">${esc(title)}</div></div>`;
+/**
+ * A2 最後防線：render 出錯都唔可以令大mon 永遠停留喺舊 frame。
+ * catch 到就出「大mon 出錯」＋保留分數條（黑屏除外，唔可以自己漏光）。
+ */
+function errorHtml(v: any): string {
+  return `<div class="stage-main stage-idle">
+    <div class="stage-mode-title">大mon 出錯</div>
+    <div class="stage-sub">呢一版畫面砌唔到，等主持撳「大mon 返 QR／入場頁」</div>
+    <div class="helptext">如果一直係咁，refresh 大mon 一次</div>
+    ${v ? scoreBar(v) : ""}
+  </div>`;
 }
 
 function render(): void {
@@ -468,8 +495,8 @@ function render(): void {
   try {
     html = stageHtml(v);
   } catch (err) {
-    console.warn("[stage] render 失敗，改顯示等待畫面", err);
-    html = waitingHtml(v);
+    console.warn("[stage] render 失敗，改顯示錯誤提示", err);
+    html = v?.stage?.mode === "blackout" ? `<div class="blackout"></div>` : errorHtml(v);
   }
   // 黑屏要真全黑：斷線 banner 都唔可以浮喺黑色 overlay 上面（非黑屏照舊顯示）
   root.innerHTML = html + (v?.stage?.mode === "blackout" ? "" : connBanner(status, v));
@@ -522,7 +549,7 @@ function stageHtml(v: any): string {
         const focusId = v.drawWall?.focusId ?? null;
         const work = (v.drawWall?.works ?? []).find((w: any) => w.id === focusId) ?? (v.drawWall?.works ?? [])[0];
         html = `<div class="stage-main" style="align-items:center"><div class="stage-mode-title">作品放大</div>${
-          work ? `<img class="rb-img" style="max-height:640px" src="${esc(work.imageUrl)}"><div class="q-prompt" style="font-size:44px">#${work.authorNumber} ${esc(work.authorName)}</div>` : ""
+          work ? `<img class="rb-img" style="max-height:640px" src="${esc(work.imageUrl)}"><div class="q-prompt" style="font-size:44px">#${work.authorNumber} ${esc(work.authorName)}</div>` : `<div class="helptext">等主持喺主持台揀作品…</div>`
         }${scoreBar(v)}</div>`;
         break;
       }
