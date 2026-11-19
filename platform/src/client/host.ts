@@ -543,6 +543,23 @@ function controlSection(v: any): string {
   const curIdx = cur ? rd.findIndex((i: any) => i.id === cur.id) : -1;
   const nxt = rd[curIdx + 1] ?? rd.find((i: any) => i.state !== "done" && i.state !== "skipped");
   const mode = v.stage?.mode;
+  const locked = v.stage?.lock === true;
+  // A3-3：主持一眼要知「我撳嘅嘢有冇去到大mon」
+  const ROUND_ZH: Record<string, string> = { open: "進行中", closed: "已收卷", tally: "開票中", revealed: "已揭曉", void: "已作廢" };
+  const round = v.currentRound;
+  const syncLine = `大mon：<b>${esc(MODE_LABEL[mode] ?? mode ?? "待機")}</b>・${
+    round ? `回合<b>${esc(ROUND_ZH[round.state] ?? round.state)}</b>` : "冇回合"
+  }・${
+    locked
+      ? `<span class="pill" style="background:var(--red);color:#fff;border-color:var(--red)">大mon 已鎖定</span>`
+      : "<b>正常</b>"
+  }`;
+  // A3-4：三種清楚狀態（唔好喺 playing 時仍然大大隻「未開始」）
+  const flowPill = cur
+    ? `<span class="pill on">進行中：${esc(cur.title)}</span>`
+    : v.phase === "final" || v.phase === "award"
+      ? `<span class="pill off">已完成（撳「開始遊戲」可以重玩）</span>`
+      : `<span class="pill">未開始（撳「開始遊戲」）</span>`;
   // extraHtml：容許喺同一組尾插額外掣（例如估歌組嘅「開估」唔係 stage.mode，而係 media.reveal）
   const group = (label: string, modes: string[], extraHtml = "") =>
     `<div class="mode-group"><div class="mg-label">${label}</div><div class="stage-mode-grid">${modes
@@ -557,7 +574,7 @@ function controlSection(v: any): string {
       <div class="ctrl-sub">
         <button data-act="rd.prev">◀ 上一項</button>
         <button data-act="rd.skip">跳過呢關</button>
-        <span class="pill ${cur ? "on" : ""}">${cur ? `進行中：${esc(cur.title)}` : "未開始"}</span>
+        ${flowPill}
       </div>
       <div class="rd-list">${rd
         .map(
@@ -567,6 +584,7 @@ function controlSection(v: any): string {
         .join("")}</div>
       <div class="ctrl-phase">
         <button class="primary" data-act="room.start">開始遊戲</button>
+        <button data-act="rd.reset">重設流程（返第一關）</button>
         <button data-act="room.phase:lobby">返大堂</button>
         <button data-act="room.phase:final">去結算</button>
       </div>
@@ -574,6 +592,7 @@ function controlSection(v: any): string {
   </section>
   <section class="ctrl-stage"><h3>大mon 控制（現在：${esc(MODE_LABEL[mode] ?? mode)}）</h3>
     <div class="card-box">
+      <div class="hint ctrl-sync" style="margin-bottom:10px">${syncLine}</div>
       <div class="ctrl-quick">
         <button class="primary" data-act="stage.qr">大mon 返 QR／入場頁${mode === "blackout" ? "（離開黑屏）" : ""}</button>
       </div>
@@ -588,13 +607,13 @@ function controlSection(v: any): string {
       </div>
       <div class="mode-groups">
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
-        ${group("只換畫面（唔會收卷／評分）", ["question", "tally", "reveal"])}
+        ${group("只換畫面（唔會收卷／評分）・冇 round 會出提示", ["question", "tally", "reveal"])}
         ${group(
           "估歌",
           ["bid", "song"],
           `<button data-act="media.reveal" class="${mode === "reveal" && v.stage?.payload?.songTitle ? "active" : ""}">開估（揭曉歌名）</button>`,
         )}
-        ${group("畫畫", ["draw-wall", "draw-focus", "vote", "undercover"])}
+        ${group("畫畫", ["draw-wall", "draw-focus"])}
         ${group("搗蛋鬼／其他", ["role-reveal", "timer", "blackout"])}
         ${group("結算／頒獎", ["finale", "award", "game-scores"])}
       </div>

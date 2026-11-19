@@ -2482,3 +2482,144 @@ test("P1-f：到期一律拒提交＋競投秒數唔可以大過剩餘秒數（+
   assert.match(wsSrc, /roundExpired\(round\.endsAt, Date\.now\(\)\)/, "到期要一律拒（唔再淨係 draw 卡）");
   assert.match(wsSrc, /bidSecondsAllowed\(/, "bid 要驗剩餘秒數");
 });
+
+
+/* ───────── v0.4 Team A：主持台「開 game」同大mon 脫節／掣冇反應／大mon 死畫面 ───────── */
+
+/** 預設 4 關 rundown（draw→auction→killer→quiz），currentItemId=null、phase=lobby */
+function aSetup(tag) {
+  const { store } = makeStore(tag);
+  const rundown = defaultRundown(["q1"], ["uc_uc1"], ["auc_1"]);
+  store.commit([{ t: "rundown.set", d: { rundown, currentItemId: null, phase: "lobby" } }]);
+  return { store, rundown };
+}
+
+function rdOf(store) {
+  return store.state.room.rundown;
+}
+
+test("A4-1：room.start 喺 lobby → playing＋currentItemId=第一關＋大mon 出第一關規則頁", () => {
+  const { store } = aSetup("a4-start-lobby");
+  assert.equal(store.state.room.phase, "lobby");
+  const res = run(store, "room.start");
+  assert.equal(res.ok, true);
+  assert.equal(store.state.room.phase, "playing", "要轉 playing");
+  assert.equal(store.currentItem().id, "rd_draw", "currentItemId 要係第一關（左邊 panel 唔會再話未開始）");
+  assert.equal(rdOf(store)[0].state, "running");
+  assert.equal(store.state.room.stage.mode, "rules", "大mon 要即刻出第一關規則頁（唔再兩邊各有各）");
+  assert.equal(store.state.room.stage.payload.itemId, "rd_draw");
+  assert.equal(rdOf(store).filter((i) => i.state === "running").length, 1, "唔可以重複 push 出兩個 running");
+});
+
+test("A4-2：room.start 喺 playing 但 currentItemId=null（用戶撞到嘅情境）→ 唔 throw，照樣入第一關", () => {
+  const { store } = aSetup("a4-start-null-item");
+  // 模擬正式 server：已經 playing（之前試過），rundown 全部 todo，currentItemId=null
+  store.commit([{ t: "room.phase", d: { phase: "playing" } }]);
+  assert.equal(store.state.room.currentItemId, null);
+  const res = run(store, "room.start");
+  assert.equal(res.ok, true, "唔可以再 throw W_ALREADY_STATE（撳開始要有反應）");
+  assert.equal(store.currentItem().id, "rd_draw");
+  assert.equal(store.state.room.stage.mode, "rules");
+});
+
+test("A4-3：room.start 已經進行緊 → 唔 throw，亦唔會跳關（currentItemId 唔變）", () => {
+  const { store } = aSetup("a4-start-already");
+  run(store, "room.start");
+  run(store, "rundown.next"); // 主持撳到第 2 關
+  const before = store.currentItem().id;
+  assert.equal(before, "rd_auction");
+  const res = run(store, "room.start");
+  assert.equal(res.ok, true, "重複撳「開始遊戲」唔可以 throw");
+  assert.equal(store.currentItem().id, before, "唔可以因為撳開始而跳返第一關");
+  assert.equal(store.state.room.phase, "playing");
+});
+
+test("A4-4：stage.set 喺大mon 鎖住時 → W_STAGE_LOCKED（唔再靜靜冇反應）", () => {
+  const { store } = aSetup("a4-stage-locked");
+  run(store, "room.start");
+  const modeBefore = store.state.room.stage.mode;
+  run(store, "stage.lock", { lock: true });
+  assert.throws(() => run(store, "stage.set", { mode: "scoreboard" }), isCmdError("W_STAGE_LOCKED", /大mon 已鎖定，請先解鎖/));
+  assert.equal(store.state.room.stage.mode, modeBefore, "被拒之後畫面唔應該變");
+  // 解鎖之後即刻恢復正常（唔會變死結）
+  run(store, "stage.lock", { lock: false });
+  const res = run(store, "stage.set", { mode: "scoreboard" });
+  assert.equal(res.ok, true);
+  assert.equal(store.state.room.stage.mode, "scoreboard");
+});
+
+test("A4-5：rundown.reset → 全部 todo、currentItemId=null、phase=playing、未完 round void", () => {
+  const { store } = aSetup("a4-reset");
+  run(store, "room.start");
+  run(store, "rundown.next"); // 第 1 關 done、第 2 關 running
+  putRound(store, { id: "r_reset", cardId: "c1", state: "open", eligiblePlayerIds: [] });
+  const res = run(store, "rundown.reset");
+  assert.equal(res.ok, true);
+  assert.deepEqual(rdOf(store).map((i) => i.state), ["todo", "todo", "todo", "todo"], "全部返 todo");
+  assert.deepEqual(rdOf(store).map((i) => i.index), [0, 1, 2, 3]);
+  assert.equal(store.state.room.currentItemId, null);
+  assert.equal(store.state.room.phase, "playing");
+  assert.equal(store.state.room.currentRoundId, null, "要清走上一輪");
+  assert.equal(store.round("r_reset").state, "void", "未完 round 要 void（唔會殘留開住）");
+  // 大mon 出第一關規則頁（唔會空白／唔會留上一關畫面）
+  assert.equal(store.state.room.stage.mode, "rules");
+  assert.equal(store.state.room.stage.payload.itemId, "rd_draw");
+});
+
+test("A4-6：buildStageView 喺 mode=vote 但冇開 round → 唔 throw、vote=null", () => {
+  const { store } = aSetup("a4-vote-null");
+  run(store, "room.start");
+  run(store, "stage.set", { mode: "vote" });
+  assert.equal(store.state.room.currentRoundId, null, "前提：真係冇 round");
+  const view = buildStageView(store);
+  assert.equal(view.stage.mode, "vote");
+  assert.equal(view.vote, null, "冇 round 就係 null（大mon 側要有 placeholder 接住）");
+});
+
+test("A4-7：final／award 之後撳「開始遊戲」可以重新由第一關玩", () => {
+  const { store } = aSetup("a4-start-from-award");
+  run(store, "room.start");
+  for (let i = 0; i < 3; i += 1) run(store, "rundown.next"); // 玩到最後一關
+  run(store, "room.phase", { phase: "final" });
+  const res = run(store, "room.start");
+  assert.equal(res.ok, true, "完咗都要撳得返落去（唔好令主持要開新房）");
+  assert.equal(store.state.room.phase, "playing");
+  assert.equal(store.currentItem().id, "rd_draw");
+  assert.equal(rdOf(store).filter((i) => i.state === "running").length, 1, "只可以有一關 running");
+});
+
+test("A4-8：大mon 每個 mode 都 null-safe（冇資料出佔位）＋render 有 error boundary", () => {
+  const src = clientSrc("stage.ts");
+  for (const fn of ["voteHtml", "tallyHtml", "revealHtml", "questionHtml", "bidHtml", "songHtml", "roleRevealHtml"]) {
+    const start = src.indexOf(`function ${fn}(`);
+    assert.ok(start >= 0, `${fn} 要存在`);
+    const body = src.slice(start, src.indexOf("\nfunction ", start + 10));
+    assert.match(body, /if \(!\w+\) return placeholder\(/, `${fn} 開頭要有 null guard（唔可以再 TypeError 令大mon 凍結）`);
+  }
+  assert.match(src, /function placeholder\(/, "要有友善佔位 helper");
+  assert.match(src, /等主持喺主持台開投票…/, "vote 冇 round 要有粵語提示");
+  assert.match(src, /等主持喺主持台開下一題…/, "question 冇 round 要有提示");
+  assert.ok(!/v\.vote\.options/.test(src), "唔可以再直接讀 v.vote.options");
+  // render 出錯＝最後防線：出錯誤提示＋保留分數條（唔會停留喺舊 frame）
+  assert.match(src, /catch \(err\)[\s\S]{0,160}errorHtml\(v\)/, "render catch 要出 errorHtml");
+  assert.match(src, /function errorHtml[\s\S]{0,400}scoreBar\(v\)/, "錯誤畫面要保留分數條");
+  assert.match(src, /大mon 返 QR／入場頁/, "錯誤畫面要教主持撳邊個掣");
+});
+
+test("A4-9：主持台大mon 控制有同步狀態／鎖定紅 pill；畫畫組唔再放 vote／undercover", () => {
+  const src = clientSrc("host.ts");
+  // A3-3：一行同步狀態
+  assert.match(src, /const syncLine = `大mon：/, "要有「大mon：模式・回合・鎖定」一行");
+  assert.match(src, /大mon 已鎖定/, "鎖定時要出「大mon 已鎖定」pill");
+  assert.match(src, /background:var\(--red\)/, "鎖定 pill 要用紅色");
+  assert.match(src, /ROUND_ZH/, "要有回合狀態中文（唔好出 raw state）");
+  // A3-1：畫畫組只留純換畫面嘅兩個掣（真投票喺一圖多人面板）
+  assert.match(src, /group\("畫畫", \["draw-wall", "draw-focus"\]\)/, "畫畫組只留兩個掣");
+  assert.ok(!/group\("畫畫", \[[^\]]*"vote"/.test(src), "唔可以再放 vote（冇 round 會 TypeError）");
+  assert.ok(!/group\("畫畫", \[[^\]]*"undercover"/.test(src), "唔可以再放 undercover（死胡同）");
+  // A3-4：流程卡三種清楚狀態＋重設流程
+  assert.match(src, /未開始（撳「開始遊戲」）/, "未開始要教主持撳邊個掣");
+  assert.match(src, /已完成（撳「開始遊戲」可以重玩）/, "玩完要有第三種狀態");
+  assert.match(src, /data-act="rd\.reset"/, "要有「重設流程（返第一關）」掣");
+  assert.match(src, /await cmd\(`rundown\.\$\{sub\}`\)/, "rd.<sub> 要真係送 rundown command");
+});
