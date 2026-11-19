@@ -2662,9 +2662,50 @@ test("v04-D・quiz.open：仲有回合未完成／唔係 playing phase 會清楚
   run(store, "room.start");
   store.commit([{ t: "card.update", d: { cardId: "q1", patch: { state: "open" } } }]);
   store.commit([{ t: "card.update", d: { cardId: "q2", patch: { state: "open" } } }]);
-  const round = { id: "q1#1", cardId: "q1", cardVersion: 1, endsAt: null, closedAt: null, state: "open", eligiblePlayerIds: [] };
+  // 收咗卷（closed）嘅回合：真係要先 reveal，換題一律報錯（open 嘅回合係「返去答題畫面」，見下一條 test）
+  const round = { id: "q1#1", cardId: "q1", cardVersion: 1, endsAt: null, closedAt: Date.now(), state: "closed", eligiblePlayerIds: [] };
   store.commit([{ t: "round.put", d: { round, currentRoundId: round.id } }]);
   assert.throws(() => run(store, "quiz.open", {}, "q2"), isCmdError("W_ALREADY_STATE", /未完成/));
+  assert.equal(store.currentRound().id, "q1#1", "被拒之後 currentRound 唔可以變");
+});
+
+test("v04-D・P1-1：開卷中跳去別題再撳「開始 30 秒作答」→ 返去開緊嗰個 round（唔會卡死）", () => {
+  const { store } = makeStore("d-quiz-open-return");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  putQuizCards(store, 4);
+  run(store, "quiz.open"); // q1 開卷
+  const openRoundId = store.currentRound().id;
+  const roundCount = store.state.room.rounds.length;
+  assert.equal(store.card("q1").state, "open");
+
+  // 主持開卷中撳「出題目」睇 q3（大mon 轉咗 show q3，手機仲答緊 q1）
+  run(store, "quiz.show", {}, "q3");
+  assert.equal(store.state.room.stage.payload.cardId, "q3");
+
+  // 再撳「開始 30 秒作答」（client 會帶大mon 嗰張卡＝q3）→ 唔准 throw
+  const res = run(store, "quiz.open");
+  assert.equal(res.ok, true, "開卷中撳『開始作答』唔可以 throw（主持會卡死）");
+  assert.equal(store.currentRound().id, openRoundId, "currentRound 冇變");
+  assert.equal(store.state.room.rounds.length, roundCount, "唔會開多個 round");
+  assert.equal(store.card("q3").state, "draft", "唔會偷偷開別題");
+  assert.equal(store.state.room.stage.payload.roundId, openRoundId, "大mon 要返去開緊嗰個 round");
+  assert.equal(store.state.room.stage.payload.cardId, "q1");
+  assert.notEqual(store.state.room.stage.payload.showOptions, false, "返答題畫面（要有選項＋倒數）");
+  assert.equal(res.result.alreadyOpen, true);
+  assert.equal(res.result.returnedTo, "q1");
+
+  // 明確 targetId 指定另一張卡（例如主持用 dropdown 跳完再撳）→ 一樣返去開緊嗰題
+  run(store, "quiz.show", {}, "q4");
+  const res2 = run(store, "quiz.open", {}, "q4");
+  assert.equal(res2.ok, true);
+  assert.equal(store.currentRound().id, openRoundId);
+  assert.equal(store.state.room.stage.payload.cardId, "q1");
+  assert.equal(store.card("q4").state, "draft");
+
+  // round 過時變 closed（真係要先 reveal）→ 呢個時候換題照舊清楚報錯
+  store.commit([{ t: "round.update", d: { roundId: openRoundId, patch: { state: "closed" } } }]);
+  assert.throws(() => run(store, "quiz.open", {}, "q4"), isCmdError("W_ALREADY_STATE", /未完成/));
 });
 
 test("v04-D・quiz.reset：13 張 quiz 卡返 draft、currentRoundId 清空、其他關卡唔受影響", () => {

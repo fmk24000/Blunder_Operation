@@ -1743,14 +1743,9 @@ async function handleAct(act: string): Promise<void> {
       break;
     case "qa":
       if (sub === "question") {
-        // v04-D：唔再自動開 round（主持要先讀題）：有下一題 draft → quiz.show（只上大mon）
-        const quizCards: any[] = view?.quiz ?? [];
-        const next = quizCards.find((c: any) => c.state === "draft");
-        if (!next) {
-          failAct(`${quizCards.length} 題已出完：可以撳「重設問答」再玩，或者用 dropdown 跳去任何一題`);
-          return;
-        }
-        await cmd("quiz.show", next.id);
+        // v04-D：唔再自己揀下一題（client 嘅 v.quiz 次序同 server rundown cardIds 次序可能唔一致）：
+        // 交畀 server 揀，全部出完就會回 W_ALREADY_STATE 嘅清楚訊息（cmd() 會彈 toast）
+        await cmd("quiz.show");
       } else if (sub === "dist") {
         if (view?.currentRound?.state === "open") await cmd("card.close");
         await cmd("card.tally");

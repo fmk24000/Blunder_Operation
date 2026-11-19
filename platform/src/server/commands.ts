@@ -1358,16 +1358,35 @@ export function executeCommand(
       const stagePayload = (room.stage.payload ?? {}) as Record<string, unknown>;
       const stageCardId = typeof stagePayload.cardId === "string" ? stagePayload.cardId : undefined;
       const picked = cmd.targetId ?? optStr(p, "cardId") ?? stageCardId;
-      const card = picked ? quizCardOrThrow(store, picked) : nextDraftQuizCard(store);
-      if (!card) throw new CmdError("W_ALREADY_STATE", "冇未出嘅題：先撳「重設問答」再玩，或者用 dropdown 揀返任何一題");
+      const pickedCard = picked ? quizCardOrThrow(store, picked) : undefined;
       const openRound = store.currentRound();
-      // 同一題已經開緊：唔彈 W_ALREADY_STATE，只係推返答題畫面上去（主持可能啱啱睇過別題）
-      if (openRound && openRound.cardId === card.id && openRound.state === "open") {
-        setStageIfUnlocked(ctx, { mode: "question", payload: { roundId: openRound.id, cardId: card.id, showOptions: true } });
-        toast(ctx, "呢題已經開緊（大mon 返咗答題畫面）");
-        ctx.result = { roundId: openRound.id, cardId: card.id, alreadyOpen: true, cardState: card.state };
+      const openCard = openRound ? store.card(openRound.cardId) : undefined;
+      const openIsQuiz = !!openRound && !!openCard && openCard.gameId === "quiz";
+      // 場上已經有一個 quiz round 開緊：一律推返「開緊嗰個」答題畫面，唔會 throw、唔會開多個 round。
+      // （主持開卷中撳過「出題目／跳題」睇別題之後再撳「開始 30 秒作答」唔會卡死；要真係換題就先揭曉或者重設。）
+      if (openRound && openIsQuiz && openRound.state === "open") {
+        const openIdx = quizOrder(store).findIndex((c) => c.id === openRound.cardId);
+        setStageIfUnlocked(ctx, { mode: "question", payload: { roundId: openRound.id, cardId: openRound.cardId, showOptions: true } });
+        toast(
+          ctx,
+          pickedCard && pickedCard.id === openRound.cardId
+            ? "呢題已經開緊（大mon 返咗答題畫面）"
+            : openIdx >= 0
+              ? `返去 Q${openIdx + 1} 答題畫面（round 未收卷）`
+              : "返去答題畫面（round 未收卷）",
+        );
+        ctx.result = {
+          roundId: openRound.id,
+          cardId: openRound.cardId,
+          alreadyOpen: true,
+          returnedTo: pickedCard && pickedCard.id !== openRound.cardId ? openRound.cardId : undefined,
+          cardState: openCard?.state ?? null,
+        };
         break;
       }
+      const card = pickedCard ?? nextDraftQuizCard(store);
+      if (!card) throw new CmdError("W_ALREADY_STATE", "冇未出嘅題：先撳「重設問答」再玩，或者用 dropdown 揀返任何一題");
+      // 收咗卷／分佈中嘅回合真係要先揭曉（呢個時候唔可以靜靜換畫面）
       if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
         throw new CmdError("W_ALREADY_STATE", "仲有回合未完成：先撳「公佈答案」或者「重設問答」");
       if (card.state === "revealed")
