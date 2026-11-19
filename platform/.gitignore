@@ -5,3 +5,4 @@ media/
 .npm-cache/
 .env
 *.log
+.tmpdata/
