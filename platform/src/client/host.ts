@@ -537,6 +537,42 @@ function startLive(): void {
 }
 
 /* ───────────── 各 section ───────────── */
+
+/* v04-D：問答進度（卡 state ＋ currentRound 計「出咗幾題／下一題／當前」） */
+function quizProgress(v: any): {
+  quiz: any[];
+  total: number;
+  shown: number;
+  cur: any;
+  curIdx: number;
+  nextIdx: number;
+  statePill: (q: any) => { label: string; cls: string };
+} {
+  const quiz: any[] = v?.quiz ?? [];
+  const cur = v?.currentRound ?? null;
+  const curIdx = cur ? quiz.findIndex((q: any) => q.id === cur.cardId) : -1;
+  const shown = quiz.filter((q: any) => q.state !== "draft").length;
+  const nextIdx = quiz.findIndex((q: any) => q.state === "draft");
+  const statePill = (q: any): { label: string; cls: string } => {
+    if (cur && cur.cardId === q.id) {
+      if (cur.state === "open") return { label: "答緊", cls: "on" };
+      if (cur.state === "closed" || cur.state === "tally") return { label: "收咗卷", cls: "hot" };
+    }
+    if (q.state === "revealed") return { label: "已揭曉", cls: "off" };
+    if (q.state === "open" || q.state === "tally") return { label: "已開過", cls: "" };
+    return { label: "未出", cls: "" };
+  };
+  return { quiz, total: quiz.length, shown, cur, curIdx, nextIdx, statePill };
+}
+
+function quizProgressLine(v: any): string {
+  const { total, shown, cur, curIdx, nextIdx } = quizProgress(v);
+  if (!total) return `<div class="hint">題庫未有題目：去「題庫」tab 加題。</div>`;
+  const next = nextIdx >= 0 ? `Q${nextIdx + 1}（未出）` : `${total} 題已出完，可以重設再玩`;
+  const curTxt = cur && curIdx >= 0 ? `｜當前：Q${curIdx + 1}・${cur.state === "open" ? "答緊" : cur.state === "closed" || cur.state === "tally" ? "收咗卷" : "已揭曉"}` : "";
+  return `<div class="hint">問答進度：已出 ${shown}／${total} 題｜下一題：${esc(next)}${esc(curTxt)}</div>`;
+}
+
 function controlSection(v: any): string {
   const rd = v.rundown ?? [];
   const cur = rd.find((i: any) => i.id === v.currentItemId);
@@ -579,12 +615,17 @@ function controlSection(v: any): string {
       </div>
       <div class="ctrl-quiz">
         <div class="mg-label">問答真流程（會真正收卷／評分）</div>
+        ${quizProgressLine(v)}
         <div class="btn-row">
-          <button class="primary" data-act="qa.question">開下一題（card.open）</button>
+          <button class="primary" data-act="quiz.show">出題目（只上大mon・唔倒數）</button>
+          <button class="primary" data-act="quiz.open">開始 30 秒作答</button>
+        </div>
+        <div class="btn-row">
           <button data-act="qa.dist">公佈分佈（先收卷）</button>
           <button class="primary" data-act="qa.reveal">公佈答案（先收卷＋評分）</button>
+          <button data-act="quiz.reset">重設問答（可以再玩）</button>
         </div>
-        <div class="hint">上面三個掣接真 command；下面「只換畫面」嗰組只係推 stage mode，唔會收卷／評分。</div>
+        <div class="hint">「出題目」只喺大mon 出題目文字（唔出選項、唔倒數、手機唔變）；你讀完題目先撳「開始 30 秒作答」，大mon＋手機才會一齊出選項同倒數。全部出完可以撳「重設問答」再玩。</div>
       </div>
       <div class="mode-groups">
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
@@ -958,9 +999,48 @@ function cardsSection(v: any): string {
   </section>`;
 }
 
+/** v04-D：題目監控 panel（進度／下一題／當前＋dropdown 跳題＋重設再玩） */
+function quizMonitorHtml(v: any): string {
+  const { quiz, total, shown, cur, curIdx, nextIdx, statePill } = quizProgress(v);
+  if (!total) return "";
+  const next = nextIdx >= 0 ? `Q${nextIdx + 1}（未出）` : `${total} 題已出完`;
+  const curTxt =
+    cur && curIdx >= 0
+      ? `｜當前：Q${curIdx + 1}・${cur.state === "open" ? "答緊" : cur.state === "closed" || cur.state === "tally" ? "收咗卷" : "已揭曉"}`
+      : "";
+  return `<div class="card-box" style="background:var(--bg-soft)">
+    <div class="row wrap" style="justify-content:space-between;align-items:baseline">
+      <b>問答進度：已出 ${shown}／${total} 題</b>
+      <span class="muted">下一題：${esc(next)}${esc(curTxt)}</span>
+    </div>
+    <div class="row wrap" style="margin-top:8px">
+      <select id="quiz-jump" style="flex:2 1 320px">${quiz
+        .map((q: any, i: number) => {
+          const pill = statePill(q);
+          const head = String(q.prompt ?? "").slice(0, 20);
+          return `<option value="${esc(q.id)}" ${cur && cur.cardId === q.id ? "selected" : ""}>Q${i + 1}・${esc(pill.label)}・${esc(head)}</option>`;
+        })
+        .join("")}</select>
+      <button data-act="quiz.jump">跳去呢題（只出題目）</button>
+      <button data-act="quiz.open">開始 30 秒作答</button>
+    </div>
+    <div class="row wrap" style="margin-top:8px">
+      <button data-act="quiz.reset">重設問答（可以再玩）</button>
+      <label class="row"><input type="checkbox" id="quiz-clearscores"> 順便清走問答分</label>
+    </div>
+    <div class="row wrap" style="margin-top:6px">${quiz
+      .map((q: any, i: number) => {
+        const pill = statePill(q);
+        return `<span class="pill ${pill.cls}">Q${i + 1} ${esc(pill.label)}</span>`;
+      })
+      .join("")}</div>
+    <div class="hint">「跳去呢題」＝只喺大mon 出題目文字（唔開卷、唔倒數），可以重新讀題／fallback 去任何一題；撳「開始 30 秒作答」才真正開 round。</div>
+  </div>`;
+}
+
 function quizSection(v: any): string {
   const quiz = v.quiz ?? [];
-  return `<section><h3>題庫（${quiz.length} 題；改完即時生效）</h3>
+  return `${quizMonitorHtml(v)}<section><h3>題庫（${quiz.length} 題；改完即時生效）</h3>
     <div class="card-box">
       <div class="btn-row"><button class="primary" data-act="quiz.add:choice">加 MC 題</button><button data-act="quiz.add:open">加 Open 題</button></div>
       <details class="ctrl-settings"><summary>進階：舊題匯入（會覆蓋同名 MC 題）</summary>
@@ -998,7 +1078,7 @@ function quizSection(v: any): string {
         <textarea data-q-explanation="${q.id}" placeholder="解釋（reveal 後才出）">${esc(q.explanation ?? "")}</textarea>
         ${q.type === "open" ? `<input data-q-ref="${q.id}" value="${esc(q.referenceAnswer ?? "")}" placeholder="參考答案（例：206 塊）" style="width:100%;margin-top:6px">` : ""}
         <div class="row" style="margin-top:6px"><button class="primary btn-sm" data-act="quiz.save:${q.id}">儲存呢題</button>
-        <button class="btn-sm" data-act="card.open:${q.id}">用呢題出卡</button>
+        <button class="btn-sm" data-act="quiz.show:${q.id}">出呢題（只上大mon）</button>
         <span class="muted">state=${esc(q.state)}・version=${q.version}</span></div>
       </div>`;
       })
@@ -1663,15 +1743,14 @@ async function handleAct(act: string): Promise<void> {
       break;
     case "qa":
       if (sub === "question") {
-        const item = (view?.rundown ?? []).find((i: any) => i.gameId === "quiz");
-        const ids: string[] = item?.cardIds ?? [];
-        const cards = view?.cards ?? [];
-        const next = ids.map((id) => cards.find((c: any) => c.id === id)).find((c: any) => c && c.state === "draft");
+        // v04-D：唔再自動開 round（主持要先讀題）：有下一題 draft → quiz.show（只上大mon）
+        const quizCards: any[] = view?.quiz ?? [];
+        const next = quizCards.find((c: any) => c.state === "draft");
         if (!next) {
-          failAct("冇未開過嘅題（或者全部出完）");
+          failAct(`${quizCards.length} 題已出完：可以撳「重設問答」再玩，或者用 dropdown 跳去任何一題`);
           return;
         }
-        await cmd("card.open", next.id);
+        await cmd("quiz.show", next.id);
       } else if (sub === "dist") {
         if (view?.currentRound?.state === "open") await cmd("card.close");
         await cmd("card.tally");
@@ -1839,6 +1918,23 @@ async function handleAct(act: string): Promise<void> {
         ids[j] = tmp;
         await cmd("quiz.reorder", undefined, { ids });
       }
+    } else if (sub === "show") {
+      // v04-D：只出題目（唔開 round）——冇 arg 就由 server 揀下一題 draft
+      await cmd("quiz.show", arg || undefined);
+    } else if (sub === "open") {
+      // v04-D：真正開 30 秒 round（冇 arg 就跟大mon 而家 show 緊嗰題）
+      await cmd("quiz.open", arg || undefined);
+    } else if (sub === "jump") {
+      const id = val("#quiz-jump");
+      if (!id) {
+        failAct("先喺 dropdown 揀一題");
+        return;
+      }
+      await cmd("quiz.show", id);
+    } else if (sub === "reset") {
+      const clearScores = checked("#quiz-clearscores");
+      if (clearScores && !window.confirm("重設問答會令全部題目變返「未出」並 void 未完成嘅 round。確定順便清走全部問答分？")) return;
+      await cmd("quiz.reset", undefined, { clearScores });
     }
   } else if (key === "rules") {
     if (sub === "new" && arg) {

@@ -477,6 +477,10 @@ export type StageView = {
     answeredCount: number;
     eligibleCount: number;
     kind: string;
+    /** v04-D：false＝主持只出題目（未開 round），大mon 唔准出選項／倒數 */
+    showOptions?: boolean;
+    /** v04-D：true＝preview（未開 round，`quiz.show`）；手機仲係等主持 */
+    preview?: boolean;
   } | null;
   tally: StageTally | null;
   reveal: StageReveal | null;

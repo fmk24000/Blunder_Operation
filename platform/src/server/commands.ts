@@ -883,6 +883,55 @@ function settleUndercoverMatch(ctx: Ctx, st: UcMatch, result: "good" | "undercov
   return { added: events.length, result };
 }
 
+/* ── v04-D：問答流程（出題目／開始 30 秒作答／重設再玩） ── */
+
+/** 問答出題次序：以 rundown 嗰關嘅 cardIds 為準（主持改次序／刪題都跟佢），其餘 quiz 卡補喺尾 */
+function quizOrder(store: Store): Card[] {
+  const item = store.state.room.rundown.find((i) => i.gameId === "quiz");
+  const ids = item && item.cardIds.length ? item.cardIds : store.quizCards().map((c) => c.id);
+  const cards: Card[] = [];
+  for (const id of ids) {
+    const c = store.card(id);
+    if (c && c.gameId === "quiz" && !cards.some((x) => x.id === c.id)) cards.push(c);
+  }
+  for (const c of store.quizCards()) if (!cards.some((x) => x.id === c.id)) cards.push(c);
+  return cards;
+}
+
+function quizCardOrThrow(store: Store, cardId: string | undefined): Card {
+  if (!cardId) throw new CmdError("W_BAD_SCHEMA", "要題目 id");
+  const card = store.card(cardId);
+  if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+  if (card.gameId !== "quiz") throw new CmdError("W_BAD_SCHEMA", "唔係問答題（quiz.show／quiz.open 只接受問答卡）");
+  return card;
+}
+
+/** 下一題＝次序上第一張仲係 draft 嘅卡（全部 revealed 就冇） */
+function nextDraftQuizCard(store: Store): Card | undefined {
+  return quizOrder(store).find((c) => c.state === "draft");
+}
+
+/** card.open／quiz.open 共用：建立 round、卡轉 open、大mon 出答題畫面（行為同 card.open 原本一致） */
+function openCardRound(ctx: Ctx, card: Card): Round {
+  const store = ctx.store;
+  const room = store.state.room;
+  const openCount = room.rounds.filter((r) => r.cardId === card.id).length + 1;
+  const round: Round = {
+    id: `${card.id}#${openCount}`,
+    cardId: card.id,
+    cardVersion: card.version,
+    endsAt: card.seconds && card.seconds > 0 ? Date.now() + card.seconds * 1000 : null,
+    closedAt: null,
+    state: "open",
+    eligiblePlayerIds: store.approvedPlayers().map((pl) => pl.id),
+  };
+  push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
+  push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "open" } } });
+  const mode: StageMode = card.type === "bid" ? "bid" : card.type === "vote" ? "vote" : "question";
+  setStageIfUnlocked(ctx, { mode, payload: { roundId: round.id, cardId: card.id } });
+  return round;
+}
+
 /* ───────────────────────────── execute ───────────────────────────── */
 
 export type ExecuteResult = ApiResult<unknown>;
@@ -1283,6 +1332,88 @@ export function executeCommand(
       }
       toast(ctx, `估數字答案：${actual}`);
       ctx.result = { actualAnswer: actual, roundId };
+      break;
+    }
+
+    /* ── v04-D：問答流程 ── */
+    case "quiz.show": {
+      // 只出題目：大mon 出題目文字（唔出選項、唔倒數、唔開 round）；手機維持等主持
+      const cardId = cmd.targetId ?? optStr(p, "cardId");
+      const card = cardId ? quizCardOrThrow(store, cardId) : nextDraftQuizCard(store);
+      if (!card)
+        throw new CmdError("W_ALREADY_STATE", "全部問答題都出完：可以撳「重設問答」再玩，或者用 dropdown 跳去任何一題");
+      if (card.type !== "choice" && card.type !== "open")
+        throw new CmdError("W_BAD_SCHEMA", "呢張卡唔係選擇／開放題，出唔到題目畫面");
+      if (room.stage.lock) throw new CmdError("W_STAGE_LOCKED", "大mon 鎖定咗：先撳「解鎖大mon」再出題目");
+      const order = quizOrder(store);
+      const index = order.findIndex((c) => c.id === card.id);
+      setStageIfUnlocked(ctx, { mode: "question", payload: { cardId: card.id, showOptions: false, preview: true } });
+      toast(ctx, `大mon 出題目：Q${index + 1}（讀完先撳「開始 30 秒作答」）`);
+      ctx.result = { cardId: card.id, index: index + 1, preview: true, total: order.length };
+      break;
+    }
+    case "quiz.open": {
+      ensurePlaying(store);
+      // 主持流程：先 quiz.show（只出題目），再 quiz.open；冇指定就跟大mon 而家 show 緊嗰題
+      const stagePayload = (room.stage.payload ?? {}) as Record<string, unknown>;
+      const stageCardId = typeof stagePayload.cardId === "string" ? stagePayload.cardId : undefined;
+      const picked = cmd.targetId ?? optStr(p, "cardId") ?? stageCardId;
+      const card = picked ? quizCardOrThrow(store, picked) : nextDraftQuizCard(store);
+      if (!card) throw new CmdError("W_ALREADY_STATE", "冇未出嘅題：先撳「重設問答」再玩，或者用 dropdown 揀返任何一題");
+      const openRound = store.currentRound();
+      // 同一題已經開緊：唔彈 W_ALREADY_STATE，只係推返答題畫面上去（主持可能啱啱睇過別題）
+      if (openRound && openRound.cardId === card.id && openRound.state === "open") {
+        setStageIfUnlocked(ctx, { mode: "question", payload: { roundId: openRound.id, cardId: card.id, showOptions: true } });
+        toast(ctx, "呢題已經開緊（大mon 返咗答題畫面）");
+        ctx.result = { roundId: openRound.id, cardId: card.id, alreadyOpen: true, cardState: card.state };
+        break;
+      }
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成：先撳「公佈答案」或者「重設問答」");
+      if (card.state === "revealed")
+        throw new CmdError("W_ALREADY_STATE", "呢題已經揭曉：要重玩請撳「重設問答」，或者用 dropdown 跳去任何一題只出題目");
+      const round = openCardRound(ctx, card);
+      const secs = round.endsAt ? Math.max(0, Math.round((round.endsAt - Date.now()) / 1000)) : 0;
+      toast(ctx, `開始作答：${secs} 秒（大mon＋手機一齊出選項）`);
+      ctx.result = { roundId: round.id, cardId: card.id, endsAt: round.endsAt, seconds: secs, cardState: card.state };
+      break;
+    }
+    case "quiz.reset": {
+      const clearScores = p.clearScores === true;
+      const cards = quizOrder(store);
+      const ids = new Set(cards.map((c) => c.id));
+      if (!cards.length) throw new CmdError("W_ALREADY_STATE", "題庫係空：冇問答題可以重設");
+      // 1) 全部 quiz 卡返 draft（version +1）
+      const reset = cards.map((c) => ({ ...c, state: "draft" as const, version: c.version + 1 }));
+      push(ctx, { t: "quiz.set", d: { cards: reset } });
+      // 2) void 未完成嘅 quiz round，並清 currentRoundId（只准 quiz 卡嘅 round）
+      const voidRounds = room.rounds.filter(
+        (r) => ids.has(r.cardId) && (r.state === "open" || r.state === "closed" || r.state === "tally"),
+      );
+      for (const r of voidRounds) push(ctx, { t: "round.update", d: { roundId: r.id, patch: { state: "void" } } });
+      const cur = store.currentRound();
+      const curIsQuiz = !!cur && ids.has(cur.cardId);
+      if (curIsQuiz) push(ctx, { t: "round.current", d: { currentRoundId: null } });
+      // 3) 大mon 仲出緊問答畫面 → 返 idle（黑屏／規則頁唔准打斷；鎖住就唔動，主持自己解鎖再轉）
+      const stagePayload = (room.stage.payload ?? {}) as Record<string, unknown>;
+      const stageCardId = typeof stagePayload.cardId === "string" ? stagePayload.cardId : null;
+      const stageMode = room.stage.mode;
+      const stageShowsQuiz =
+        stageMode !== "blackout" &&
+        stageMode !== "rules" &&
+        ((stageCardId !== null && ids.has(stageCardId)) || (curIsQuiz && (stageMode === "question" || stageMode === "tally" || stageMode === "reveal")));
+      if (stageShowsQuiz) setStageIfUnlocked(ctx, { mode: "idle", payload: {} });
+      // 4) clearScores：只 void quiz 相關 ledger（gameId=quiz 或 cardId 屬 quiz 卡），其他關卡一分都唔郁
+      let voidedEvents = 0;
+      if (clearScores) {
+        const evIds = store.state.ledger
+          .filter((e) => !e.voided && (e.gameId === "quiz" || (typeof e.cardId === "string" && ids.has(e.cardId))))
+          .map((e) => e.id);
+        if (evIds.length) push(ctx, { t: "ledger.void", d: { eventIds: evIds, by: "host" } });
+        voidedEvents = evIds.length;
+      }
+      toast(ctx, `問答已重設：${reset.length} 題可以再出${clearScores ? `（清走 ${voidedEvents} 筆問答分）` : ""}`);
+      ctx.result = { cards: reset.length, voidRounds: voidRounds.map((r) => r.id), voidedEvents, clearScores };
       break;
     }
 
@@ -1806,20 +1937,7 @@ export function executeCommand(
       if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
         throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先 reveal 或 void");
       if (card.state === "revealed") throw new CmdError("W_ALREADY_STATE", "已 reveal 嘅卡要用 reopen");
-      const openCount = room.rounds.filter((r) => r.cardId === cardId).length + 1;
-      const round: Round = {
-        id: `${cardId}#${openCount}`,
-        cardId,
-        cardVersion: card.version,
-        endsAt: card.seconds && card.seconds > 0 ? Date.now() + card.seconds * 1000 : null,
-        closedAt: null,
-        state: "open",
-        eligiblePlayerIds: store.approvedPlayers().map((pl) => pl.id),
-      };
-      push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
-      push(ctx, { t: "card.update", d: { cardId, patch: { state: "open" } } });
-      const mode: StageMode = card.type === "bid" ? "bid" : card.type === "vote" ? "vote" : "question";
-      setStageIfUnlocked(ctx, { mode, payload: { roundId: round.id, cardId } });
+      openCardRound(ctx, card);
       toast(ctx, `開咗卡：${card.prompt.slice(0, 12)}`);
       break;
     }
