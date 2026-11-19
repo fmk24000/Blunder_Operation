@@ -22,6 +22,9 @@ export const ERROR_CODES = [
     "W_NO_AUDIO_LEASE",
     "W_AUDIO_READY_TIMEOUT",
     "W_STAGE_LOCKED",
+    /** v0.4.0：投票 foul 最高票（同票／冇人投票由主持決定） */
+    "W_TIE",
+    "W_NO_VOTES",
 ];
 export const CAPS = {
     rooms: 1,

@@ -166,8 +166,22 @@ function boardHtml(v: any): string {
 }
 
 function questionHtml(v: any): string {
-  const q = v.question;
-  if (!q) return placeholder(v, "答題中", "等主持喺主持台開下一題…");
+  const q = v?.question;
+  // v04-D：冇題目都唔准炸。Team A 有頂層 try/catch 都唔靠佢（大mon 要至少顯示友善 placeholder）
+  if (!q) return placeholder(v, "答題中", "等主持出題…（主持台撳「出題目」或者「開始 30 秒作答」先會出）");
+  // v04-D：quiz.show → 只出題目（唔出選項、唔倒數），主持讀完才開 30 秒 round
+  if (q.preview === true || q.showOptions === false) {
+    return `
+  <div class="stage-main">
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <div class="stage-mode-title">題目</div>
+    </div>
+    <div class="q-prompt">${esc(q.prompt ?? "")}</div>
+    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:260px;margin-top:12px;border-radius:14px">` : ""}
+    <div class="helptext" style="margin-top:20px">等主持開始作答…（宣佈開始之後 30 秒，選項會喺大mon 同手機一齊出）</div>
+    ${scoreBar(v)}
+  </div>`;
+  }
   const opts = q.options ?? [];
   return `
   <div class="stage-main">

@@ -302,7 +302,26 @@ export function buildStageView(store: Store): StageView {
   let roleReveal: StageView["roleReveal"] = null;
   let saboteurInfo: StageView["saboteurInfo"] = null;
 
-  if (cur) {
+  // v04-D：主持「出題目（只上大mon）」＝stage.payload.showOptions:false，唔開 round 都要砌到題目出大mon
+  const showOptions = payload.showOptions !== false;
+  if (stage.mode === "question" && !showOptions) {
+    const previewCard = typeof payload.cardId === "string" ? store.card(payload.cardId) : undefined;
+    if (previewCard && (previewCard.type === "choice" || previewCard.type === "open")) {
+      // preview 永遠唔帶 options／endsAt：大mon 只出題目文字，手機等主持開 round
+      question = {
+        roundId: "",
+        cardId: previewCard.id,
+        prompt: previewCard.prompt,
+        imageUrl: previewCard.imageUrl,
+        endsAt: null,
+        answeredCount: 0,
+        eligibleCount: store.approvedPlayers().length,
+        kind: previewCard.type,
+        showOptions: false,
+        preview: true,
+      };
+    }
+  } else if (cur) {
     const { round, card } = cur;
     if (stage.mode === "question" && (card.type === "choice" || card.type === "open")) {
       question = {
@@ -315,6 +334,8 @@ export function buildStageView(store: Store): StageView {
         answeredCount: cur.answered,
         eligibleCount: cur.eligible,
         kind: card.type,
+        showOptions: true,
+        preview: false,
       };
     }
   }

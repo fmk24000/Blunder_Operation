@@ -25,9 +25,6 @@ let live = null;
 let view = null;
 let status = "connecting";
 let token = null;
-/** 臥底投票：結果面板撳「再開一輪」後要返去設定表單 */
-let ucConfiguring = false;
-let ucConfiguringRound = "";
 let hostName = "";
 let hostId = "";
 let roomCode = "";
@@ -524,12 +521,55 @@ function startLive() {
     live.connect();
 }
 /* ───────────── 各 section ───────────── */
+/* v04-D：問答進度（卡 state ＋ currentRound 計「出咗幾題／下一題／當前」） */
+function quizProgress(v) {
+    const quiz = v?.quiz ?? [];
+    const cur = v?.currentRound ?? null;
+    const curIdx = cur ? quiz.findIndex((q) => q.id === cur.cardId) : -1;
+    const shown = quiz.filter((q) => q.state !== "draft").length;
+    const nextIdx = quiz.findIndex((q) => q.state === "draft");
+    const statePill = (q) => {
+        if (cur && cur.cardId === q.id) {
+            if (cur.state === "open")
+                return { label: "答緊", cls: "on" };
+            if (cur.state === "closed" || cur.state === "tally")
+                return { label: "收咗卷", cls: "hot" };
+        }
+        if (q.state === "revealed")
+            return { label: "已揭曉", cls: "off" };
+        if (q.state === "open" || q.state === "tally")
+            return { label: "已開過", cls: "" };
+        return { label: "未出", cls: "" };
+    };
+    return { quiz, total: quiz.length, shown, cur, curIdx, nextIdx, statePill };
+}
+function quizProgressLine(v) {
+    const { total, shown, cur, curIdx, nextIdx } = quizProgress(v);
+    if (!total)
+        return `<div class="hint">題庫未有題目：去「題庫」tab 加題。</div>`;
+    const next = nextIdx >= 0 ? `Q${nextIdx + 1}（未出）` : `${total} 題已出完，可以重設再玩`;
+    const curTxt = cur && curIdx >= 0 ? `｜當前：Q${curIdx + 1}・${cur.state === "open" ? "答緊" : cur.state === "closed" || cur.state === "tally" ? "收咗卷" : "已揭曉"}` : "";
+    return `<div class="hint">問答進度：已出 ${shown}／${total} 題｜下一題：${esc(next)}${esc(curTxt)}</div>`;
+}
 function controlSection(v) {
     const rd = v.rundown ?? [];
     const cur = rd.find((i) => i.id === v.currentItemId);
     const curIdx = cur ? rd.findIndex((i) => i.id === cur.id) : -1;
     const nxt = rd[curIdx + 1] ?? rd.find((i) => i.state !== "done" && i.state !== "skipped");
     const mode = v.stage?.mode;
+    const locked = v.stage?.lock === true;
+    // A3-3：主持一眼要知「我撳嘅嘢有冇去到大mon」
+    const ROUND_ZH = { open: "進行中", closed: "已收卷", tally: "開票中", revealed: "已揭曉", void: "已作廢" };
+    const round = v.currentRound;
+    const syncLine = `大mon：<b>${esc(MODE_LABEL[mode] ?? mode ?? "待機")}</b>・${round ? `回合<b>${esc(ROUND_ZH[round.state] ?? round.state)}</b>` : "冇回合"}・${locked
+        ? `<span class="pill" style="background:var(--red);color:#fff;border-color:var(--red)">大mon 已鎖定</span>`
+        : "<b>正常</b>"}`;
+    // A3-4：三種清楚狀態（唔好喺 playing 時仍然大大隻「未開始」）
+    const flowPill = cur
+        ? `<span class="pill on">進行中：${esc(cur.title)}</span>`
+        : v.phase === "final" || v.phase === "award"
+            ? `<span class="pill off">已完成（撳「開始遊戲」可以重玩）</span>`
+            : `<span class="pill">未開始（撳「開始遊戲」）</span>`;
     // extraHtml：容許喺同一組尾插額外掣（例如估歌組嘅「開估」唔係 stage.mode，而係 media.reveal）
     const group = (label, modes, extraHtml = "") => `<div class="mode-group"><div class="mg-label">${label}</div><div class="stage-mode-grid">${modes
         .map((m) => `<button data-act="stage.mode:${m}" class="${mode === m ? "active" : ""}">${esc(MODE_LABEL[m] ?? m)}</button>`)
@@ -543,13 +583,14 @@ function controlSection(v) {
       <div class="ctrl-sub">
         <button data-act="rd.prev">◀ 上一項</button>
         <button data-act="rd.skip">跳過呢關</button>
-        <span class="pill ${cur ? "on" : ""}">${cur ? `進行中：${esc(cur.title)}` : "未開始"}</span>
+        ${flowPill}
       </div>
       <div class="rd-list">${rd
         .map((i) => `<div class="ledger-row"><span class="pill ${i.state === "running" ? "on" : i.state === "done" ? "off" : ""}">${esc(RD_STATE[i.state] ?? i.state)}</span><span class="grow">${esc(i.title)}</span><span class="muted">${esc(i.gameId)}</span></div>`)
         .join("")}</div>
       <div class="ctrl-phase">
         <button class="primary" data-act="room.start">開始遊戲</button>
+        <button data-act="rd.reset">重設流程（返第一關）</button>
         <button data-act="room.phase:lobby">返大堂</button>
         <button data-act="room.phase:final">去結算</button>
       </div>
@@ -557,23 +598,29 @@ function controlSection(v) {
   </section>
   <section class="ctrl-stage"><h3>大mon 控制（現在：${esc(MODE_LABEL[mode] ?? mode)}）</h3>
     <div class="card-box">
+      <div class="hint ctrl-sync" style="margin-bottom:10px">${syncLine}</div>
       <div class="ctrl-quick">
         <button class="primary" data-act="stage.qr">大mon 返 QR／入場頁${mode === "blackout" ? "（離開黑屏）" : ""}</button>
       </div>
       <div class="ctrl-quiz">
         <div class="mg-label">問答真流程（會真正收卷／評分）</div>
+        ${quizProgressLine(v)}
         <div class="btn-row">
-          <button class="primary" data-act="qa.question">開下一題（card.open）</button>
+          <button class="primary" data-act="quiz.show">出題目（只上大mon・唔倒數）</button>
+          <button class="primary" data-act="quiz.open">開始 30 秒作答</button>
+        </div>
+        <div class="btn-row">
           <button data-act="qa.dist">公佈分佈（先收卷）</button>
           <button class="primary" data-act="qa.reveal">公佈答案（先收卷＋評分）</button>
+          <button data-act="quiz.reset">重設問答（可以再玩）</button>
         </div>
-        <div class="hint">上面三個掣接真 command；下面「只換畫面」嗰組只係推 stage mode，唔會收卷／評分。</div>
+        <div class="hint">「出題目」只喺大mon 出題目文字（唔出選項、唔倒數、手機唔變）；你讀完題目先撳「開始 30 秒作答」，大mon＋手機才會一齊出選項同倒數。全部出完可以撳「重設問答」再玩。</div>
       </div>
       <div class="mode-groups">
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
-        ${group("只換畫面（唔會收卷／評分）", ["question", "tally", "reveal"])}
+        ${group("只換畫面（唔會收卷／評分）・冇 round 會出提示", ["question", "tally", "reveal"])}
         ${group("估歌", ["bid", "song"], `<button data-act="media.reveal" class="${mode === "reveal" && v.stage?.payload?.songTitle ? "active" : ""}">開估（揭曉歌名）</button>`)}
-        ${group("畫畫", ["draw-wall", "draw-focus", "vote", "undercover"])}
+        ${group("畫畫", ["draw-wall", "draw-focus"])}
         ${group("搗蛋鬼／其他", ["role-reveal", "timer", "blackout"])}
         ${group("結算／頒獎", ["finale", "award", "game-scores"])}
       </div>
@@ -620,7 +667,6 @@ function controlSection(v) {
     ${undercoverMatchPanel(v)}
     ${killerPanel(v)}
     ${bidPanel(v)}
-    <details class="ctrl-settings"><summary>舊：臥底投票（單輪投票，唔用一圖多人流程）</summary>${undercoverPanel(v)}</details>
   </section>`;
 }
 /** FIX-3b：拍賣時間估歌控制（由「進階→歌單」搬上控制頁；舊歌單 tab 嘅 code 仍然保留） */
@@ -690,7 +736,9 @@ function killerPanel(v) {
     </div>
     <div class="hint">輸贏由主持加分（gameId=killer，會計入「分項結算」個笨蛋殺手欄）。</div></div>`;
 }
-/** v0.3.0 一圖多人（畫畫臥底）：主持逐步撳，每一步都顯示當前狀態（第幾局／第幾題／仲有幾個臥底／邊個出局） */
+/** v0.4.0 一圖多人（畫畫臥底）：唯一投票入口。
+ *  主持逐步撳：開局 → 公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票 → 下一題／結算。
+ *  票數／票軌／已投人數一律讀 host view 嘅 v.undercover（buildUndercover 已經計好），主持台唔自己再算。 */
 function undercoverMatchPanel(v) {
     const st = v.undercoverMatch;
     const approved = (v.players ?? []).filter((p) => p.status === "approved");
@@ -701,23 +749,32 @@ function undercoverMatchPanel(v) {
     };
     if (!st || (st.participantIds ?? []).length === 0) {
         return `<div class="card-box" style="margin-top:10px"><h4>一圖多人（畫畫臥底）${st ? `・下一局係第 ${st.matchNo} 局` : ""}</h4>
-      <div class="hint">開局＝由 approved 玩家隨機抽 2 個臥底＋抽 3 對題目。每題流程：公佈好人題目 → 開投票（10 秒）→ 淘汰一個 → 下一題；最多 3 題。</div>
+      <div class="hint">開局＝由 approved 玩家隨機抽 2 個臥底＋抽 3 對題目。每題流程：公佈好人題目 → 開投票（10 秒）→ 開票 → foul 最高票嗰個 → 下一題；最多 3 題。</div>
       <div class="row wrap"><label class="row">臥底數 <input id="ucm-count" type="number" min="1" max="4" value="2" style="width:70px"></label>
       <button class="primary" data-act="ucm.start">開新一局</button></div></div>`;
     }
     const remaining = (st.undercoverIds ?? []).filter((id) => !st.eliminatedIds.includes(id)).length;
     const eliminated = (st.eliminatedIds ?? []).map((id) => `<span class="pill ${st.undercoverIds.includes(id) ? "hot" : "gray"}">${label(id)}${st.undercoverIds.includes(id) ? "（臥底）" : ""}</span>`);
     const undercoverList = (st.undercoverIds ?? []).map((id) => `<span class="pill hot">${label(id)}</span>`).join("") || "—";
+    // 候選＝未出局參賽者（已出局唔可以再被投）
     const candidates = (st.participantIds ?? []).filter((id) => !st.eliminatedIds.includes(id));
-    const voting = Boolean(st.roundId) && v.currentRound?.state === "open" && v.currentRound?.id === st.roundId;
     // FIX-8：勝負未定唔准結算（同 server 前置檢查一致）
     const canSettle = remaining === 0 || st.result === "good" || st.questionNo >= 2;
+    // 票數／票軌／進度：全部嚟自 host view（唔自己計）
+    const u = v.undercover;
+    const voting = !st.settled && u?.phase === "voting";
+    const revealed = !st.settled && u?.phase === "result";
+    const questionDone = Object.values(st.eliminatedByQuestion ?? {}).some((q) => q === st.questionNo);
+    const counts = revealed ? [...(u.candidates ?? [])].sort((a, b) => b.count - a.count) : [];
+    const topCount = counts.length ? Math.max(...counts.map((c) => c.count)) : 0;
+    const topCandidates = topCount > 0 ? counts.filter((c) => c.count === topCount) : [];
+    const topLabel = topCandidates.length === 1 ? label(topCandidates[0].id) : "";
     const status = [
         `第 ${st.matchNo} 局`,
         `第 ${st.questionNo + 1}／3 題`,
         `仲有 ${remaining} 個臥底未出局`,
         st.promptRevealed ? "已公佈好人題目" : "未公佈題目",
-        voting ? "投票中" : "冇投票進行",
+        voting ? `投票中（已投 ${u.answeredCount}／${u.eligibleCount}）` : revealed ? "已開票" : "冇投票進行",
         st.settled ? `已結算：${st.result === "good" ? "好人勝" : st.result === "undercover" ? "臥底勝" : "?"}` : "未結算",
     ]
         .map((x) => `<span class="pill">${esc(x)}</span>`)
@@ -734,52 +791,60 @@ function undercoverMatchPanel(v) {
         <span class="pill hot">臥底題（關鍵詞）：${esc(c?.undercoverPrompt ?? "?")}</span></div>`;
     })
         .join("");
+    const tallyRows = counts
+        .map((c) => {
+        const top = topCount > 0 && c.count === topCount;
+        return `<div class="ledger-row" ${top ? 'style="background:var(--bg-soft);font-weight:700"' : ""}>
+        <span class="pill ${top ? "hot" : "gray"}">${top ? "👑 最高票" : "　"}</span>
+        <span class="grow">#${c.number} ${esc(c.name)}</span><b>${c.count} 票</b></div>`;
+    })
+        .join("");
+    const ballotLine = revealed
+        ? (u.ballots ?? [])
+            .map((b) => `#${b.voterNumber} ${esc(b.voterName)} → ${esc(b.targetName)}`)
+            .join("｜")
+        : "";
+    // 投票步驟：一時只會出一個 phase 嘅控制（唔會再有重複掣）
+    const voteStep = st.settled
+        ? `<div class="row wrap"><span class="muted">本局已結算，唔再投票。</span></div>`
+        : voting
+            ? `<div class="row wrap"><span class="pill on">已投 ${u.answeredCount}／${u.eligibleCount}</span>
+          <button class="primary" data-act="ucm.revealRound">立即開票</button></div>
+        <div class="hint">大mon 顯示「請投出你心目中嘅臥底」＋${u.durationSeconds} 秒倒數；時到自動開票。</div>`
+            : revealed
+                ? `<div class="row wrap"><span class="pill on">票數</span>${topCandidates.length > 1 ? `<span class="pill hot">同票（${topCandidates.map((c) => esc(c.name)).join("、")}）：請主持揀</span>` : ""}</div>
+        ${tallyRows || '<div class="muted">（呢題冇票）</div>'}
+        ${ballotLine ? `<div class="hint">票軌：${ballotLine}</div>` : ""}
+        <div class="row wrap">
+          <button class="primary" data-act="ucm.foultop" ${questionDone || topCandidates.length !== 1 ? "disabled" : ""} title="${questionDone ? "本題已經 foul 咗一個" : topCandidates.length === 1 ? "由 server 計最高票再 foul" : "同票／冇票：請用下面 dropdown 揀人"}">Foul 最高票${topLabel ? `：${topLabel}` : ""}（一人出局）</button>
+        </div>`
+                : `<div class="row wrap"><span class="muted">${st.promptRevealed ? "題目已公佈，可以開投票。" : "先公佈好人題目，再開投票（跟 FLOW 次序）。"}</span></div>
+          <div class="row wrap"><button class="primary" data-act="ucm.vote" ${st.promptRevealed ? "" : "disabled"}>開始投票（10 秒）</button></div>`;
     return `<div class="card-box" style="margin-top:10px"><h4>一圖多人（畫畫臥底）</h4>
     <div class="row wrap">${status}</div>
     <div class="row wrap"><span class="pill hot">臥底（主持專用）</span>${undercoverList}</div>
     <div style="margin-top:6px"><div class="muted">本局題目（派卡用：好人題＋臥底題各一張；現時嗰對高亮）</div>${topicRows || '<div class="muted">（未抽題）</div>'}</div>
     <div class="row wrap"><span class="muted">已出局：</span>${eliminated.join("") || '<span class="muted">（未有）</span>'}</div>
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+      <div class="row wrap"><span class="pill">本題投票</span></div>
+      ${voteStep}
+    </div>
     <div class="btn-row">
       <button data-act="ucm.redraw">重抽臥底</button>
-      <button class="${st.promptRevealed ? "" : "primary"}" data-act="ucm.reveal">公佈好人題目</button>
-      <button class="primary" data-act="ucm.vote" ${st.settled ? "disabled" : ""}>開投票（10 秒）</button>
-      <button data-act="ucm.undo">取消上一個淘汰</button>
+      <button class="${st.promptRevealed ? "" : "primary"}" data-act="ucm.reveal" ${st.settled ? "disabled" : ""}>公佈好人題目</button>
+      <button data-act="ucm.undo" ${st.eliminatedIds.length ? "" : "disabled"}>取消上一個淘汰</button>
       <button class="primary" data-act="ucm.next">下一題／結算</button>
       <button data-act="ucm.settle" ${canSettle ? "" : "disabled"} title="${canSettle ? "判勝負＋加分" : "仲未夠 3 題／仲有臥底未出局（請撳「下一題／結算」）"}">分數結算</button>
       <button data-act="ucm.reset">清走本局（再開一局）</button>
     </div>
     <div class="row wrap">
-      <span class="muted">淘汰邊個：</span>
+      <span class="muted">手動揀人 foul（同票／主持想改；已出局者唔會出現）：</span>
       <select id="ucm-target">${candidates.map((id) => `<option value="${esc(id)}">${label(id)}</option>`).join("")}</select>
-      <button class="danger" data-act="ucm.eliminate">淘汰佢</button>
+      <button class="danger" data-act="ucm.eliminate" ${candidates.length ? "" : "disabled"}>淘汰佢</button>
       <span class="muted">（大mon 會即刻講中／唔中）</span>
     </div>
-    <div class="hint">計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
+    <div class="hint">每題流程：公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票嗰個（同票就要主持揀）→ 下一題。最多 3 題；兩個臥底都出局＝好人勝。計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
   </div>`;
-}
-function undercoverPanel(v) {
-    const u = v.undercover;
-    const players = (v.players ?? []).filter((p) => p.status === "approved");
-    if (u && u.phase === "voting") {
-        return `<div class="card-box" style="margin-top:10px"><h4>臥底投票（進行中）</h4>
-      <div class="row wrap"><span class="pill">已投 ${u.answeredCount}／${u.eligibleCount}</span>
-      <button class="primary" data-act="uc.reveal">立即開票</button></div>
-      <div class="hint">大mon 顯示「請投出你心目中嘅臥底」＋${u.durationSeconds} 秒倒數；時到自動開票。</div></div>`;
-    }
-    if (u && u.phase === "result" && !(ucConfiguring && ucConfiguringRound === String(v.currentRound?.id ?? ""))) {
-        return `<div class="card-box" style="margin-top:10px"><h4>臥底投票結果</h4>
-      ${u.candidates.map((c) => `<div class="ledger-row"><span class="grow">#${c.number} ${esc(c.name)}</span><b>${c.count} 票</b></div>`).join("")}
-      <div class="hint">${u.ballots.map((b) => `${esc(b.voterName)}→${esc(b.targetName)}`).join("｜")}</div>
-      <div class="btn-row"><button class="primary" data-act="uc.new">再開一輪</button><button data-act="stage.qr">大mon 返 QR</button></div></div>`;
-    }
-    const rows = players
-        .map((p) => `<label class="row" style="gap:6px"><input type="checkbox" data-uc-p="${p.id}" checked>#${p.number} ${esc(p.name)}</label>`)
-        .join("");
-    return `<div class="card-box" style="margin-top:10px"><h4>臥底投票（畫畫關・紙本出題）</h4>
-    <div class="hint">剔走已 foul／唔玩嘅人：佢哋唔會出現喺候選名單（仍然可以投票）。</div>
-    <div class="row wrap">${rows || `<span class="muted">未有已批准玩家</span>`}</div>
-    <div class="btn-row"><label class="row">秒數 <input id="uc-seconds" type="number" min="5" max="60" value="10" style="width:80px"></label>
-    <button class="primary" data-act="uc.start">開始臥底投票</button></div></div>`;
 }
 function playersSection(v) {
     const groups = v.groups ?? [];
@@ -913,9 +978,47 @@ function cardsSection(v) {
     </div>
   </section>`;
 }
+/** v04-D：題目監控 panel（進度／下一題／當前＋dropdown 跳題＋重設再玩） */
+function quizMonitorHtml(v) {
+    const { quiz, total, shown, cur, curIdx, nextIdx, statePill } = quizProgress(v);
+    if (!total)
+        return "";
+    const next = nextIdx >= 0 ? `Q${nextIdx + 1}（未出）` : `${total} 題已出完`;
+    const curTxt = cur && curIdx >= 0
+        ? `｜當前：Q${curIdx + 1}・${cur.state === "open" ? "答緊" : cur.state === "closed" || cur.state === "tally" ? "收咗卷" : "已揭曉"}`
+        : "";
+    return `<div class="card-box" style="background:var(--bg-soft)">
+    <div class="row wrap" style="justify-content:space-between;align-items:baseline">
+      <b>問答進度：已出 ${shown}／${total} 題</b>
+      <span class="muted">下一題：${esc(next)}${esc(curTxt)}</span>
+    </div>
+    <div class="row wrap" style="margin-top:8px">
+      <select id="quiz-jump" style="flex:2 1 320px">${quiz
+        .map((q, i) => {
+        const pill = statePill(q);
+        const head = String(q.prompt ?? "").slice(0, 20);
+        return `<option value="${esc(q.id)}" ${cur && cur.cardId === q.id ? "selected" : ""}>Q${i + 1}・${esc(pill.label)}・${esc(head)}</option>`;
+    })
+        .join("")}</select>
+      <button data-act="quiz.jump">跳去呢題（只出題目）</button>
+      <button data-act="quiz.open">開始 30 秒作答</button>
+    </div>
+    <div class="row wrap" style="margin-top:8px">
+      <button data-act="quiz.reset">重設問答（可以再玩）</button>
+      <label class="row"><input type="checkbox" id="quiz-clearscores"> 順便清走問答分</label>
+    </div>
+    <div class="row wrap" style="margin-top:6px">${quiz
+        .map((q, i) => {
+        const pill = statePill(q);
+        return `<span class="pill ${pill.cls}">Q${i + 1} ${esc(pill.label)}</span>`;
+    })
+        .join("")}</div>
+    <div class="hint">「跳去呢題」＝只喺大mon 出題目文字（唔開卷、唔倒數），可以重新讀題／fallback 去任何一題；撳「開始 30 秒作答」才真正開 round。</div>
+  </div>`;
+}
 function quizSection(v) {
     const quiz = v.quiz ?? [];
-    return `<section><h3>題庫（${quiz.length} 題；改完即時生效）</h3>
+    return `${quizMonitorHtml(v)}<section><h3>題庫（${quiz.length} 題；改完即時生效）</h3>
     <div class="card-box">
       <div class="btn-row"><button class="primary" data-act="quiz.add:choice">加 MC 題</button><button data-act="quiz.add:open">加 Open 題</button></div>
       <details class="ctrl-settings"><summary>進階：舊題匯入（會覆蓋同名 MC 題）</summary>
@@ -951,7 +1054,7 @@ function quizSection(v) {
         <textarea data-q-explanation="${q.id}" placeholder="解釋（reveal 後才出）">${esc(q.explanation ?? "")}</textarea>
         ${q.type === "open" ? `<input data-q-ref="${q.id}" value="${esc(q.referenceAnswer ?? "")}" placeholder="參考答案（例：206 塊）" style="width:100%;margin-top:6px">` : ""}
         <div class="row" style="margin-top:6px"><button class="primary btn-sm" data-act="quiz.save:${q.id}">儲存呢題</button>
-        <button class="btn-sm" data-act="card.open:${q.id}">用呢題出卡</button>
+        <button class="btn-sm" data-act="quiz.show:${q.id}">出呢題（只上大mon）</button>
         <span class="muted">state=${esc(q.state)}・version=${q.version}</span></div>
       </div>`;
     })
@@ -1591,8 +1694,19 @@ async function handleAct(act) {
                 await cmd("uc.prompt.reveal");
             else if (sub === "vote")
                 await cmd("uc.vote.start");
-            else if (sub === "eliminate")
+            // v0.4.0：投票中「立即開票」（同一個 finalizeUndercover，唔再另開一套 code path）
+            else if (sub === "revealRound")
+                await cmd("undercover.reveal");
+            // v0.4.0：由 server 計最高票再 foul（同票／冇票會 throw W_TIE／W_NO_VOTES 顯示喺 toast）
+            else if (sub === "foultop")
+                await cmd("uc.vote.foulTop");
+            else if (sub === "eliminate") {
+                if (!val("#ucm-target")) {
+                    failAct("冇人可以揀（全部出局？）");
+                    return;
+                }
                 await cmd("uc.eliminate", undefined, { playerId: val("#ucm-target") });
+            }
             else if (sub === "undo")
                 await cmd("uc.eliminate.undo");
             else if (sub === "next")
@@ -1601,22 +1715,6 @@ async function handleAct(act) {
                 await cmd("uc.match.settle");
             else if (sub === "reset")
                 await cmd("uc.match.reset");
-            break;
-        case "uc":
-            if (sub === "start") {
-                ucConfiguring = false;
-                const secs = Number(val("#uc-seconds")) || 10;
-                const approved = (view?.players ?? []).filter((p) => p.status === "approved");
-                const exclude = approved.filter((p) => !checked(`[data-uc-p="${p.id}"]`)).map((p) => p.id);
-                await cmd("undercover.start", undefined, { excludePlayerIds: exclude, durationSeconds: secs });
-            }
-            else if (sub === "reveal")
-                await cmd("undercover.reveal");
-            else if (sub === "new") {
-                ucConfiguring = true;
-                ucConfiguringRound = String(view?.currentRound?.id ?? "");
-                render();
-            }
             break;
         case "room":
             if (sub === "start")
@@ -1643,15 +1741,9 @@ async function handleAct(act) {
             break;
         case "qa":
             if (sub === "question") {
-                const item = (view?.rundown ?? []).find((i) => i.gameId === "quiz");
-                const ids = item?.cardIds ?? [];
-                const cards = view?.cards ?? [];
-                const next = ids.map((id) => cards.find((c) => c.id === id)).find((c) => c && c.state === "draft");
-                if (!next) {
-                    failAct("冇未開過嘅題（或者全部出完）");
-                    return;
-                }
-                await cmd("card.open", next.id);
+                // v04-D：唔再自己揀下一題（client 嘅 v.quiz 次序同 server rundown cardIds 次序可能唔一致）：
+                // 交畀 server 揀，全部出完就會回 W_ALREADY_STATE 嘅清楚訊息（cmd() 會彈 toast）
+                await cmd("quiz.show");
             }
             else if (sub === "dist") {
                 if (view?.currentRound?.state === "open")
@@ -1854,6 +1946,28 @@ async function handleAct(act) {
                 ids[j] = tmp;
                 await cmd("quiz.reorder", undefined, { ids });
             }
+        }
+        else if (sub === "show") {
+            // v04-D：只出題目（唔開 round）——冇 arg 就由 server 揀下一題 draft
+            await cmd("quiz.show", arg || undefined);
+        }
+        else if (sub === "open") {
+            // v04-D：真正開 30 秒 round（冇 arg 就跟大mon 而家 show 緊嗰題）
+            await cmd("quiz.open", arg || undefined);
+        }
+        else if (sub === "jump") {
+            const id = val("#quiz-jump");
+            if (!id) {
+                failAct("先喺 dropdown 揀一題");
+                return;
+            }
+            await cmd("quiz.show", id);
+        }
+        else if (sub === "reset") {
+            const clearScores = checked("#quiz-clearscores");
+            if (clearScores && !window.confirm("重設問答會令全部題目變返「未出」並 void 未完成嘅 round。確定順便清走全部問答分？"))
+                return;
+            await cmd("quiz.reset", undefined, { clearScores });
         }
     }
     else if (key === "rules") {
