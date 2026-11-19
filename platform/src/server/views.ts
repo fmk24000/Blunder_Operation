@@ -345,6 +345,19 @@ export function buildStageView(store: Store): StageView {
       sabCounts = approved.map((p) => subs2.filter((x) => x.text === p.id).length);
       if (round.state === "open") sabCounts = sabOptions.map(() => 0);
     }
+    // v0.3.3：開放題（冇 options）→ 列出「名＋答案」，主持／大mon 對卷時認得人
+    const answers = options.length
+      ? []
+      : subs
+          .map((s) => {
+            const p = store.player(s.playerId);
+            if (!p) return null;
+            const text = typeof s.amount === "number" ? String(s.amount) : (s.text ?? "");
+            return { name: p.name, avatar: p.avatar, text, number: p.number };
+          })
+          .filter((x): x is { name: string; avatar: PublicPlayer["avatar"]; text: string; number: number } => x !== null)
+          .sort((a, b) => a.number - b.number)
+          .map(({ name, avatar, text }) => ({ name, avatar, text }));
     tally = {
       roundId: round.id,
       cardId: card.id,
@@ -354,6 +367,7 @@ export function buildStageView(store: Store): StageView {
       voters: isSab ? [] : voters,
       answerCount: cur.answered,
       eligibleCount: cur.eligible,
+      answers: isSab ? [] : answers,
     };
   }
 

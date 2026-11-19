@@ -413,6 +413,8 @@ export type StageTally = {
   voters: { name: string; avatar: Avatar; choice: number }[];
   answerCount: number;
   eligibleCount: number;
+  /** v0.3.3：開放題（數字／文字）收卷之後，大mon 要見到「邊個答咗乜」（以前淨係得個數） */
+  answers?: { name: string; avatar: Avatar; text: string }[];
 };
 
 export type StageReveal = {

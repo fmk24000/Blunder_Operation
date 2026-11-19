@@ -168,16 +168,20 @@ function tallyHtml(v) {
     return `
   <div class="stage-main">
     <div class="stage-mode-title">答案分佈（未公佈正解）</div>
-    <div class="q-prompt" style="font-size:56px">${esc(t.prompt)}</div>
+    <div class="q-prompt tally-prompt">${esc(t.prompt)}</div>
     <div class="tally-grid">${(t.options ?? [])
         .map((o, i) => {
         const n = t.counts?.[i] ?? 0;
         const voters = (t.voters ?? []).filter((vv) => vv.choice === i);
+        // v0.3.3：頭像下面要出人名（以前淨係得個圓圈，主持／觀眾認唔到邊個）
         return `<div class="tally-col"><h4>${String.fromCharCode(65 + i)}．${esc(o)}</h4><div class="n">${n} 票</div><div class="tally-avatars">${voters
-            .map((vv) => avatarHtml(vv.avatar, 46))
+            .map((vv) => `<span class="tally-voter">${avatarHtml(vv.avatar, 46)}<span class="tally-name">${esc(vv.name)}</span></span>`)
             .join("")}</div></div>`;
     })
         .join("")}</div>
+    ${(t.answers ?? []).length ? `<div class="tally-answers">${(t.answers ?? [])
+        .map((a) => `<div class="tally-answer">${avatarHtml(a.avatar, 40)}<span class="tally-answer-name">${esc(a.name)}</span><span class="tally-answer-val">${esc(String(a.text ?? ""))}</span></div>`)
+        .join("")}</div>` : ""}
     <div class="q-meta"><div class="answered">${(v.tally?.options ?? []).length ? "已開票" : "已投"} ${t.answerCount}/${t.eligibleCount}</div></div>
     ${v.saboteurInfo?.eliminated?.length ? `<div class="helptext" style="margin-top:12px">已淘汰：${v.saboteurInfo.eliminated.map((p) => `#${p.number} ${esc(p.name)}`).join("、")}</div>` : ""}
     ${scoreBar(v)}
@@ -190,17 +194,27 @@ function revealHtml(v) {
     }
     const r = v.reveal;
     const opts = r.options ?? [];
+    // v0.3.3：長題目（Q4／Q8／Q10）＋長解釋要喺 1080p 一屏放得落 →
+    // 正解放大一嚿，其餘選項壓成一行，解釋放最後並限制行數。
+    const correct = typeof r.correct === "number" ? r.correct : -1;
+    const correctText = correct >= 0 ? opts[correct] : undefined;
+    const others = opts.map((o, i) => ({ o, i })).filter((x) => x.i !== correct);
     return `
-  <div class="stage-main">
+  <div class="stage-main reveal-main">
     <div class="stage-mode-title">揭曉</div>
-    <div class="q-prompt" style="font-size:56px">${esc(r.prompt)}</div>
-    ${opts.length
-        ? `<div class="q-options">${opts
-            .map((o, i) => `<div class="q-option ${r.correct === i ? "correct" : ""}"><span class="letter">${String.fromCharCode(65 + i)}</span><span>${esc(o)}</span>${r.counts ? `<span class="muted" style="margin-left:auto;font-size:34px">${r.counts[i] ?? 0}</span>` : ""}</div>`)
+    <div class="reveal-prompt">${esc(r.prompt)}</div>
+    ${correctText !== undefined
+        ? `<div class="reveal-answer"><span class="letter">${String.fromCharCode(65 + correct)}</span><span class="reveal-answer-text">${esc(correctText)}</span>${r.counts ? `<span class="reveal-count">${r.counts[correct] ?? 0} 票</span>` : ""}</div>`
+        : ``}
+    ${others.length
+        ? `<div class="reveal-rest">${others
+            .map((x) => `<div class="reveal-rest-row"><span class="reveal-rest-letter">${String.fromCharCode(65 + x.i)}</span><span class="reveal-rest-text">${esc(x.o)}</span>${r.counts ? `<span class="reveal-rest-count">${r.counts[x.i] ?? 0}</span>` : ""}</div>`)
             .join("")}</div>`
-        : `<div class="explain">參考答案：${esc(r.referenceAnswer ?? r.actualAnswer ?? "（主持揭曉）")}</div>`}
-    ${r.explanation ? `<div class="explain">${esc(r.explanation)}</div>` : ""}
-    ${r.actualAnswer !== undefined && r.referenceAnswer === undefined ? `<div class="explain">正確答案：${esc(r.actualAnswer)}</div>` : ""}
+        : !correctText
+            ? `<div class="explain">參考答案：${esc(r.referenceAnswer ?? r.actualAnswer ?? "（主持揭曉）")}</div>`
+            : ``}
+    ${r.explanation ? `<div class="reveal-explain">${esc(r.explanation)}</div>` : ""}
+    ${r.actualAnswer !== undefined && r.referenceAnswer === undefined && !correctText ? `<div class="explain">正確答案：${esc(r.actualAnswer)}</div>` : ""}
     ${scoreBar(v)}
   </div>`;
 }

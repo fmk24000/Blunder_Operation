@@ -171,15 +171,62 @@ body.stage { overflow: hidden; height: 100vh; background: var(--bg); }
   border-radius: var(--radius-sm); padding: 20px 26px; font-size: 38px; line-height: 1.4;
   color: var(--text-2);
 }
-.tally-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; margin-top: 24px; }
+/* 收卷分佈：要喺 1080p 一屏放得落（長題目＋4 個長選項都唔可以爆出去） */
+.tally-prompt {
+  font-size: clamp(26px, 2.4vw, 40px) !important; line-height: 1.3; margin: 6px 0 0;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.tally-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 18px; min-height: 0; }
 .tally-col {
   background: var(--surface); border: 2px solid var(--line); border-radius: var(--radius);
-  padding: 18px 22px; box-shadow: var(--shadow-sm);
+  padding: 14px 20px; box-shadow: var(--shadow-sm); min-height: 0; overflow: hidden;
 }
-.tally-col h4 { margin: 0 0 10px; font-size: 32px; font-weight: 700; }
-.tally-col .n { font-size: 42px; color: var(--ink); font-weight: 800; font-variant-numeric: tabular-nums; }
-.tally-avatars { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.tally-col h4 {
+  margin: 0 0 6px; font-size: clamp(20px, 1.7vw, 26px); font-weight: 700; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.tally-col .n { font-size: 34px; color: var(--ink); font-weight: 800; font-variant-numeric: tabular-nums; }
+.tally-avatars { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 12px; }
 .tally-avatars .av { border: 2px solid #fff; box-shadow: var(--shadow-sm); }
+/* 大mon 收卷分佈：每個頭像下面要有人名（淨係圓圈認唔到人） */
+.tally-voter { display: inline-flex; flex-direction: column; align-items: center; gap: 4px; max-width: 132px; }
+.tally-voter .av { width: 40px !important; height: 40px !important; }
+.tally-name { font-size: 20px; line-height: 1.15; text-align: center; color: var(--ink); word-break: break-word; }
+/* 揭曉畫面：正解放大、其餘選項壓一行、解釋限行數（Q4／Q8／Q10 長題目都放得落 1080p） */
+.reveal-main { justify-content: safe center; }
+.reveal-prompt {
+  font-size: clamp(24px, 2.1vw, 34px); line-height: 1.3; font-weight: 700; margin: 4px 0 14px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.reveal-answer {
+  display: flex; align-items: center; gap: 18px; background: #e8f7ec; border: 2px solid #9fd8ae;
+  border-radius: var(--radius); padding: 14px 22px; box-shadow: var(--shadow-sm);
+}
+.reveal-answer .letter {
+  width: 62px; height: 62px; border-radius: 50%; background: #1d9b48; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 34px; font-weight: 800; flex: 0 0 auto;
+}
+.reveal-answer-text {
+  font-size: clamp(24px, 2.2vw, 36px); font-weight: 700; line-height: 1.28; flex: 1 1 auto;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.reveal-count { font-size: 30px; font-weight: 800; color: #1d9b48; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.reveal-rest { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+.reveal-rest-row { display: flex; align-items: center; gap: 12px; font-size: clamp(17px, 1.4vw, 22px); color: var(--muted); }
+.reveal-rest-letter { font-weight: 800; width: 26px; flex: 0 0 auto; }
+.reveal-rest-text { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reveal-rest-count { font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.reveal-explain {
+  margin-top: 16px; font-size: clamp(17px, 1.5vw, 24px); line-height: 1.45; color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden;
+}
+.tally-answers { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 22px; }
+.tally-answer {
+  display: inline-flex; align-items: center; gap: 10px; background: var(--surface);
+  border: 1px solid var(--line); border-radius: 999px; padding: 8px 18px 8px 8px; font-size: 26px;
+}
+.tally-answer-name { color: var(--ink); }
+.tally-answer-val { color: var(--primary); font-variant-numeric: tabular-nums; font-weight: 700; }
 .scoreboard-list { display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .sb-row {
   display: flex; align-items: center; gap: 20px; background: var(--surface);
@@ -775,7 +822,7 @@ body.stage { letter-spacing: -.012em; }
 
 /* 底部分數條：做成浮喺畫面底部嘅玻璃條，唔係一條死白 bar */
 .ticker {
-  height: 92px; gap: 8px; padding: 8px 16px; flex-wrap: wrap; align-content: center; row-gap: 6px;
+  height: 92px; gap: 8px; padding: 8px 16px; flex-wrap: nowrap; align-content: center; overflow-x: auto; overflow-y: hidden;
   background: rgba(255, 253, 248, .82);
   border-top: 1px solid rgba(58, 47, 24, .08);
   box-shadow: 0 -16px 36px -30px rgba(58, 47, 24, .6);

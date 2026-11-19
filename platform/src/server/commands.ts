@@ -453,20 +453,20 @@ function closeRoundMutations(ctx: Ctx, round: Round, card: Card | undefined, aut
   if (auto) patch.autoClosed = true;
   let actualAnswer: number | undefined;
   if (card?.autoAnswer === "minutes-to-midnight") {
+    // 只記答案（由收卷時刻計），唔喺收卷加分 —— 加分留到「揭曉」（主持開正確答案）先做
     actualAnswer = minutesToMidnightHK(closedAt);
     patch.actualAnswer = actualAnswer;
     push(ctx, { t: "card.update", d: { cardId: card.id, patch: { actualAnswer } } });
-    gradeClosest(ctx, round, card, actualAnswer);
   } else if (card && typeof card.tolerance === "number" && typeof card.actualAnswer === "number") {
-    // v0.3.0：有容差又有實際答案（Q12）→ 收卷即按容差加分
+    // v0.3.3：同樣只記答案，唔喺收卷加分
     actualAnswer = card.actualAnswer;
     patch.actualAnswer = actualAnswer;
-    gradeToleranceRound(ctx, round, card, actualAnswer);
   }
   push(ctx, { t: "round.update", d: { roundId: round.id, patch } });
   if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "closed" } } });
   setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: card?.id ?? null } });
-  if (card && card.type === "choice") gradeChoiceRound(ctx, round, card);
+  // v0.3.3：收卷只係封卷＋出分佈；所有自動評分（MC／容差／最接近）一律留到 card.reveal，
+  // 主持「開正確答案」嗰一刻先派分（以前收卷就加分，主持未講答案大mon 已經見分）。
   // 搗蛋鬼投票卡：generic 收卷／auto-close 都要即刻計票結算，唔可以留低一個等 command 但 state 已撞死嘅 round
   return card && card.gameId === "saboteur" ? tallySaboteurIfAny(ctx, round) : false;
 }
@@ -1877,9 +1877,13 @@ export function executeCommand(
         push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "revealed" } } });
         if (card.type === "choice") gradeChoiceRound(ctx, round, card);
         if (card.type === "vote" && card.voteMode === "works") gradeDrawRound(ctx, round, card);
+        // v0.3.3：容差題（Q12）同「到午夜幾分鐘」題嘅自動評分搬到呢度（收卷唔再派分）
         if (typeof card.tolerance === "number") {
           const actual = round.actualAnswer ?? card.actualAnswer;
           if (typeof actual === "number") gradeToleranceRound(ctx, round, card, actual);
+        } else if (card.autoAnswer === "minutes-to-midnight") {
+          const actual = round.actualAnswer ?? (round.closedAt ? minutesToMidnightHK(round.closedAt) : undefined);
+          if (typeof actual === "number") gradeClosest(ctx, round, card, actual);
         }
       }
       setStageIfUnlocked(ctx, { mode: "reveal", payload: { roundId: round.id, cardId: card.id } });

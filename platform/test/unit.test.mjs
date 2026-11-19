@@ -1946,15 +1946,19 @@ test("容差評分：Q12 ±2 尺（40）→ 38/40/42 中、37/43 唔中", () => 
     }]);
   });
   run(store, "card.close");
+  // v0.3.3：收卷只封卷，唔派分（主持未「揭曉」之前唔應該見到分）
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [0, 0, 0, 0, 0], "收卷唔可以加分");
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.roundId === round.id).length, 0);
+  // 揭曉（開正確答案）先派分
+  run(store, "card.reveal");
   assert.equal(store.playerScore(players[0].id), 2, "38 ＝ 40-2 邊界內");
   assert.equal(store.playerScore(players[1].id), 2, "40 中");
   assert.equal(store.playerScore(players[2].id), 2, "42 ＝ 40+2 邊界內");
   assert.equal(store.playerScore(players[3].id), 0, "37 邊界外");
   assert.equal(store.playerScore(players[4].id), 0, "43 邊界外");
   assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "問答 Q12・容差").length, 3);
-  // 重複收卷／揭曉唔會再加
-  run(store, "card.tally");
-  run(store, "card.reveal");
+  // 重複揭曉：round 已經 revealed → 拒絕，唔會再加分
+  assert.throws(() => run(store, "card.reveal"), isCmdError("W_WRONG_PHASE"));
   assert.equal(store.state.ledger.filter((e) => !e.voided && e.roundId === round.id).length, 3);
 });
 
@@ -2312,7 +2316,53 @@ test("B6：主持儲存 Q12／Q13 唔會刪走 tolerance（儲存後容差評分
     }]);
   });
   run(store, "card.close");
-  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [2, 2, 2, 0, 0]);
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [0, 0, 0, 0, 0], "v0.3.3：收卷唔派分");
+  run(store, "card.reveal");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [2, 2, 2, 0, 0], "揭曉先派分");
+});
+
+test("v0.3.3：問答收卷唔派分，揭曉先派分（MC）", () => {
+  const { store, players } = ucSetup("v33-quiz", 3);
+  const q1 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q1");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q1)] } }]);
+  run(store, "card.open", {}, "q1");
+  const round = store.currentRound();
+  [0, 0, 1].forEach((choice, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `v33_${i}`, roundId: round.id, cardId: "q1", playerId: players[i].id, ts: 1000 + i, kind: "choice", choice, confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [0, 0, 0], "收卷唔可以派分");
+  run(store, "card.tally");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [0, 0, 0], "出分佈都唔可以派分");
+  // 分佈畫面要有名（唔止頭像）
+  const tv = buildStageView(store).tally;
+  assert.ok(tv && tv.voters.length === 3, "分佈要見到 3 個投票者");
+  assert.ok(tv.voters.every((x) => typeof x.name === "string" && x.name.length > 0), "每個投票者都要有名");
+  run(store, "card.reveal");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [1, 1, 0], "揭曉先派分");
+});
+
+test("v0.3.3：數字開放題收卷後大mon 見到「名＋答案」", () => {
+  const { store, players } = ucSetup("v33-open", 3);
+  const q12 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q12");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12)] } }]);
+  run(store, "card.open", {}, "q12");
+  const round = store.currentRound();
+  [38, 40, 41].forEach((amount, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `v33o_${i}`, roundId: round.id, cardId: "q12", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  const tv = buildStageView(store).tally;
+  assert.ok(tv, "要有 tally");
+  assert.equal(tv.answers.length, 3, "三個人都要列出");
+  assert.deepEqual(tv.answers.map((a) => a.text), ["38", "40", "41"], "要出答案數字");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [0, 0, 0], "收卷唔派分");
 });
 
 test("B7：同一毫秒提交，用持久提交順序判「最後提交」（唔用 id 字典序）", () => {

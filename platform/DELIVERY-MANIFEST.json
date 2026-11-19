@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-19T12:27:50.346Z",
+  "generatedAt": "2026-11-19T12:37:10.939Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -104,17 +104,17 @@
     {
       "path": "package-lock.json",
       "bytes": 72267,
-      "sha256": "85bcfc20fc121a06894136eb4938480e96e82668654c1055ac60c8f1a7e14310"
+      "sha256": "48a1499c6c0f25679ec248cbf08701889ec9e8e60e3fd9e157db9b461b888793"
     },
     {
       "path": "package.json",
       "bytes": 1027,
-      "sha256": "7672e7a2f9953e0c696b750352570aca8073a783e54b4efcee1eef1dee24cf71"
+      "sha256": "6478c233b884ef5dce901e8eefd8f0ade2f7fe905b019a76f0a14c135d49677f"
     },
     {
       "path": "public/app.css",
-      "bytes": 71672,
-      "sha256": "3e70f773a5dcdf502f0480c2e6b7aba1687048452bf937ea3e51c4e92e6c4a0c"
+      "bytes": 74811,
+      "sha256": "18a4b795a87453448dd0b8b132e3620c2c8ae81a0716aaf23780e952817e4d2c"
     },
     {
       "path": "public/fonts/line-seed-tw-bd.woff2",
@@ -134,7 +134,7 @@
     {
       "path": "public/host.html",
       "bytes": 501,
-      "sha256": "da840322b9de6c8313b5845d179eb8838aff057428fad284f8eaa29d3926c57e"
+      "sha256": "7222f7f0b944642f16fde9792199592f500294841fa873abe19180d4140b5df8"
     },
     {
       "path": "public/icon.svg",
@@ -144,7 +144,7 @@
     {
       "path": "public/index.html",
       "bytes": 1446,
-      "sha256": "d4a37df15e3de1d1dc516507f62b695adb06d73aea2f48bc2fe8eadfc1681be2"
+      "sha256": "48c5cd2a862e790f9a8d2374dfd0d8d7bad8a90694cab62dfff86807afe17913"
     },
     {
       "path": "public/js/client/common.js",
@@ -163,8 +163,8 @@
     },
     {
       "path": "public/js/client/stage.js",
-      "bytes": 27924,
-      "sha256": "5c40a3502f1b7061de006772f3dfdd5f3d9157d135a57cb27ef2b745ca80489e"
+      "bytes": 29165,
+      "sha256": "b53f2a18a4cea9cb211a8e6e1dd48a81fd34b6747e347a07c5f72293ca59e68c"
     },
     {
       "path": "public/js/shared/protocol.js",
@@ -184,7 +184,7 @@
     {
       "path": "public/play.html",
       "bytes": 682,
-      "sha256": "a8feeecca606b558960f83673dfa02f5f42ba84d43e04cbc428a48f4ec186f7f"
+      "sha256": "3ec8baff3140d22f3d07c8cd6de4c858cc371398fe181a6f4c7d5a1e285d1396"
     },
     {
       "path": "public/quiz-legacy-mc.json",
@@ -194,7 +194,7 @@
     {
       "path": "public/stage.html",
       "bytes": 604,
-      "sha256": "142fbad666fe82755b8f98ce930b26e9fbe6c7a0d7448db1e39e71ebe02f990e"
+      "sha256": "107ddbb74cc1910a6f8b61544d365ef7656a526b3cca76e70889f5020d2ddf17"
     },
     {
       "path": "scripts/make-manifest.mjs",
@@ -243,8 +243,8 @@
     },
     {
       "path": "src/client/stage.ts",
-      "bytes": 27399,
-      "sha256": "a810fdc8a1f5ab8f45ce6b01b1b48fac7b04a6c49a74d6e0b5b79aea1834a76c"
+      "bytes": 28743,
+      "sha256": "472cdcf47994de7f57c3dffdfc1f79505da2b73413caee7f8e296ae8a1a316d5"
     },
     {
       "path": "src/server/auth.ts",
@@ -253,8 +253,8 @@
     },
     {
       "path": "src/server/commands.ts",
-      "bytes": 137679,
-      "sha256": "6dc7b5ac0ee341f2f17c58c08d6431a23d970c2b3f1807c847368b372256f11c"
+      "bytes": 138227,
+      "sha256": "d0e7eaaef5e9c124bd4ecd71d48d7133fa758aa4835c16f03765898ff399f978"
     },
     {
       "path": "src/server/env.ts",
@@ -293,8 +293,8 @@
     },
     {
       "path": "src/server/views.ts",
-      "bytes": 30532,
-      "sha256": "f27773371da8d55d0e357db9ad4ac94eadae0c5a94b74dfe930a1d88f7eb4dfa"
+      "bytes": 31263,
+      "sha256": "874ebba317f35324b44d16fa9e6d4e9ea6feac60094279d68ea6e0dd2ea32695"
     },
     {
       "path": "src/server/ws.ts",
@@ -308,13 +308,13 @@
     },
     {
       "path": "src/shared/types.ts",
-      "bytes": 19091,
-      "sha256": "b3611eaa545c28759c3b7b5c0566287f94c9168d375a0ce51b20355c5a272de0"
+      "bytes": 19281,
+      "sha256": "8e0218576aefd957015c8c2f1c70c06af1c3111ccf9699abadd689045e99318d"
     },
     {
       "path": "test/unit.test.mjs",
-      "bytes": 127720,
-      "sha256": "410566e456c68118f92272d29eb0d8e05a1d94c088c6a5dbd7ef71cde2072973"
+      "bytes": 130574,
+      "sha256": "80dfc80161cc5c1e9ece8f1a9447cfe9fdc5fc26d06b1422cdb1f2a6bda53dfe"
     },
     {
       "path": "tsconfig.client.json",
