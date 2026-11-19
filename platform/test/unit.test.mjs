@@ -3281,3 +3281,9 @@ test("J5：quiz.show 冇指定題目（撳「出題目」掣）而家答緊題 �
   assert.equal(store.round(rid).state, "closed");
   assert.equal(store.state.room.stage.payload.cardId, "q3");
 });
+
+test("K1：規則頁 steps 拆成多個 block 時，大mon 序號要跨 block 連續（唔好每個 block 由 1 開始）", () => {
+  const src = clientSrc("stage.ts");
+  assert.match(src, /let stepCursor = 0/, "要有跨 block 嘅 step cursor");
+  assert.match(src, /<ol class="rb-list" start="\$\{start\}">/, "ol 要用 start 屬性接住上一個 block");
+});

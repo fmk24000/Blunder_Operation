@@ -55,6 +55,8 @@ function placeholder(v, title, text) {
 function blocksHtml(page) {
     if (!page)
         return "";
+    // v0.4.0：規則頁會因為字數限制拆成幾個 steps block，序號要跨 block 連續（唔好每個 block 由 1 開始）
+    let stepCursor = 0;
     return (page.blocks ?? [])
         .map((b) => {
         switch (b.type) {
@@ -66,8 +68,11 @@ function blocksHtml(page) {
                 return `<div class="rb-callout">${esc(b.text)}</div>`;
             case "bullets":
                 return `<ul class="rb-list">${(b.items ?? []).map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`;
-            case "steps":
-                return `<ol class="rb-list">${(b.items ?? []).map((i) => `<li>${esc(i)}</li>`).join("")}</ol>`;
+            case "steps": {
+                const start = stepCursor + 1;
+                stepCursor += (b.items ?? []).length;
+                return `<ol class="rb-list" start="${start}">${(b.items ?? []).map((i) => `<li>${esc(i)}</li>`).join("")}</ol>`;
+            }
             case "kv":
                 return `<div class="rb-kv"><span>${esc(b.text)}</span><span class="val">${esc(b.value ?? "")}</span></div>`;
             case "score-table":

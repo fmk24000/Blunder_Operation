@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-19T15:03:24.778Z",
+  "generatedAt": "2026-11-19T15:14:19.817Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -163,8 +163,8 @@
     },
     {
       "path": "public/js/client/stage.js",
-      "bytes": 32623,
-      "sha256": "75185f8b87d8938d3e9ca96fb9e91829b03bea518d46906b946b85eafac608e5"
+      "bytes": 32916,
+      "sha256": "847215e7cccc61c3ce8c019e986e4bd6904f9acce2b2f8cb7b7c12755f76fe1c"
     },
     {
       "path": "public/js/shared/protocol.js",
@@ -243,8 +243,8 @@
     },
     {
       "path": "src/client/stage.ts",
-      "bytes": 32137,
-      "sha256": "539cca07e2fe7c7a86475083e345864eda2adada8162f6f9ec449aa0fcd3dece"
+      "bytes": 32410,
+      "sha256": "19133e3bcfb77a391b875ffc77906f9f4afcef77604750657ac9f004cb03abd6"
     },
     {
       "path": "src/server/auth.ts",
@@ -313,8 +313,8 @@
     },
     {
       "path": "test/unit.test.mjs",
-      "bytes": 173683,
-      "sha256": "dce0e3bfbfe0bd9a26bdbbebf999c3e355a14783c0e5f77f4dc1284ce02bb228"
+      "bytes": 174047,
+      "sha256": "3c69b9bc0cc54a631225a0d8d66673633da551b8061aa2fcfda8477691635b3b"
     },
     {
       "path": "tsconfig.client.json",
