@@ -1399,3 +1399,28 @@ test("undercover：轉關會清走 revealed round（唔會殘留下一關）", (
   assert.equal(store.state.room.currentRoundId, null, "轉關要清 currentRoundId");
   assert.equal(buildStageView(store).undercover, null);
 });
+
+
+test("undercover.start：卡會登記入當前 item.cardIds（唔會 orphan）", () => {
+  const { store } = makeStore("uc-cardids");
+  addPlayers(store, 2);
+  store.commit([{ t: "rundown.set", d: { rundown: [
+    { id: "rd_draw", index: 0, gameId: "draw", title: "第 1 關・畫畫", state: "running", cardIds: [] },
+  ], currentItemId: "rd_draw", phase: "playing" } }]);
+  const res = run(store, "undercover.start", { durationSeconds: 10 });
+  const item = store.state.room.rundown.find((i) => i.id === "rd_draw");
+  assert.ok(item.cardIds.includes(res.result.cardId), "undercover card 要入 item.cardIds");
+});
+
+test("rundown.reorder：ids 唔完整／重複／有未知 id 一律拒", () => {
+  const { store } = makeStore("rd-validate");
+  store.commit([{ t: "rundown.set", d: { rundown: [
+    { id: "rd_draw", index: 0, gameId: "draw", title: "第 1 關・畫畫", state: "running", cardIds: [] },
+    { id: "rd_auction", index: 1, gameId: "auction", title: "第 2 關・估歌", state: "todo", cardIds: [] },
+  ], currentItemId: "rd_draw", phase: "playing" } }]);
+  assert.throws(() => run(store, "rundown.reorder", { ids: ["nope", "nope2"] }), isCmdError("W_BAD_SCHEMA"));
+  assert.throws(() => run(store, "rundown.reorder", { ids: ["rd_quiz"] }), isCmdError("W_BAD_SCHEMA"));
+  assert.throws(() => run(store, "rundown.reorder", { ids: ["rd_draw", "rd_draw"] }), isCmdError("W_BAD_SCHEMA"));
+  assert.equal(run(store, "rundown.reorder", { ids: ["rd_auction", "rd_draw"] }).ok, true);
+  assert.deepEqual(store.state.room.rundown.map((i) => i.id), ["rd_auction", "rd_draw"]);
+});

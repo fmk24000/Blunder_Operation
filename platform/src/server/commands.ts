@@ -1219,6 +1219,10 @@ export function executeCommand(
     case "rundown.reorder": {
       const ids = p.ids as string[] | undefined;
       if (!Array.isArray(ids)) throw new CmdError("W_BAD_SCHEMA", "要 ids");
+      const want = new Set(room.rundown.map((i) => i.id));
+      const got = new Set(ids);
+      if (ids.length !== want.size || got.size !== ids.length || [...want].some((id) => !got.has(id)))
+        throw new CmdError("W_BAD_SCHEMA", "ids 要包含全部 rundown 項目（唔可以漏／重複／加未知 id）");
       const rundown = room.rundown
         .map((i) => ({ ...i }))
         .sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id))
@@ -1318,6 +1322,11 @@ export function executeCommand(
         state: "draft",
       };
       push(ctx, { t: "card.put", d: { card: ucCard } });
+      const ucItem = store.currentItem();
+      if (ucItem) {
+        const rundown = room.rundown.map((i) => (i.id === ucItem.id ? { ...i, cardIds: [...i.cardIds, ucCardId] } : { ...i }));
+        push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+      }
       const ucRound: Round = {
         id: `${ucCardId}#1`,
         cardId: ucCardId,

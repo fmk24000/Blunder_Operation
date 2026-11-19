@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-18T12:02:25.556Z",
+  "generatedAt": "2026-11-19T02:23:22.958Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -139,7 +139,7 @@
     {
       "path": "public/host.html",
       "bytes": 517,
-      "sha256": "3ce234fcc07103c2000a93948419e87427e07e4278ac386b2b2be46459b18d83"
+      "sha256": "0698e46382ea6a407e6fdcd932edad8dc9796dc4b878add8fbf87722fb8c1638"
     },
     {
       "path": "public/icon.svg",
@@ -149,7 +149,7 @@
     {
       "path": "public/index.html",
       "bytes": 779,
-      "sha256": "33b74a7f97b18e8c748d15cdd33fbce4cd6756a193bb19b66e6faaa9a4147469"
+      "sha256": "9152db07a0ff07a15f023af9c3095b5a8892a5ceae48c8e7ec8e53ac9469bddf"
     },
     {
       "path": "public/js/client/common.js",
@@ -189,7 +189,7 @@
     {
       "path": "public/play.html",
       "bytes": 698,
-      "sha256": "2e0052b99441e098aaf0d470eceeead8ef9264ac845fef805cab45d68d4117ee"
+      "sha256": "a648b5c3e3a6d3c9177ce7026464cc2de830e2f985ea93adbabee7c18ba098a8"
     },
     {
       "path": "public/quiz-legacy-mc.json",
@@ -199,7 +199,7 @@
     {
       "path": "public/stage.html",
       "bytes": 532,
-      "sha256": "6c3a66531a2b2d58471f13a958489ee93b0922c5881ef2703d6df4fb40409179"
+      "sha256": "f4b3acae0a8b0d8eb153143034acd26b5b300d28affb4163d6ecd45b07fb7f64"
     },
     {
       "path": "scripts/make-manifest.mjs",
@@ -253,8 +253,8 @@
     },
     {
       "path": "src/server/commands.ts",
-      "bytes": 104865,
-      "sha256": "58c358827e554ba621d46869c4eaaa78d60b8eb814a921c6b61ecbabfd1abf4c"
+      "bytes": 105492,
+      "sha256": "733d505b67de4153763489cca3e9175fde5470e89890948eeef66320c4683599"
     },
     {
       "path": "src/server/env.ts",
@@ -313,8 +313,8 @@
     },
     {
       "path": "test/unit.test.mjs",
-      "bytes": 74458,
-      "sha256": "b9c399db9ed859396158b238e1c716dd85a0c847dcd616be9d9dae8426216ef2"
+      "bytes": 76048,
+      "sha256": "7f9606a2c8814d597f38f58567c3dd564f347861b66085970a1497c42a3f4c64"
     },
     {
       "path": "tsconfig.client.json",
