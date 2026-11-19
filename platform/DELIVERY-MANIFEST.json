@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-19T15:14:19.817Z",
+  "generatedAt": "2026-11-19T15:14:55.939Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -109,7 +109,7 @@
     {
       "path": "package.json",
       "bytes": 1027,
-      "sha256": "55762b45c566d329682eb59037916dfb3cb6e7f25fe55e81fac75d876ca09e20"
+      "sha256": "f31d67f68a38d0e01337597c7ad876e84284634b81ea21dd59dff1d64f1fd1bd"
     },
     {
       "path": "public/app.css",
