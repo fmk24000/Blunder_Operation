@@ -7,9 +7,10 @@ import path from "node:path";
 
 import ts from "typescript";
 
-import { minutesToMidnightHK, executeCommand, tickAutoClose, tickLeases, tickUndercover } from "../dist/server/commands.js";
-import { buildStageView } from "../dist/server/views.js";
+import { minutesToMidnightHK, executeCommand, tickAutoClose, tickLeases, tickUndercover, bidRanking, roundExpired, bidSecondsAllowed } from "../dist/server/commands.js";
+import { buildStageView, buildPlayerView, buildHostView } from "../dist/server/views.js";
 import { Store } from "../dist/server/store.js";
+import { loadQuizSeed, loadUndercoverSeed, loadRulePagesSeed, questionToCard, undercoverTopicToCard, bootstrapMutations, defaultRundown } from "../dist/server/seed.js";
 import { Journal } from "../dist/server/journal.js";
 
 function tmpDir(tag) {
@@ -1423,4 +1424,987 @@ test("rundown.reorder：ids 唔完整／重複／有未知 id 一律拒", () => 
   assert.throws(() => run(store, "rundown.reorder", { ids: ["rd_draw", "rd_draw"] }), isCmdError("W_BAD_SCHEMA"));
   assert.equal(run(store, "rundown.reorder", { ids: ["rd_auction", "rd_draw"] }).ok, true);
   assert.deepEqual(store.state.room.rundown.map((i) => i.id), ["rd_auction", "rd_draw"]);
+});
+
+
+/* ───────── v0.3.0 階段 1：題庫／一圖多人題目／四頁規則（逐字 deepEqual） ───────── */
+
+const APP_ROOT = path.resolve(import.meta.dirname, "..");
+
+test("v0.3 題庫：13 題・id q1..q13・MC 4 個選項冇 A. 前綴・30 秒", () => {
+  const qs = loadQuizSeed(APP_ROOT);
+  assert.equal(qs.length, 13);
+  assert.deepEqual(qs.map((q) => q.id), ["q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13"]);
+  for (const q of qs) {
+    assert.equal(q.seconds, 30, `${q.id} 要 30 秒`);
+    assert.ok(q.prompt.length > 0, `${q.id} 要有題目`);
+  }
+  const mc = qs.filter((q) => q.type === "choice");
+  assert.equal(mc.length, 11, "Q1–Q11 係 MC");
+  for (const q of mc) {
+    assert.equal(q.options.length, 4, `${q.id} 要 4 個選項`);
+    for (const o of q.options) assert.doesNotMatch(o, /^[A-D][.．、]/, `${q.id} 選項唔應該有前綴：${o}`);
+    assert.ok(Number.isInteger(q.correct) && q.correct >= 0 && q.correct < 4, `${q.id} correct index`);
+    assert.equal(q.points, 1);
+  }
+  assert.deepEqual(qs.map((q) => q.correct), [0,1,1,1,3,3,3,2,3,0,2,undefined,undefined]);
+});
+
+test("v0.3 題庫：Q12 容差 ±2、actualAnswer 40；Q13 冇 actualAnswer", () => {
+  const qs = loadQuizSeed(APP_ROOT);
+  const q12 = qs.find((q) => q.id === "q12");
+  assert.equal(q12.type, "open");
+  assert.equal(q12.openKind, "number");
+  assert.equal(q12.tolerance, 2);
+  assert.equal(q12.actualAnswer, 40);
+  assert.equal(q12.points, 2);
+  const q13 = qs.find((q) => q.id === "q13");
+  assert.equal(q13.type, "open");
+  assert.equal(q13.openKind, "number");
+  assert.equal(q13.actualAnswer, undefined);
+  assert.equal(q13.tolerance, 0, "Q13 主持即場輸入，容差 0＝完全相等");
+  assert.equal(q13.points, 2);
+  assert.equal(q13.explanation, "即時開電話check");
+  // Q4 參考圖暫時留空（原檔攞唔到）
+  assert.equal(qs.find((q) => q.id === "q4").imageUrl, undefined);
+});
+
+test("v0.3 題庫：questionToCard 會 copy tolerance／imageUrl", () => {
+  const c = questionToCard({ id: "qx", type: "open", category: "t", prompt: "p", openKind: "number", seconds: 30, points: 2, tolerance: 2, imageUrl: "/media/x.png" });
+  assert.equal(c.tolerance, 2);
+  assert.equal(c.imageUrl, "/media/x.png");
+});
+
+test("v0.3 一圖多人：7 對題目逐字 deepEqual", () => {
+  const topics = loadUndercoverSeed(APP_ROOT);
+  assert.deepEqual(topics, [
+    { id: "uc1", prompt: "同翹妹去迪士尼", undercoverPrompt: "翹妹" },
+    { id: "uc2", prompt: "係麥當勞搞生日party", undercoverPrompt: "麥當勞" },
+    { id: "uc3", prompt: "Hollye 食譚仔", undercoverPrompt: "Hollye" },
+    { id: "uc4", prompt: "海邊賞月", undercoverPrompt: "賞月" },
+    { id: "uc5", prompt: "哥斯拉同金剛係沙漠結婚", undercoverPrompt: "哥斯拉" },
+    { id: "uc6", prompt: "係浴室開住花灑舉啞鈴", undercoverPrompt: "舉啞鈴" },
+    { id: "uc7", prompt: "300磅肥仔被卷入黑洞", undercoverPrompt: "黑洞" },
+  ]);
+});
+
+test("v0.3 規則頁：四頁（draw／auction／killer／quiz），舊 saboteur 頁冇咗，長度限制合格", () => {
+  const pages = loadRulePagesSeed(APP_ROOT);
+  assert.deepEqual(pages.map((p) => p.gameId), ["draw", "auction", "killer", "quiz"]);
+  assert.equal(pages.some((p) => p.gameId === "saboteur"), false);
+  for (const p of pages) {
+    assert.ok(p.title.length <= 16, `${p.id} title ≤16`);
+    assert.ok((p.subtitle ?? "").length <= 24, `${p.id} subtitle ≤24`);
+    assert.ok(p.blocks.length > 0 && p.blocks.length <= 20);
+    let total = 0;
+    for (const b of p.blocks) {
+      const t = (b.text ?? "").length + (b.value ?? "").length;
+      assert.ok(t <= 120, `${p.id}/${b.id} block ≤120 字`);
+      total += t;
+      for (const it of b.items ?? []) {
+        assert.ok(it.length <= 120, `${p.id}/${b.id} item ≤120 字`);
+        total += it.length;
+      }
+    }
+    assert.ok(total <= 1200, `${p.id} 全頁 ≤1200 字`);
+  }
+});
+
+test("v0.3 bootstrap：預設 4 關次序 draw→auction→killer→quiz，7 張臥底題卡入 rundown", () => {
+  const rundown = defaultRundown(["q1"], ["uc_uc1"]);
+  assert.deepEqual(rundown.map((r) => r.gameId), ["draw", "auction", "killer", "quiz"]);
+  assert.match(rundown[0].title, /^第 1 關・/);
+  assert.deepEqual(rundown[0].cardIds, ["uc_uc1"]);
+  const muts = bootstrapMutations(APP_ROOT, "room_x", "1234", "hash", true);
+  const allPut = muts.filter((m) => m.t === "card.put");
+  const put = allPut.filter((m) => m.d.card.gameId === "draw");
+  assert.equal(put.length, 7, "7 對題目 → 7 張卡");
+  for (const m of put) {
+    assert.equal(m.d.card.gameId, "draw");
+    assert.equal(m.d.card.type, "open");
+    assert.equal(m.d.card.state, "draft");
+    assert.equal(m.d.card.seconds, null);
+    assert.equal(m.d.card.points, 0);
+    assert.ok(m.d.card.prompt && m.d.card.undercoverPrompt);
+  }
+  const sets = muts.find((m) => m.t === "settings.set");
+  assert.equal(sets.d.settings.maxBid, 10, "競投上限預設 10 秒");
+});
+
+
+/* ───────── v0.3.0 階段 2：一圖多人（畫畫臥底）完整局 ───────── */
+
+function ucSetup(tag, n = 6) {
+  const { store } = makeStore(tag);
+  const players = addPlayers(store, n);
+  for (const t of loadUndercoverSeed(APP_ROOT)) store.commit([{ t: "card.put", d: { card: undercoverTopicToCard(t) } }]);
+  run(store, "room.start");
+  return { store, players };
+}
+
+/** B4：依正常流程 foul 一個人（開投票 → 收卷 → 淘汰） */
+function ucFoul(store, playerId) {
+  const cur = store.currentRound();
+  if (!cur || cur.state !== "open") run(store, "uc.vote.start");
+  run(store, "card.close");
+  return run(store, "uc.eliminate", { playerId });
+}
+
+function hostOver(store) {
+  return buildHostView(store, "host_test", "測試主持", { hosts: 1, stages: 0, players: 0, total: 1 });
+}
+
+test("uc.match.start：抽 2 個臥底（唔重複）＋3 對題（唔重複）＋questionNo=0", () => {
+  const { store, players } = ucSetup("ucm-start");
+  const res = run(store, "uc.match.start");
+  assert.equal(res.ok, true);
+  const st = store.state.room.gameState.undercover;
+  assert.equal(st.matchNo, 1);
+  assert.equal(st.undercoverIds.length, 2);
+  assert.equal(new Set(st.undercoverIds).size, 2, "兩個臥底一定唔同人");
+  assert.equal(st.participantIds.length, players.length);
+  assert.equal(st.topicIds.length, 3);
+  assert.equal(new Set(st.topicIds).size, 3, "3 對題唔可以重複");
+  assert.equal(st.questionNo, 0);
+  assert.equal(st.promptCardId, st.topicIds[0]);
+  assert.equal(st.settled, false);
+  // 主持見到身份、玩家／大mon 見唔到
+  assert.equal(hostOver(store).undercoverMatch.undercoverIds.length, 2);
+  const stageJson = JSON.stringify(buildStageView(store));
+  const playerJson = JSON.stringify(buildPlayerView(store, players[0].id));
+  for (const j of [stageJson, playerJson]) {
+    assert.equal(j.includes("undercoverIds"), false, "唔准漏臥底名單");
+    assert.equal(j.includes("undercoverPrompt"), false, "唔准漏臥底題");
+  }
+});
+
+test("uc.match.redraw：只換臥底，其他 state 不變", () => {
+  const { store } = ucSetup("ucm-redraw");
+  run(store, "uc.match.start");
+  const before = JSON.parse(JSON.stringify(store.state.room.gameState.undercover));
+  let same = true;
+  for (let i = 0; i < 8 && same; i += 1) {
+    run(store, "uc.match.redraw");
+    const st = store.state.room.gameState.undercover;
+    same = st.undercoverIds.join(",") === before.undercoverIds.join(",");
+    if (!same) {
+      assert.equal(new Set(st.undercoverIds).size, 2);
+      assert.equal(st.matchNo, before.matchNo);
+      assert.deepEqual(st.topicIds, before.topicIds);
+      assert.deepEqual(st.eliminatedIds, []);
+      assert.equal(st.questionNo, 0);
+    }
+  }
+});
+
+test("uc.prompt.reveal：大mon 出好人題目（message mode），玩家手機見唔到題目", () => {
+  const { store, players } = ucSetup("ucm-reveal");
+  run(store, "uc.match.start");
+  const res = run(store, "uc.prompt.reveal");
+  const st = store.state.room.gameState.undercover;
+  assert.equal(st.promptRevealed, true);
+  const sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "message");
+  assert.equal(sv.message.title, "好人題目");
+  const card = store.card(st.promptCardId);
+  assert.deepEqual(sv.message.lines, [card.prompt]);
+  // 玩家 DTO 冇題目內容
+  const pj = JSON.stringify(buildPlayerView(store, players[0].id));
+  assert.equal(pj.includes(card.prompt), false);
+});
+
+test("uc.vote.start：候選＝未出局參賽者，出局者唔喺 eligible（唔可以投亦唔可以被投）", () => {
+  const { store } = ucSetup("ucm-vote");
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  const st0 = store.state.room.gameState.undercover;
+  const victim = st0.participantIds.find((id) => !st0.undercoverIds.includes(id));
+  ucFoul(store, victim);
+  const res = run(store, "uc.vote.start");
+  const round = store.round(res.result.roundId);
+  assert.equal(round.eligiblePlayerIds.includes(victim), false, "出局者唔可以投");
+  const card = store.card(round.cardId);
+  assert.equal(card.options.includes(victim), false, "出局者唔可以被投");
+  assert.equal(card.options.length, st0.participantIds.length - 1);
+  assert.equal(round.state, "open");
+  assert.ok(round.endsAt - Date.now() <= 10_000);
+  // 重用同一張卡（唔會每次開新卡）
+  run(store, "card.close");
+  const res2 = run(store, "uc.vote.start");
+  assert.equal(store.round(res2.result.roundId).cardId, round.cardId, "要重用同一張投票卡");
+  assert.equal(store.state.cards.filter((c) => c.id === "card_ucmatch").length, 1);
+});
+
+test("uc.eliminate：大mon 即刻講中／唔中；uc.eliminate.undo 還原", () => {
+  const { store } = ucSetup("ucm-elim");
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const [uc1] = st0.undercoverIds;
+  let res = ucFoul(store, uc1);
+  assert.equal(res.result.wasUndercover, true);
+  let sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "message");
+  assert.equal(sv.message.title, "係臥底！");
+  assert.equal(sv.message.tone, "good");
+  run(store, "uc.match.next");
+  const good = st0.participantIds.find((id) => !st0.undercoverIds.includes(id));
+  res = ucFoul(store, good);
+  assert.equal(res.result.wasUndercover, false);
+  sv = buildStageView(store);
+  assert.equal(sv.message.title, "唔係臥底");
+  assert.equal(sv.message.tone, "bad");
+  run(store, "uc.eliminate.undo");
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [uc1]);
+});
+
+test("一圖多人計分：好人勝 → 好人 +1、留到最後 +2（疊加）；臥底 0", () => {
+  const { store } = ucSetup("ucm-good-win", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  ucFoul(store, st0.undercoverIds[0]);
+  run(store, "uc.match.next");
+  ucFoul(store, st0.undercoverIds[1]);
+  assert.equal(store.state.room.gameState.undercover.result, "good", "兩個臥底出局 → ready-to-settle 好人勝");
+  const res = run(store, "uc.match.next");
+  assert.equal(res.result.settled, true);
+  const goodIds = st0.participantIds.filter((id) => !st0.undercoverIds.includes(id));
+  for (const id of goodIds) assert.equal(store.playerScore(id), 3, "好人 +1 再留到最後 +2");
+  for (const id of st0.undercoverIds) assert.equal(store.playerScore(id), 0, "出局臥底 0 分");
+  // 大mon 出結算
+  const sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "message");
+  assert.match(sv.message.title, /第 1 局結算/);
+  const ev = store.state.ledger.filter((e) => e.matchId === "uc_m1");
+  assert.ok(ev.every((e) => e.gameId === "draw"));
+  assert.ok(ev.some((e) => e.reason === "一圖多人・好人勝"));
+  assert.ok(ev.some((e) => e.reason === "一圖多人・留到最後"));
+});
+
+test("一圖多人：3 題上限（未 foul 晒）→ 臥底勝，臥底 +1、留到最後 +2", () => {
+  const { store } = ucSetup("ucm-uc-win", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const goods = st0.participantIds.filter((id) => !st0.undercoverIds.includes(id));
+  ucFoul(store, goods[0]);
+  run(store, "uc.match.next");
+  assert.equal(store.state.room.gameState.undercover.questionNo, 1);
+  ucFoul(store, goods[1]);
+  run(store, "uc.match.next");
+  assert.equal(store.state.room.gameState.undercover.questionNo, 2);
+  ucFoul(store, goods[2]); // 第三題都要 foul 過先准結算
+  const res = run(store, "uc.match.next");
+  assert.equal(res.result.settled, true, "第 3 題完 → 自動結算");
+  assert.equal(store.state.room.gameState.undercover.settled, true);
+  for (const id of st0.undercoverIds) assert.equal(store.playerScore(id), 3, "臥底 +1 留到最後 +2");
+  for (const id of [goods[0], goods[1], goods[2]]) assert.equal(store.playerScore(id), 0, "出局好人 0 分");
+  assert.equal(store.playerScore(goods[3]), 2, "未出局好人只有留到最後 +2");
+});
+
+test("uc.match.settle：冪等（重複撳唔會重複加分）", () => {
+  const { store } = ucSetup("ucm-idem", 5);
+  run(store, "uc.match.start");
+  const ucIds = store.state.room.gameState.undercover.undercoverIds;
+  ucFoul(store, ucIds[0]);
+  run(store, "uc.match.next");
+  ucFoul(store, ucIds[1]);
+  const first = run(store, "uc.match.settle");
+  assert.equal(first.result.settled, true);
+  const snapshot = store.state.ledger.length;
+  const second = run(store, "uc.match.settle");
+  assert.equal(second.result.already, true);
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.matchId === "uc_m1").length, snapshot);
+  assert.throws(() => run(store, "uc.eliminate", { playerId: store.state.room.gameState.undercover.participantIds[0] }), isCmdError("W_ALREADY_STATE"));
+});
+
+test("uc.match.reset：清走本局，再開一局 matchNo+1", () => {
+  const { store } = ucSetup("ucm-reset", 5);
+  run(store, "uc.match.start");
+  assert.equal(store.state.room.gameState.undercover.matchNo, 1);
+  const resetUcIds = store.state.room.gameState.undercover.undercoverIds;
+  ucFoul(store, resetUcIds[0]);
+  run(store, "uc.match.next");
+  ucFoul(store, resetUcIds[1]);
+  run(store, "uc.match.settle");
+  run(store, "uc.match.reset");
+  const cleared = store.state.room.gameState.undercover;
+  assert.deepEqual(cleared.participantIds, []);
+  assert.equal(cleared.matchNo, 2);
+  run(store, "uc.match.start");
+  assert.equal(store.state.room.gameState.undercover.matchNo, 2);
+  assert.equal(store.state.room.gameState.undercover.settled, false);
+});
+
+
+/* ───────── v0.3.0 階段 3：拍賣時間估歌（最少秒數贏） ───────── */
+
+function bidSetup(tag, n = 3, points = 1, maxBid = 10, seconds = 10) {
+  const { store } = makeStore(tag);
+  const players = addPlayers(store, n);
+  run(store, "room.start");
+  run(store, "card.create", { card: { type: "bid", gameId: "auction", prompt: "聽幾秒，估歌名", maxBid, seconds, points } });
+  const card = store.state.cards.find((c) => c.type === "bid");
+  run(store, "card.open", {}, card.id);
+  const round = store.currentRound();
+  return { store, players, card, round };
+}
+
+function bidSub(store, round, card, playerId, amount, ts) {
+  store.commit([{
+    t: "submission.add",
+    d: {
+      submission: {
+        id: `b_${playerId}_${amount}_${ts}`,
+        roundId: round.id,
+        cardId: card.id,
+        playerId,
+        ts,
+        kind: "bid",
+        amount,
+        confirmed: true,
+        payloadHash: "h",
+      },
+    },
+  }]);
+}
+
+test("拍賣：最少秒數贏；同秒 → 最後提交（ts 最大）贏", () => {
+  const { store, players, card, round } = bidSetup("bid-min", 3);
+  bidSub(store, round, card, players[0].id, 5, 1000);
+  bidSub(store, round, card, players[1].id, 3, 2000);
+  bidSub(store, round, card, players[2].id, 3, 3000); // 同秒，但最後提交
+  const ranked = bidRanking(store, round.id);
+  assert.deepEqual(ranked.map((x) => x.playerId), [players[2].id, players[1].id, players[0].id]);
+  const res = run(store, "bid.publish");
+  assert.equal(res.result.ranking.length, 3);
+  const auction = store.round(round.id).auction;
+  assert.equal(auction.ranking[0].playerId, players[2].id, "同秒最後提交贏");
+  assert.equal(auction.ranking[0].seconds, 3);
+  assert.equal(auction.cursor, 0);
+  assert.deepEqual(auction.judged, []);
+  assert.equal(store.round(round.id).state, "closed");
+});
+
+test("拍賣：0 秒唔算競投（唔會入排名）", () => {
+  const { store, players, card, round } = bidSetup("bid-zero", 3);
+  bidSub(store, round, card, players[0].id, 0, 1000);
+  bidSub(store, round, card, players[1].id, 2, 2000);
+  assert.deepEqual(bidRanking(store, round.id).map((x) => x.playerId), [players[1].id]);
+  run(store, "bid.publish");
+  assert.equal(store.round(round.id).auction.ranking.length, 1);
+  // ws 亦要擋 0 秒（source-level 保證：validateSubmission 要 1–max）
+  const wsSrc = fs.readFileSync(path.join(APP_ROOT, "src/server/ws.ts"), "utf8");
+  assert.match(wsSrc, /amount < 1 \|\| payload\.amount > max/, "ws 要拒 0 秒競投");
+});
+
+test("拍賣：publish 之後大mon 見排名＋而家邊個聽；未 publish 唔漏秒數", () => {
+  const { store, players, card, round } = bidSetup("bid-stage", 3);
+  bidSub(store, round, card, players[0].id, 4, 1000);
+  bidSub(store, round, card, players[1].id, 2, 2000);
+  let sv = buildStageView(store);
+  assert.equal(sv.bid.ranking.length, 0, "未 publish 唔會漏排名");
+  assert.equal(JSON.stringify(sv.bid).includes('"seconds"'), false, "未 publish 唔會漏個別秒數");
+  run(store, "bid.publish");
+  sv = buildStageView(store);
+  assert.equal(sv.bid.ranking.length, 2);
+  assert.equal(sv.bid.ranking[0].seconds, 2);
+  assert.equal(sv.bid.ranking[0].current, true);
+  assert.equal(sv.bid.currentName, players[1].name);
+  assert.equal(sv.bid.currentSeconds, 2);
+  assert.equal(sv.bid.remaining, 2);
+});
+
+test("拍賣：bid.judge 答對 +1、重複判分唔會加兩次", () => {
+  const { store, players, card, round } = bidSetup("bid-judge-ok", 3, 1);
+  bidSub(store, round, card, players[0].id, 4, 1000);
+  bidSub(store, round, card, players[1].id, 2, 2000);
+  run(store, "bid.publish");
+  const res = run(store, "bid.judge", { correct: true });
+  assert.equal(res.result.playerId, players[1].id, "judge 唔帶 playerId 就係而家嗰位");
+  assert.equal(store.playerScore(players[1].id), 1);
+  assert.equal(store.round(round.id).auction.finished, true);
+  const sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "message");
+  assert.equal(sv.message.title, "估中！");
+  run(store, "bid.judge", { correct: true });
+  run(store, "bid.judge", { correct: true, playerId: players[1].id });
+  assert.equal(store.playerScore(players[1].id), 1, "重複判分唔會加兩次");
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "估歌・聽歌").length, 1);
+});
+
+test("拍賣：答錯去下一位（cursor++），全部試完就完結", () => {
+  const { store, players, card, round } = bidSetup("bid-judge-miss", 3);
+  bidSub(store, round, card, players[0].id, 2, 1000);
+  bidSub(store, round, card, players[1].id, 3, 2000);
+  bidSub(store, round, card, players[2].id, 5, 3000);
+  run(store, "bid.publish");
+  let res = run(store, "bid.judge", { correct: false });
+  assert.equal(res.result.cursor, 1);
+  assert.equal(res.result.nextPlayerId, players[1].id);
+  let sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "bid");
+  assert.equal(sv.bid.ranking[0].tried, true);
+  assert.equal(sv.bid.currentName, players[1].name);
+  res = run(store, "bid.judge", { correct: false });
+  assert.equal(res.result.cursor, 2);
+  res = run(store, "bid.judge", { correct: false });
+  assert.equal(res.result.finished, true);
+  assert.equal(store.round(round.id).auction.finished, true);
+  sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "message");
+  assert.equal(sv.message.title, "全部人都估唔到");
+  assert.equal(store.playerScore(players[0].id), 0);
+});
+
+test("拍賣：bid.publish 之前 bid.judge 會被拒；冇人競投 publish 都會拒", () => {
+  const { store } = bidSetup("bid-guards", 3);
+  assert.throws(() => run(store, "bid.judge", { correct: true }), isCmdError("W_ALREADY_STATE", /bid.publish/));
+  assert.throws(() => run(store, "bid.publish"), isCmdError("W_ALREADY_STATE", /冇人競投/));
+});
+
+test("拍賣：bid.finish 收本首（唔會派分）", () => {
+  const { store, players, card, round } = bidSetup("bid-finish", 2);
+  bidSub(store, round, card, players[0].id, 3, 1000);
+  run(store, "bid.publish");
+  const res = run(store, "bid.finish");
+  assert.equal(res.result.finished, true);
+  assert.equal(store.round(round.id).auction.finished, true);
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.gameId === "auction").length, 0);
+});
+
+
+/* ───────── v0.3.0 階段 4：笨蛋殺手／容差評分／分項結算／中庸之道 ───────── */
+
+test("killer.assign：抽一個老闆＋一個殺手（唔同人），只出主持台", () => {
+  const { store, players } = ucSetup("killer-assign", 5);
+  const res = run(store, "killer.assign");
+  assert.equal(res.ok, true);
+  assert.notEqual(res.result.bossId, res.result.killerId, "老闆同殺手唔可以同一個人");
+  assert.ok(players.some((p) => p.id === res.result.bossId));
+  const hv = hostOver(store);
+  assert.equal(hv.killerState.bossId, res.result.bossId);
+  assert.equal(hv.killerState.killerId, res.result.killerId);
+  // 唔准用 Player.secretRole，亦唔可以漏去手機／大mon
+  for (const p of players) assert.equal(store.player(p.id).secretRole, undefined);
+  const stageJson = JSON.stringify(buildStageView(store));
+  assert.equal(stageJson.includes("bossId"), false, "大mon 唔可以漏老闆身份");
+  assert.equal(stageJson.includes("killerState"), false, "大mon 唔可以漏笨蛋殺手 state");
+  for (const p of players) {
+    const pj = JSON.stringify(buildPlayerView(store, p.id));
+    assert.equal(pj.includes("bossId"), false, "手機唔可以漏老闆");
+    assert.equal(pj.includes("killerId"), false, "手機唔可以漏殺手");
+  }
+});
+
+test("killer.redraw：重抽會換人；killer.clear 清走身份", () => {
+  const { store } = ucSetup("killer-redraw", 5);
+  run(store, "killer.assign");
+  const before = JSON.parse(JSON.stringify(store.state.room.gameState.killer));
+  run(store, "killer.redraw");
+  const after = store.state.room.gameState.killer;
+  assert.notEqual(`${after.bossId}|${after.killerId}`, `${before.bossId}|${before.killerId}`, "重抽要換人");
+  assert.notEqual(after.bossId, after.killerId);
+  run(store, "killer.clear");
+  assert.equal(store.state.room.gameState.killer, null);
+  assert.equal(hostOver(store).killerState, null);
+});
+
+test("容差評分：Q12 ±2 尺（40）→ 38/40/42 中、37/43 唔中", () => {
+  const { store, players } = ucSetup("quiz-tol", 5);
+  const q12 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q12");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12)] } }]);
+  run(store, "card.open", {}, "q12");
+  const round = store.currentRound();
+  const answers = [38, 40, 42, 37, 43];
+  players.forEach((p, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `s12_${i}`, roundId: round.id, cardId: "q12", playerId: p.id, ts: 1000 + i, kind: "open", amount: answers[i], confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  assert.equal(store.playerScore(players[0].id), 2, "38 ＝ 40-2 邊界內");
+  assert.equal(store.playerScore(players[1].id), 2, "40 中");
+  assert.equal(store.playerScore(players[2].id), 2, "42 ＝ 40+2 邊界內");
+  assert.equal(store.playerScore(players[3].id), 0, "37 邊界外");
+  assert.equal(store.playerScore(players[4].id), 0, "43 邊界外");
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "問答 Q12・容差").length, 3);
+  // 重複收卷／揭曉唔會再加
+  run(store, "card.tally");
+  run(store, "card.reveal");
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.roundId === round.id).length, 3);
+});
+
+test("容差評分：Q13 主持即場輸入答案（容差 0＝完全相等）", () => {
+  const { store, players } = ucSetup("quiz-q13", 4);
+  const q13 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q13");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q13)] } }]);
+  run(store, "card.open", {}, "q13");
+  const round = store.currentRound();
+  [100, 101, 99, 100].forEach((amount, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `s13_${i}`, roundId: round.id, cardId: "q13", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  assert.equal(store.playerScore(players[0].id), 0, "未入答案之前唔會加分");
+  const res = run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 100 });
+  assert.equal(res.result.tolerance, 0);
+  assert.equal(store.playerScore(players[0].id), 2);
+  assert.equal(store.playerScore(players[1].id), 0);
+  assert.equal(store.playerScore(players[2].id), 0);
+  assert.equal(store.playerScore(players[3].id), 2);
+  // 重複入答案：void 舊 auto 分再加，唔會累積
+  run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 100 });
+  assert.equal(store.playerScore(players[0].id), 2, "重複輸入唔會加兩次");
+});
+
+test("分項結算 game-scores：由 ledger gameId 聚合（冇 gameId 算其他）", () => {
+  const { store, players } = ucSetup("game-scores", 3);
+  store.commit([{ t: "ledger.append", d: { events: [
+    { id: "e1", ts: 1, target: { type: "player", id: players[0].id }, gameId: "draw", delta: 3, reason: "畫", by: "host" },
+    { id: "e2", ts: 2, target: { type: "player", id: players[0].id }, gameId: "auction", delta: 1, reason: "歌", by: "host" },
+    { id: "e3", ts: 3, target: { type: "player", id: players[1].id }, gameId: "killer", delta: 2, reason: "殺", by: "host" },
+    { id: "e4", ts: 4, target: { type: "player", id: players[1].id }, gameId: "quiz", delta: 2, reason: "問", by: "host" },
+    { id: "e5", ts: 5, target: { type: "player", id: players[2].id }, delta: 5, reason: "手動", by: "host" },
+    { id: "e6", ts: 6, target: { type: "player", id: players[2].id }, gameId: "draw", delta: 9, reason: "作廢", by: "host", voided: true },
+  ] } }]);
+  store.commit([{ t: "stage.set", d: { stage: { mode: "game-scores", payload: {} } } }]);
+  const sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "game-scores");
+  assert.deepEqual(sv.gameScores.games.map((g) => g.gameId), ["draw", "auction", "killer", "quiz"]);
+  const r0 = sv.gameScores.rows.find((r) => r.id === players[0].id);
+  assert.deepEqual(r0.scores, [3, 1, 0, 0]);
+  assert.equal(r0.other, 0);
+  assert.equal(r0.total, 4);
+  const r1 = sv.gameScores.rows.find((r) => r.id === players[1].id);
+  assert.deepEqual(r1.scores, [0, 0, 2, 2]);
+  assert.equal(r1.total, 4);
+  const r2 = sv.gameScores.rows.find((r) => r.id === players[2].id);
+  assert.equal(r2.other, 5, "冇 gameId 嘅算其他");
+  assert.equal(r2.total, 5, "voided 唔計");
+});
+
+test("中庸之道：second 用平均數距離、rule=nearest-avg、stable tie-break", () => {
+  const { store } = makeStore("awards-avg");
+  const ps = addPlayers(store, 4);
+  addScore(store, "player", ps[0].id, 10);
+  addScore(store, "player", ps[1].id, 10);
+  addScore(store, "player", ps[2].id, 10);
+  addScore(store, "player", ps[3].id, 0);
+  const awards = store.computeAwards();
+  const second = awards.find((a) => a.id === "second");
+  assert.equal(second.rule, "nearest-avg");
+  assert.equal(second.targetId, ps[1].id, "平均 7.5；p2/p3 都距 2.5 → 編號細嘅贏");
+  assert.equal(awards.find((a) => a.id === "grand").targetId, ps[0].id);
+  assert.equal(awards.find((a) => a.id === "third").targetId, ps[3].id);
+  // 中庸之道＝最接近平均數（唔再係中位數）
+  const swapped = makeStore("awards-avg2");
+  const ps2 = addPlayers(swapped.store, 5);
+  [0, 1, 2, 3, 100].forEach((v, i) => addScore(swapped.store, "player", ps2[i].id, v));
+  const a2 = swapped.store.computeAwards();
+  const avg = (0 + 1 + 2 + 3 + 100) / 5; // 21.2；中位數係 2
+  const cand = [0, 1, 2, 3].filter((i) => i !== 4).map((i) => ({ i, d: Math.abs([0, 1, 2, 3, 100][i] - avg) }));
+  const best = cand.sort((x, y) => x.d - y.d || y.i - x.i)[0];
+  assert.equal(a2.find((x) => x.id === "second").targetId, ps2[best.i].id, "最接近平均數（唔係中位數）");
+});
+
+test("頒獎文案：最高分獎／中庸之道獎／多謝參與獎", () => {
+  const { store } = makeStore("award-copy");
+  const ps = addPlayers(store, 3);
+  [5, 3, 1].forEach((v, i) => addScore(store, "player", ps[i].id, v));
+  store.commit([{ t: "award.set", d: { awards: store.computeAwards() } }, { t: "stage.set", d: { stage: { mode: "finale", payload: {} } } }]);
+  const sv = buildStageView(store);
+  const reasons = sv.finale.awards.map((a) => a.reason);
+  assert.deepEqual(reasons, ["最高分獎", "中庸之道獎", "多謝參與獎"]);
+});
+
+
+test("FIX-8：uc.match.settle 勝負未定時拒絕（唔會偷判臥底勝／唔會寫分）", () => {
+  const { store } = ucSetup("fix8-settle", 6);
+  run(store, "uc.match.start");
+  const before = store.state.ledger.length;
+  assert.throws(() => run(store, "uc.match.settle"), isCmdError("W_WRONG_PHASE", /未可以結算/));
+  assert.equal(store.state.ledger.length, before, "被拒時一筆分都唔應該寫");
+  assert.equal(store.state.room.gameState.undercover.settled, false);
+  // 打到第 3 題而且要 foul 過先准（走「下一題／結算」同一條路）
+  const f8uc = store.state.room.gameState.undercover;
+  const f8goods = f8uc.participantIds.filter((id) => !f8uc.undercoverIds.includes(id));
+  ucFoul(store, f8goods[0]);
+  run(store, "uc.match.next");
+  ucFoul(store, f8goods[1]);
+  run(store, "uc.match.next");
+  ucFoul(store, f8goods[2]);
+  const res = run(store, "uc.match.settle");
+  assert.equal(res.result.settled, true);
+  assert.equal(store.state.room.gameState.undercover.result, "undercover");
+});
+
+
+test("FIX-9：uc.match.redraw 唔會抽已出局者做臥底", () => {
+  const { store } = ucSetup("fix9-redraw", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const victim = st0.participantIds.find((id) => !st0.undercoverIds.includes(id));
+  ucFoul(store, victim);
+  for (let i = 0; i < 12; i += 1) {
+    run(store, "uc.match.redraw");
+    const st = store.state.room.gameState.undercover;
+    assert.equal(st.undercoverIds.includes(victim), false, "已出局者唔可以再做臥底");
+    assert.equal(new Set(st.undercoverIds).size, 2);
+  }
+});
+
+
+test("FIX-10：一圖多人題目卡唔准 generic card.open（唔會穿橋／唔會開 round）", () => {
+  const { store } = ucSetup("fix10-open", 5);
+  run(store, "uc.match.start");
+  const beforeRounds = store.state.room.rounds.length;
+  const beforeMode = store.state.room.stage.mode;
+  assert.throws(() => run(store, "card.open", {}, "uc_uc1"), isCmdError("W_WRONG_PHASE", /一圖多人/));
+  assert.equal(store.state.room.rounds.length, beforeRounds, "唔會開 round");
+  assert.equal(store.state.room.stage.mode, beforeMode, "大mon 畫面不變");
+  assert.equal(store.state.room.currentRoundId, null);
+});
+
+
+/* ───────── 第三輪 audit：B1／B3（拍賣回合終態／公佈冪等） ───────── */
+
+function bidMulti(tag, cardCount = 2, playersN = 3) {
+  const { store } = makeStore(tag);
+  const players = addPlayers(store, playersN);
+  run(store, "room.start");
+  const cards = [];
+  for (let i = 1; i <= cardCount; i += 1) {
+    run(store, "card.create", { card: { type: "bid", gameId: "auction", prompt: `第 ${i} 首・聽幾秒估歌名`, maxBid: 10, seconds: 10, points: 1 } });
+    cards.push(store.state.cards.filter((c) => c.type === "bid").at(-1));
+  }
+  return { store, players, cards };
+}
+
+function openBid(store, card) {
+  run(store, "card.open", {}, card.id);
+  return store.currentRound();
+}
+
+test("B1：答對之後 round 收成 revealed，下一張拍賣卡開得", () => {
+  const { store, players, cards } = bidMulti("b1-correct", 2);
+  const round = openBid(store, cards[0]);
+  bidSub(store, round, cards[0], players[0].id, 5, 1000);
+  run(store, "bid.publish");
+  run(store, "bid.judge", { correct: true });
+  assert.equal(store.round(round.id).state, "revealed", "要終態 revealed");
+  assert.equal(store.round(round.id).auction.finished, true);
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "估歌・聽歌").length, 1, "分錄要保留");
+  const next = openBid(store, cards[1]);
+  assert.equal(next.state, "open", "下一首要開得（唔使先去揭曉）");
+  assert.notEqual(next.id, round.id);
+});
+
+test("B1：全部答錯之後 round 收成 revealed，下一張拍賣卡開得", () => {
+  const { store, players, cards } = bidMulti("b1-miss", 2, 2);
+  const round = openBid(store, cards[0]);
+  bidSub(store, round, cards[0], players[0].id, 3, 1000);
+  run(store, "bid.publish");
+  run(store, "bid.judge", { correct: false });
+  assert.equal(store.round(round.id).state, "revealed");
+  const next = openBid(store, cards[1]);
+  assert.equal(next.state, "open");
+});
+
+test("B1：手動 bid.finish 之後 round 收成 revealed，下一張拍賣卡開得", () => {
+  const { store, players, cards } = bidMulti("b1-finish", 2);
+  const round = openBid(store, cards[0]);
+  bidSub(store, round, cards[0], players[0].id, 4, 1000);
+  run(store, "bid.publish");
+  run(store, "bid.finish");
+  assert.equal(store.round(round.id).state, "revealed");
+  const next = openBid(store, cards[1]);
+  assert.equal(next.state, "open");
+});
+
+test("B1：零人競投都收得本首（bid.finish），下一張拍賣卡開得", () => {
+  const { store, cards } = bidMulti("b1-nobody", 2);
+  const round = openBid(store, cards[0]);
+  assert.throws(() => run(store, "bid.publish"), isCmdError("W_ALREADY_STATE", /冇人競投/));
+  run(store, "bid.finish");
+  assert.equal(store.round(round.id).state, "revealed", "零人競投都要收成終態");
+  const next = openBid(store, cards[1]);
+  assert.equal(next.state, "open");
+});
+
+test("A2：finish 之後唔可以再 bid.publish（唔可以將 revealed 拉返 closed 再派分）", () => {
+  const { store, players, cards } = bidMulti("a2-revive", 2);
+  const round = openBid(store, cards[0]);
+  bidSub(store, round, cards[0], players[0].id, 4, 1000);
+  run(store, "bid.finish"); // 未 publish 就收本首
+  assert.equal(store.round(round.id).state, "revealed");
+  assert.throws(() => run(store, "bid.publish"), isCmdError("W_ALREADY_STATE", /已經完結/));
+  assert.equal(store.round(round.id).state, "revealed", "唔可以被拉返 closed");
+  assert.equal(store.playerScore(players[0].id), 0, "唔應該有分");
+  const next = openBid(store, cards[1]);
+  assert.equal(next.state, "open", "下一首仍然開得");
+});
+
+test("A2：已判完（finished）之後再 bid.publish 都要拒", () => {
+  const { store, players, cards } = bidMulti("a2-finished", 2);
+  const round = openBid(store, cards[0]);
+  bidSub(store, round, cards[0], players[0].id, 4, 1000);
+  run(store, "bid.publish");
+  run(store, "bid.judge", { correct: true });
+  assert.throws(() => run(store, "bid.publish"), isCmdError("W_ALREADY_STATE", /已經完結/));
+  assert.equal(store.playerScore(players[0].id), 1, "只派一次");
+});
+
+test("B3：重複公佈排名唔會重置判分（同一首歌唔會派兩次分）", () => {
+  const { store, players, cards } = bidMulti("b3-publish", 2);
+  const round = openBid(store, cards[0]);
+  bidSub(store, round, cards[0], players[0].id, 5, 1000);
+  bidSub(store, round, cards[0], players[1].id, 3, 2000);
+  run(store, "bid.publish");
+  const ranking = JSON.parse(JSON.stringify(store.round(round.id).auction.ranking));
+  // 未判分之前再公佈：回原排名，唔重建
+  const again = run(store, "bid.publish");
+  assert.equal(again.result.already, true, "已公佈過要回原排名");
+  assert.deepEqual(store.round(round.id).auction.ranking, ranking, "排名唔可以重建");
+  assert.equal(store.round(round.id).auction.cursor, 0, "cursor 唔可以被重置");
+  run(store, "bid.judge", { correct: true }); // players[1] 答對 +1
+  assert.equal(store.playerScore(players[1].id), 1);
+  // A2：本首已完成 → 再公佈一律拒（唔可以將 revealed 拉返 closed）
+  assert.throws(() => run(store, "bid.publish"), isCmdError("W_ALREADY_STATE", /已經完結/));
+  // 換 commandId（新對象）重判：finished 擋住，唔會派第二次
+  run(store, "bid.judge", { correct: true });
+  run(store, "bid.judge", { correct: true, playerId: players[1].id });
+  assert.equal(store.playerScore(players[1].id), 1, "同一首歌只准一個得分者");
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "估歌・聽歌").length, 1);
+});
+
+test("B3：bid.judge 指定非當前玩家 → W_STALE_COMMAND，唔會派分", () => {
+  const { store, players, cards } = bidMulti("b3-cursor", 2);
+  const round = openBid(store, cards[0]);
+  bidSub(store, round, cards[0], players[0].id, 6, 1000);
+  bidSub(store, round, cards[0], players[1].id, 3, 2000);
+  run(store, "bid.publish");
+  assert.throws(() => run(store, "bid.judge", { correct: true, playerId: players[0].id }), isCmdError("W_STALE_COMMAND"));
+  assert.equal(store.playerScore(players[0].id), 0);
+  assert.equal(store.playerScore(players[1].id), 0);
+});
+
+
+/* ───────── 第三輪 audit：B4（一圖多人步驟約束）／P1-c（undo） ───────── */
+
+test("B4：本題未 foul 過唔准下一題（連撳 next 被擋）", () => {
+  const { store } = ucSetup("b4-next", 6);
+  run(store, "uc.match.start");
+  assert.throws(() => run(store, "uc.match.next"), isCmdError("W_WRONG_PHASE", /未 foul/));
+  assert.throws(() => run(store, "uc.match.next"), isCmdError("W_WRONG_PHASE", /未 foul/));
+  assert.equal(store.state.room.gameState.undercover.questionNo, 0, "questionNo 唔可以跳");
+});
+
+test("B4：同一題唔准 foul 第二個人", () => {
+  const { store } = ucSetup("b4-double", 6);
+  run(store, "uc.match.start");
+  const st = store.state.room.gameState.undercover;
+  const goods = st.participantIds.filter((id) => !st.undercoverIds.includes(id));
+  ucFoul(store, goods[0]);
+  assert.throws(() => ucFoul(store, goods[1]), isCmdError("W_ALREADY_STATE", /已經 foul/));
+  assert.equal(store.state.room.gameState.undercover.eliminatedIds.length, 1);
+});
+
+test("B4：投票仲 open（未收卷）唔准 foul", () => {
+  const { store } = ucSetup("b4-voting", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.vote.start");
+  const st = store.state.room.gameState.undercover;
+  const goods = st.participantIds.filter((id) => !st.undercoverIds.includes(id));
+  assert.throws(() => run(store, "uc.eliminate", { playerId: goods[0] }), isCmdError("W_WRONG_PHASE", /未收卷/));
+  assert.equal(store.state.room.gameState.undercover.eliminatedIds.length, 0);
+});
+
+test("B4：第三題未 foul 就 settle → 拒絕；foul 咗就准", () => {
+  const { store } = ucSetup("b4-settle3", 6);
+  run(store, "uc.match.start");
+  const st = store.state.room.gameState.undercover;
+  const goods = st.participantIds.filter((id) => !st.undercoverIds.includes(id));
+  ucFoul(store, goods[0]);
+  run(store, "uc.match.next");
+  ucFoul(store, goods[1]);
+  run(store, "uc.match.next");
+  assert.equal(store.state.room.gameState.undercover.questionNo, 2);
+  assert.throws(() => run(store, "uc.match.settle"), isCmdError("W_WRONG_PHASE", /未可以結算/));
+  ucFoul(store, goods[2]);
+  const res = run(store, "uc.match.settle");
+  assert.equal(res.result.settled, true);
+  assert.equal(store.state.room.gameState.undercover.result, "undercover");
+});
+
+test("P1-c：換咗題之後唔可以 undo 上一題嘅淘汰", () => {
+  const { store } = ucSetup("p1c-undo", 6);
+  run(store, "uc.match.start");
+  const st = store.state.room.gameState.undercover;
+  const goods = st.participantIds.filter((id) => !st.undercoverIds.includes(id));
+  ucFoul(store, goods[0]);
+  run(store, "uc.match.next");
+  assert.throws(() => run(store, "uc.eliminate.undo"), isCmdError("W_ALREADY_STATE", /換咗題/));
+  // 本題 foul 完之後 undo 得
+  ucFoul(store, goods[1]);
+  run(store, "uc.eliminate.undo");
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [goods[0]]);
+  assert.equal(store.state.room.gameState.undercover.eliminatedByQuestion?.[goods[1]], undefined);
+});
+
+
+/* ───────── 第三輪 audit：B5／B6／B7／P1-d／P1-e ───────── */
+
+test("B5：大mon 排行榜／結算唔再 slice 12 人（自動分欄）", () => {
+  const stageSrc = fs.readFileSync(path.join(APP_ROOT, "src/client/stage.ts"), "utf8");
+  assert.equal(/\.slice\(0,\s*12\)/.test(stageSrc), false, "唔可以只 render 頭 12 人");
+  assert.match(stageSrc, /scoreRowsHtml/, "要用分欄 helper");
+  assert.match(stageSrc, /cols-3/, "26 人以上要 3 欄");
+  const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
+  assert.match(css, /\.scoreboard-list\.multi/, "要有分欄 CSS");
+  assert.match(css, /overflow-y: auto/, "分欄之後仲要可以捲");
+});
+
+test("B6：主持儲存 Q12／Q13 唔會刪走 tolerance（儲存後容差評分照 work）", () => {
+  const { store, players } = ucSetup("b6-save", 5);
+  const qs = loadQuizSeed(APP_ROOT);
+  const q12 = qs.find((q) => q.id === "q12");
+  const q13 = qs.find((q) => q.id === "q13");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12), questionToCard(q13)] } }]);
+  // 模擬主持台儲存題目（payload 冇帶 tolerance）
+  run(store, "quiz.upsert", { question: { id: "q12", type: "open", openKind: "number", category: q12.category, prompt: q12.prompt, explanation: q12.explanation, seconds: 30, points: 2 } });
+  run(store, "quiz.upsert", { question: { id: "q13", type: "open", openKind: "number", category: q13.category, prompt: q13.prompt, explanation: q13.explanation, seconds: 30, points: 2 } });
+  assert.equal(store.card("q12").tolerance, 2, "Q12 儲存後 tolerance 要保留");
+  assert.equal(store.card("q12").actualAnswer, 40, "Q12 actualAnswer 要保留");
+  assert.equal(store.card("q13").tolerance, 0, "Q13 tolerance 0 要保留");
+  // 儲存後再跑容差評分：38／40／42 中、37／43 唔中
+  run(store, "card.open", {}, "q12");
+  const round = store.currentRound();
+  [38, 40, 42, 37, 43].forEach((amount, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `b6_${i}`, roundId: round.id, cardId: "q12", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [2, 2, 2, 0, 0]);
+});
+
+test("B7：同一毫秒提交，用持久提交順序判「最後提交」（唔用 id 字典序）", () => {
+  const { store, players, card, round } = bidSetup("b7-order", 2);
+  store.commit([{ t: "submission.add", d: { submission: { id: "sub_aaa", roundId: round.id, cardId: card.id, playerId: players[0].id, ts: 5000, kind: "bid", amount: 5, confirmed: true, payloadHash: "h" } } }]);
+  store.commit([{ t: "submission.add", d: { submission: { id: "sub_zzz", roundId: round.id, cardId: card.id, playerId: players[1].id, ts: 5000, kind: "bid", amount: 5, confirmed: true, payloadHash: "h" } } }]);
+  const ranked = bidRanking(store, round.id);
+  assert.deepEqual(ranked.map((x) => x.id), ["sub_zzz", "sub_aaa"], "後加入者排前（唔係 aaa 先）");
+  run(store, "bid.publish");
+  const sv = buildStageView(store);
+  assert.equal(sv.bid.ranking[0].playerId, players[1].id, "大mon 排名都要跟持久提交順序");
+  assert.equal(store.round(round.id).auction.ranking[0].playerId, players[1].id);
+});
+
+test("P1-d：card.create whitelist 有 undercoverPrompt／tolerance／actualAnswer", () => {
+  const { store } = ucSetup("p1d-create", 3);
+  run(store, "card.create", {
+    card: { type: "open", gameId: "draw", prompt: "測試", undercoverPrompt: "關鍵詞", tolerance: 3, actualAnswer: 12, openKind: "number" },
+  });
+  const card = store.state.cards.filter((c) => c.prompt === "測試").at(-1);
+  assert.equal(card.undercoverPrompt, "關鍵詞");
+  assert.equal(card.tolerance, 3);
+  assert.equal(card.actualAnswer, 12);
+});
+
+test("P1-e：數字題自動容差評分後，手機顯示中／唔中（唔再係主持評分中）", () => {
+  const { store, players } = ucSetup("p1e-result", 3);
+  const q12 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q12");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12)] } }]);
+  run(store, "card.open", {}, "q12");
+  const round = store.currentRound();
+  [40, 39, 30].forEach((amount, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `p1e_${i}`, roundId: round.id, cardId: "q12", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  run(store, "card.reveal");
+  assert.equal(buildPlayerView(store, players[0].id).reveal.myResult, "correct", "40 中");
+  assert.equal(buildPlayerView(store, players[1].id).reveal.myResult, "correct", "39 喺 ±2 內");
+  assert.equal(buildPlayerView(store, players[2].id).reveal.myResult, "wrong", "30 唔中");
+});
+
+
+/* ───────── 第三輪 audit：B2／P1-a／P1-b／P1-f ───────── */
+
+test("B2：問答『揭曉』＝先收卷再 reveal（round 已封、只派一次分、下一題開得）", () => {
+  const { store, players } = ucSetup("b2-reveal", 4);
+  const qs = loadQuizSeed(APP_ROOT).filter((q) => q.id === "q1" || q.id === "q2");
+  store.commit([{ t: "quiz.set", d: { cards: qs.map(questionToCard) } }]);
+  run(store, "card.open", {}, "q1");
+  const round = store.currentRound();
+  // 第 5 秒：一人答對（choice 0）、一人答錯
+  store.commit([{
+    t: "submission.add",
+    d: { submission: { id: "b2_a", roundId: round.id, cardId: "q1", playerId: players[0].id, ts: 5000, kind: "choice", choice: 0, confirmed: true, payloadHash: "h" } },
+  }]);
+  store.commit([{
+    t: "submission.add",
+    d: { submission: { id: "b2_b", roundId: round.id, cardId: "q1", playerId: players[1].id, ts: 5001, kind: "choice", choice: 1, confirmed: true, payloadHash: "h" } },
+  }]);
+  // 主持撳「揭曉」嘅真實順序：card.close → card.reveal
+  run(store, "card.close");
+  run(store, "card.reveal");
+  assert.equal(store.round(round.id).state, "revealed", "round 要封（唔可以仲 open）");
+  assert.equal(store.playerScore(players[0].id), 1);
+  assert.equal(store.playerScore(players[1].id), 0);
+  // 重複 reveal 會被拒（唔會再派分）
+  assert.throws(() => run(store, "card.reveal"), isCmdError("W_WRONG_PHASE"));
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.roundId === round.id).length, 1);
+  // 下一題開得
+  run(store, "card.open", {}, "q2");
+  assert.equal(store.currentRound().state, "open");
+  assert.notEqual(store.currentRound().id, round.id);
+});
+
+test("B2：控制頁三個掣接真 command（唔再純粹 stage.set）", () => {
+  const src = fs.readFileSync(path.join(APP_ROOT, "src/client/host.ts"), "utf8");
+  assert.match(src, /data-act="qa\.question"/);
+  assert.match(src, /data-act="qa\.dist"/);
+  assert.match(src, /data-act="qa\.reveal"/);
+  assert.match(src, /只換畫面（唔會收卷／評分）/, "純換畫面嘅掣要另外標示");
+  // 真流程分支要 call card command，唔係 stage.set
+  assert.match(src, /if \(sub === "reveal"\) \{[\s\S]{0,220}cmd\("card\.reveal"\)/);
+});
+
+test("P1-a：笨蛋殺手一般玩家加分有得揀人＋gameId=killer", () => {
+  const src = fs.readFileSync(path.join(APP_ROOT, "src/client/host.ts"), "utf8");
+  assert.match(src, /id="killer-target"/, "要有玩家選擇");
+  assert.match(src, /data-act="killer\.any:1"/, "要有 +1 掣");
+  assert.match(src, /reason: "笨蛋殺手・主持加分", gameId: "killer"/, "要送 gameId=killer");
+});
+
+test("P1-b：舊題匯入收埋喺進階＋有 confirm（唔會一撳即覆蓋）", () => {
+  const src = fs.readFileSync(path.join(APP_ROOT, "src/client/host.ts"), "utf8");
+  assert.match(src, /進階：舊題匯入/, "要喺進階摺疊入面");
+  assert.match(src, /window\.confirm\("確定匯入舊 QUIZ/, "要有確認對話");
+  const idx = src.indexOf('sub === "import"');
+  assert.ok(idx > 0 && src.slice(idx, idx + 400).includes("window.confirm"), "import 分支要先 confirm");
+});
+
+test("P1-f：到期一律拒提交＋競投秒數唔可以大過剩餘秒數（+1 秒誤差）", () => {
+  const t0 = Date.now();
+  assert.equal(roundExpired(null, t0), false, "冇 endsAt 唔會過期");
+  assert.equal(roundExpired(t0 + 5000, t0), false);
+  assert.equal(roundExpired(t0 - 1, t0), true, "過咗 endsAt 就過期");
+  // endsAt 仲有 5 秒：剩餘 5 → 最多准 6（+1 秒網絡誤差）
+  assert.equal(bidSecondsAllowed(5, t0 + 5000, t0), true);
+  assert.equal(bidSecondsAllowed(6, t0 + 5000, t0), true);
+  assert.equal(bidSecondsAllowed(7, t0 + 5000, t0), false, "唔可以偷多幾秒");
+  // 剩 0.4 秒：remaining=1 → 最多准 2
+  assert.equal(bidSecondsAllowed(2, t0 + 400, t0), true);
+  assert.equal(bidSecondsAllowed(3, t0 + 400, t0), false);
+  // ws 真係用呢兩個 helper（source-level 保證）
+  const wsSrc = fs.readFileSync(path.join(APP_ROOT, "src/server/ws.ts"), "utf8");
+  assert.match(wsSrc, /roundExpired\(round\.endsAt, Date\.now\(\)\)/, "到期要一律拒（唔再淨係 draw 卡）");
+  assert.match(wsSrc, /bidSecondsAllowed\(/, "bid 要驗剩餘秒數");
 });

@@ -1,12 +1,36 @@
 {
-  "version": 1,
-  "source": "PLAN-v3.1 附錄 B：四關預設規則頁文字",
+  "version": 2,
+  "source": "2026-11-19 v0.3.0：跟壽星 FLOW.md 重寫四頁（一圖多人／拍賣時間估歌／笨蛋殺手／問答環節），粵語，主持台＋大mon 一頁放得落。",
   "pages": [
+    {
+      "id": "rule-draw",
+      "gameId": "draw",
+      "title": "一圖多人畫畫猜",
+      "subtitle": "2 個臥底・最多 3 題",
+      "order": 0,
+      "enabled": true,
+      "autoAdvanceSeconds": 0,
+      "blocks": [
+        { "type": "heading", "text": "玩法" },
+        {
+          "type": "steps",
+          "items": [
+            "主持派題目卡：每人出去喺同一張大紙畫 5 秒（主持計時器計）",
+            "畫完主持公佈好人題目，每人解釋自己畫咩",
+            "大家喺手機投一個最似臥底嘅人（10 秒倒數）",
+            "主持公佈被 foul 嘅係唔係臥底；未 foul 晒就換紙再一題",
+            "最多 3 題；3 題後仲有臥底＝臥底贏"
+          ]
+        },
+        { "type": "score-table", "items": ["好人贏：全部好人 +1", "臥底贏：全部臥底 +1", "留到最後（未出局）每人 +2"] },
+        { "type": "callout", "text": "開局隨機抽 2 個臥底，主持可以重抽。", "emphasis": "hot" }
+      ]
+    },
     {
       "id": "rule-auction",
       "gameId": "auction",
-      "title": "拍賣估歌",
-      "subtitle": "出價最高，聽完先估",
+      "title": "拍賣時間估歌",
+      "subtitle": "最少秒數先聽歌",
       "order": 1,
       "enabled": true,
       "autoAdvanceSeconds": 0,
@@ -15,21 +39,23 @@
         {
           "type": "steps",
           "items": [
-            "每人在自己手機輸入出價（0 至 100）",
-            "最高價者獨得估歌權（同價：先交者贏）",
-            "聽一段歌，10 秒內講出歌名",
-            "主持揭曉歌名同分數"
+            "大mon 由 10 秒倒數到 0，大家手機同時見到",
+            "撳「競投」即刻投到你嗰刻剩低嘅秒數（最少 1 秒）",
+            "最少秒數嗰個先聽；同秒就最後撳嗰個先",
+            "得標者揀由首歌邊個位開始聽（主持自己 MacBook 播）",
+            "估中 +1；估唔到就去踩「你投嘅秒數 ×2」指壓板",
+            "跟住到下一個（第二少秒數），播歌位置不變"
           ]
         },
-        { "type": "score-table", "items": ["答對 ＋5", "答錯 0", "冇得標 冇分"] },
-        { "type": "callout", "text": "出價唔會扣分，放心報高！", "emphasis": "hot" }
+        { "type": "score-table", "items": ["估中 +1", "估唔到 0（踩指壓板）"] },
+        { "type": "callout", "text": "預計玩 6 首歌。", "emphasis": "hot" }
       ]
     },
     {
-      "id": "rule-draw",
-      "gameId": "draw",
-      "title": "畫畫猜人",
-      "subtitle": "畫得似唔似，全場投票",
+      "id": "rule-killer",
+      "gameId": "killer",
+      "title": "笨蛋殺手",
+      "subtitle": "一個老闆一個殺手",
       "order": 2,
       "enabled": true,
       "autoAdvanceSeconds": 0,
@@ -37,17 +63,22 @@
         { "type": "heading", "text": "玩法" },
         {
           "type": "steps",
-          "items": ["每人喺紙上畫（限時 1 分鐘）", "主持影相、上載上牆", "大家喺手機投「邊張最似」", "主持逐張評審加分"]
+          "items": [
+            "主持抽一個老闆＋一個殺手（可以重抽），用紙派身份卡",
+            "老闆同殺手用指定動作互相確認",
+            "殺手只有 3 粒子彈，要殺兩個人",
+            "最後全體投票：投中殺手／老闆＝好人勝",
+            "輸贏由主持喺系統加分"
+          ]
         },
-        { "type": "score-table", "items": ["每得一票 ＋1", "最高票作品額外 ＋2", "主持評審 ＋1 或 ＋2"] },
-        { "type": "callout", "text": "一人一票，投咗唔可以改。", "emphasis": "hot" }
+        { "type": "callout", "text": "笨蛋殺手會喺問答環節期間玩。", "emphasis": "hot" }
       ]
     },
     {
-      "id": "rule-saboteur",
-      "gameId": "saboteur",
-      "title": "搗蛋鬼",
-      "subtitle": "有內鬼，兩輪揪人",
+      "id": "rule-quiz",
+      "gameId": "quiz",
+      "title": "問答環節",
+      "subtitle": "30 秒・手機作答",
       "order": 3,
       "enabled": true,
       "autoAdvanceSeconds": 0,
@@ -56,37 +87,13 @@
         {
           "type": "steps",
           "items": [
-            "每人收一個秘密身份（只有你自己睇到）",
-            "第一輪投票：最高票而且過半先淘汰；唔過半或平票由主持裁決／重投一次",
-            "第二輪再投（規則同上）",
-            "兩輪都揪唔中就係搗蛋鬼贏"
+            "大mon 出題目＋4 個選擇，30 秒倒數",
+            "手機揀 A／B／C／D；開放題直接輸入手機",
+            "主持見到全部人答完可以提早收卷",
+            "先出答案分佈，再揭曉正解同解釋"
           ]
         },
-        { "type": "callout", "text": "唔可以投自己；重投每輪最多一次。", "emphasis": "hot" },
-        { "type": "score-table", "items": ["揪中（每位投中者）＋3", "兩輪都揪唔中（搗蛋鬼）＋5"] }
-      ]
-    },
-    {
-      "id": "rule-quiz",
-      "gameId": "quiz",
-      "title": "常識問答",
-      "subtitle": "每人自己答，答案唔會漏",
-      "order": 4,
-      "enabled": true,
-      "autoAdvanceSeconds": 0,
-      "blocks": [
-        { "type": "heading", "text": "玩法" },
-        {
-          "type": "steps",
-          "items": [
-            "大mon 出題，手機揀 A／B／C／D",
-            "揀完撳「確認送出」，確認後唔可以改",
-            "時間到自動收卷（或主持立即收卷）",
-            "大mon 先出分佈，主持再揭曉正解"
-          ]
-        },
-        { "type": "score-table", "items": ["MC 答對 ＋1（20 秒）", "開放題 ＋2（45 秒）", "估數字最接近 ＋2"] },
-        { "type": "callout", "text": "唔好睇隔籬；答案一經確認就作實。", "emphasis": "hot" }
+        { "type": "score-table", "items": ["MC 答對 +1", "開放題（有容差）答中 +2"] }
       ]
     }
   ]

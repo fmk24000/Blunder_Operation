@@ -1387,3 +1387,31 @@ body.host .tabbar button.active { background: var(--ink); color: #fff; }
     "PingFang HK", "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", "Helvetica Neue", sans-serif;
 }
 body.host, body.play { font-family: var(--font-line); }
+
+/* v0.3.0：大mon 分項結算表（FIX-2：人多要 scroll，唔可以 cut） */
+.gs-wrap { width: 100%; max-height: calc(100vh - 230px); overflow-y: auto; }
+.gs-table { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 30px; }
+.gs-table th, .gs-table td { padding: 10px 16px; border-bottom: 2px solid var(--line); text-align: center; }
+.gs-table th { font-size: 24px; letter-spacing: 1px; color: var(--muted); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.gs-table .gs-name { text-align: left; }
+.gs-table tbody tr:nth-child(odd) { background: var(--bg-soft); }
+
+/* v0.3.0：主持台「進階」摺疊 tab */
+.host-tabs details.tab-more { display: inline-block; }
+.host-tabs details.tab-more > summary { cursor: pointer; padding: 8px 14px; border: 1px solid var(--line); border-radius: 10px; list-style: none; }
+.host-tabs details.tab-more > summary.active { background: var(--accent); color: #fff; }
+.host-tabs details.tab-more > .tabbar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* FIX-7：大mon 嘅 toast 要喺分數條（ticker 92px）上面，唔可以壓住啲名 */
+body.stage #toast { bottom: 108px; }
+
+/* B5：26–30 人排行榜／結算自動分欄（唔再 slice，亦唔會被裁切） */
+.scoreboard-list.multi {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px; row-gap: 2px; align-content: start;
+  max-height: calc(100vh - 280px); overflow-y: auto;
+}
+.scoreboard-list.multi.cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.scoreboard-list.multi .sb-row { font-size: 26px; padding: 4px 14px; gap: 14px; }
+.scoreboard-list.multi .sb-row .num { font-size: 20px; width: 40px; }
+.scoreboard-list.multi .sb-row .name { font-size: 24px; }

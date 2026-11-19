@@ -67,8 +67,16 @@ const MODES: StageMode[] = [
   "finale",
   "award",
   "timer",
+  "message",
+  "game-scores",
   "blackout",
 ];
+
+/** FIX-5：toast 顯示用中文 mode 名（新 mode 唔好出英文 raw 名） */
+const MODE_TOAST_LABEL: Partial<Record<StageMode, string>> = {
+  message: "文字公告",
+  "game-scores": "分項結算",
+};
 
 function sha256(s: string): string {
   return crypto.createHash("sha256").update(s).digest("hex");
@@ -376,6 +384,43 @@ function gradeClosest(ctx: Ctx, round: Round, card: Card, actual: number): void 
   if (events.length) push(ctx, { t: "ledger.append", d: { events } });
 }
 
+/** v0.3.0：開放數字題容差評分（Q12 ±2 尺）——|amount - actual| <= tolerance → 全部 +points。
+ *  冇 tolerance 嘅題維持舊行為「最接近 +2」（gradeClosest）。 */
+function gradeToleranceRound(ctx: Ctx, round: Round, card: Card, actual: number): void {
+  if (typeof card.tolerance !== "number") return;
+  const store = ctx.store;
+  // 同一筆 transaction 入面已經 void 咗嘅舊分要當唔存在（quiz.setActualAnswer 重新輸入答案）
+  const pendingVoid = new Set<string>();
+  for (const m of ctx.muts) {
+    if (m.t !== "ledger.void") continue;
+    for (const id of (m.d.eventIds as string[]) ?? []) pendingVoid.add(id);
+  }
+  const already = new Set(
+    store.state.ledger
+      .filter((e) => e.roundId === round.id && e.submissionId && !e.voided && !pendingVoid.has(e.id))
+      .map((e) => e.submissionId),
+  );
+  const events: ScoreEvent[] = [];
+  for (const s of store.submissionsForRound(round.id)) {
+    if (!s.confirmed || typeof s.amount !== "number") continue;
+    if (already.has(s.id)) continue;
+    if (Math.abs(s.amount - actual) > card.tolerance) continue;
+    events.push(
+      makeEvent({
+        target: { type: "player", id: s.playerId },
+        gameId: "quiz",
+        roundId: round.id,
+        cardId: card.id,
+        submissionId: s.id,
+        delta: card.points,
+        reason: `${cardReason(card)}・容差`,
+        by: "auto",
+      }),
+    );
+  }
+  if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+}
+
 /** 估數字：收卷 transaction 固定 closedAt → 用 Asia/Hong_Kong 計到下一個 00:00 嘅完整分鐘 */
 export function minutesToMidnightHK(closedAt: number): number {
   const fmt = new Intl.DateTimeFormat("en-CA", {
@@ -412,6 +457,11 @@ function closeRoundMutations(ctx: Ctx, round: Round, card: Card | undefined, aut
     patch.actualAnswer = actualAnswer;
     push(ctx, { t: "card.update", d: { cardId: card.id, patch: { actualAnswer } } });
     gradeClosest(ctx, round, card, actualAnswer);
+  } else if (card && typeof card.tolerance === "number" && typeof card.actualAnswer === "number") {
+    // v0.3.0：有容差又有實際答案（Q12）→ 收卷即按容差加分
+    actualAnswer = card.actualAnswer;
+    patch.actualAnswer = actualAnswer;
+    gradeToleranceRound(ctx, round, card, actualAnswer);
   }
   push(ctx, { t: "round.update", d: { roundId: round.id, patch } });
   if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "closed" } } });
@@ -449,12 +499,37 @@ function sourceKindOf(url: string): { kind: "youtube" | "apple" | "external"; ur
   return { kind: "external", url: u };
 }
 
-function bidWinner(store: Store, roundId: string): { submission: Submission | undefined; second: Submission | undefined } {
-  const subs = store
+/** v0.3.0 拍賣時間估歌：最少秒數先聽；同秒 → 最後提交（ts 最大）先。
+ *  0 秒＝冇競投到（ws 已經擋，呢度再濾一次）。 */
+export function bidRanking(store: Store, roundId: string): Submission[] {
+  // B7：同秒要用「持久提交順序」（submissions 陣列位置，後加入排前），唔可以用 id 字典序
+  const order = new Map(store.state.submissions.map((x, i) => [x.id, i]));
+  return store
     .submissionsForRound(roundId)
-    .filter((x) => x.confirmed && typeof x.amount === "number")
-    .sort((a, b) => a.ts - b.ts);
-  const ranked = [...subs].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0) || a.ts - b.ts);
+    .filter((x) => x.confirmed && typeof x.amount === "number" && (x.amount ?? 0) >= 1)
+    .sort(
+      (a, b) =>
+        (a.amount ?? 0) - (b.amount ?? 0) ||
+        (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0) ||
+        b.ts - a.ts ||
+        a.id.localeCompare(b.id),
+    );
+}
+
+/** P1-f：round 到期（endsAt 已過）就一律拒新提交（所有卡類） */
+export function roundExpired(endsAt: number | null, nowMs: number): boolean {
+  return endsAt !== null && nowMs > endsAt;
+}
+
+/** P1-f：競投秒數唔可以多過剩餘秒數（明確規則：容許 +1 秒網絡誤差） */
+export function bidSecondsAllowed(amount: number, endsAt: number | null, nowMs: number): boolean {
+  if (endsAt === null) return true;
+  const remaining = Math.ceil(Math.max(0, endsAt - nowMs) / 1000);
+  return amount <= remaining + 1;
+}
+
+function bidWinner(store: Store, roundId: string): { submission: Submission | undefined; second: Submission | undefined } {
+  const ranked = bidRanking(store, roundId);
   return { submission: ranked[0], second: ranked[1] };
 }
 
@@ -730,6 +805,84 @@ export function tickUndercover(store: Store): boolean {
   return true;
 }
 
+/* ── v0.3.0：一圖多人（畫畫臥底）——state helpers ── */
+
+type UcMatch = NonNullable<NonNullable<Room["gameState"]>["undercover"]>;
+
+function shuffled<T>(arr: T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const a = out[i] as T;
+    const b = out[j] as T;
+    out[i] = b;
+    out[j] = a;
+  }
+  return out;
+}
+
+function ucMatchState(store: Store): UcMatch {
+  const st = store.state.room.gameState?.undercover;
+  if (!st) throw new CmdError("W_ALREADY_STATE", "未開局（先 uc.match.start）");
+  return st;
+}
+
+/** 深 copy 一份先改，commit（fsync）成功後記憶體先真正套用 */
+function cloneUcMatch(store: Store): UcMatch {
+  return JSON.parse(JSON.stringify(ucMatchState(store))) as UcMatch;
+}
+
+function ucRemainingUndercover(st: UcMatch): number {
+  return st.undercoverIds.filter((id) => !st.eliminatedIds.includes(id)).length;
+}
+
+/** B4：本題 foul 咗幾多人（同一題只准一個） */
+function ucQuestionElimCount(st: UcMatch): number {
+  const map = st.eliminatedByQuestion ?? {};
+  return Object.values(map).filter((q) => q === st.questionNo).length;
+}
+
+/** B4：本題已經 foul 過人（可以換下一題） */
+function ucQuestionDone(st: UcMatch): boolean {
+  return ucQuestionElimCount(st) >= 1;
+}
+
+/** 一圖多人結算：好人勝→全部好人 +1／臥底勝→全部臥底 +1；未出局者每人 +2（同上面疊加）。
+ *  冪等：matchId 去重 ＋ settled 擋，重複撳唔會再加。 */
+function settleUndercoverMatch(ctx: Ctx, st: UcMatch, result: "good" | "undercover"): { added: number; result: "good" | "undercover" } {
+  const store = ctx.store;
+  const matchId = `uc_m${st.matchNo}`;
+  st.result = result;
+  st.settled = true;
+  const already = new Set(
+    store.state.ledger.filter((e) => !e.voided && e.matchId === matchId).map((e) => `${e.target.id}|${e.reason}`),
+  );
+  const events: ScoreEvent[] = [];
+  const add = (playerId: string, delta: number, reason: string): void => {
+    if (already.has(`${playerId}|${reason}`)) return;
+    events.push(makeEvent({ target: { type: "player", id: playerId }, gameId: "draw", matchId, delta, reason, by: "auto" }));
+  };
+  const goodIds = st.participantIds.filter((id) => !st.undercoverIds.includes(id));
+  if (result === "good") for (const id of goodIds) add(id, 1, "一圖多人・好人勝");
+  else for (const id of st.undercoverIds) add(id, 1, "一圖多人・臥底勝");
+  const survivors = st.participantIds.filter((id) => !st.eliminatedIds.includes(id));
+  for (const id of survivors) add(id, 2, "一圖多人・留到最後");
+  if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+  push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+  const nameOf = (id: string): string => store.player(id)?.name ?? "?";
+  const lines = [
+    result === "good" ? "好人勝：全部好人 +1" : "臥底勝：全部臥底 +1",
+    `留到最後 +2：${survivors.map(nameOf).join("、") || "（冇人）"}`,
+  ];
+  stageSet(ctx, {
+    mode: "message",
+    payload: { title: `第 ${st.matchNo} 局結算`, lines, tone: result === "good" ? "good" : "bad" },
+    prevMode: "scoreboard",
+  });
+  toast(ctx, `第 ${st.matchNo} 局：${result === "good" ? "好人勝" : "臥底勝"}（${events.length} 筆分）`);
+  return { added: events.length, result };
+}
+
 /* ───────────────────────────── execute ───────────────────────────── */
 
 export type ExecuteResult = ApiResult<unknown>;
@@ -990,6 +1143,9 @@ export function executeCommand(
         if (old.autoAnswer) card.autoAnswer = old.autoAnswer;
         if (typeof q.autoAnswer === "string" && q.autoAnswer) card.autoAnswer = "minutes-to-midnight";
         if (old.actualAnswer !== undefined && card.actualAnswer === undefined) card.actualAnswer = old.actualAnswer;
+        // B6：主持儲存題目時冇帶嘅欄唔准靜靜哋清走（tolerance／imageUrl 冇提供＝保留）
+        if (old.tolerance !== undefined && card.tolerance === undefined) card.tolerance = old.tolerance;
+        if (old.imageUrl !== undefined && card.imageUrl === undefined) card.imageUrl = old.imageUrl;
         cards[idx] = card;
       } else {
         if (q.type === "choice") card.state = "draft";
@@ -1098,6 +1254,13 @@ export function executeCommand(
       // 最接近者 +2（並列全 +2），綁 roundId 去重
       const old = store.state.ledger.filter((e) => e.roundId === roundId && e.by === "auto").map((e) => e.id);
       if (old.length) push(ctx, { t: "ledger.void", d: { eventIds: old, by: "host" } });
+      if (typeof card.tolerance === "number") {
+        // v0.3.0：有容差（Q12 ±2／Q13 主持即場輸入、default 0＝完全相等）→ 全部達標 +points
+        gradeToleranceRound(ctx, round, card, actual);
+        toast(ctx, `估數字答案：${actual}（容差 ±${card.tolerance}）`);
+        ctx.result = { actualAnswer: actual, roundId, tolerance: card.tolerance };
+        break;
+      }
       const subs = store.submissionsForRound(roundId).filter((s) => s.confirmed && typeof s.amount === "number");
       if (subs.length) {
         const dist = (s: Submission): number => Math.abs((s.amount ?? 0) - actual);
@@ -1274,7 +1437,7 @@ export function executeCommand(
         version: 1,
         state: "draft",
       };
-      for (const k of ["category", "imageUrl", "mediaUrl", "explanation", "referenceAnswer", "hint", "openKind", "maxBid", "songId", "voteMode"] as const) {
+      for (const k of ["category", "imageUrl", "mediaUrl", "explanation", "referenceAnswer", "hint", "openKind", "maxBid", "songId", "voteMode", "undercoverPrompt", "tolerance", "actualAnswer"] as const) {
         if (cardIn[k] !== undefined) (card as unknown as Record<string, unknown>)[k] = cardIn[k];
       }
       if (cardIn.options) card.options = cardIn.options;
@@ -1353,6 +1516,282 @@ export function executeCommand(
       finalizeUndercover(ctx, ucCur, ucCurCard, false);
       break;
     }
+    /* ── v0.3.0：一圖多人（畫畫臥底）完整局 ── */
+    case "uc.match.start": {
+      ensurePlaying(store);
+      const prev = store.state.room.gameState?.undercover ?? null;
+      if (prev && prev.participantIds.length > 0 && !prev.settled)
+        throw new CmdError("W_ALREADY_STATE", "本局未完：先 uc.match.settle（結算）或 uc.match.reset（再開一局）");
+      const participants = store.approvedPlayers();
+      const ucRaw = optNum(p, "undercoverCount") ?? 2;
+      const ucCount = Math.max(1, Math.min(4, Math.floor(ucRaw)));
+      if (participants.length < ucCount + 2)
+        throw new CmdError("W_ALREADY_STATE", `approved 玩家太少（要最少 ${ucCount + 2} 人）`);
+      const allCards = store
+        .gameCards("draw")
+        .filter((c) => typeof c.undercoverPrompt === "string" && c.undercoverPrompt.length > 0);
+      if (allCards.length < 3) throw new CmdError("W_ALREADY_STATE", "一圖多人題目不足 3 對（檢查 undercover.seed.json）");
+      const used = new Set(prev?.usedTopicIds ?? []);
+      let pool = allCards.filter((c) => !used.has(c.id));
+      let usedBase = [...used];
+      if (pool.length < 3) {
+        // 題目用晒：循環再用（唔會撞到「抽唔到 3 對」）
+        pool = allCards;
+        usedBase = [];
+      }
+      const picked = shuffled(pool.map((c) => c.id)).slice(0, 3);
+      const matchNo = !prev ? 1 : prev.participantIds.length > 0 ? prev.matchNo + 1 : prev.matchNo;
+      const undercoverIds = shuffled(participants.map((x) => x.id)).slice(0, ucCount);
+      const st: UcMatch = {
+        matchNo,
+        participantIds: participants.map((x) => x.id),
+        undercoverIds,
+        eliminatedIds: [],
+        questionNo: 0,
+        topicIds: picked,
+        promptCardId: picked[0] ?? null,
+        promptRevealed: false,
+        roundId: null,
+        result: null,
+        settled: false,
+        usedTopicIds: [...new Set([...usedBase, ...picked])],
+        eliminatedByQuestion: {},
+      };
+      const openRound = store.currentRound();
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally")) {
+        push(ctx, { t: "round.update", d: { roundId: openRound.id, patch: { state: "void" } } });
+      }
+      push(ctx, { t: "round.current", d: { currentRoundId: null } });
+      const ucCard = store.card("card_ucmatch");
+      if (ucCard) push(ctx, { t: "card.update", d: { cardId: ucCard.id, patch: { state: "draft" } } });
+      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      // 大mon：黑屏（唔好爆臥底身份）
+      setStageIfUnlocked(ctx, { mode: "blackout", payload: {}, prevMode: "scoreboard" });
+      toast(ctx, `一圖多人第 ${matchNo} 局：抽咗 ${ucCount} 個臥底（主持台睇到身份）`);
+      ctx.result = { matchNo, participants: st.participantIds.length, undercoverCount: ucCount, questionNo: 1 };
+      break;
+    }
+    case "uc.match.redraw": {
+      const st = cloneUcMatch(store);
+      if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算，唔可以重抽");
+      // FIX-9：已出局者唔可以再抽做臥底
+      const pool = st.participantIds.filter((id) => !st.eliminatedIds.includes(id) && store.player(id)?.status === "approved");
+      if (pool.length < st.undercoverIds.length + 2) throw new CmdError("W_ALREADY_STATE", "玩家人數唔夠（已出局者唔計），重抽唔到");
+      st.undercoverIds = shuffled(pool).slice(0, st.undercoverIds.length);
+      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      toast(ctx, `重抽咗 ${st.undercoverIds.length} 個臥底（其他狀態不變）`);
+      ctx.result = { matchNo: st.matchNo, undercoverCount: st.undercoverIds.length };
+      break;
+    }
+    case "uc.prompt.reveal": {
+      const st = cloneUcMatch(store);
+      if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+      const card = st.promptCardId ? store.card(st.promptCardId) : undefined;
+      if (!card) throw new CmdError("W_ALREADY_STATE", "本局未有題目卡");
+      st.promptRevealed = true;
+      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      // 只推好人題上大mon：臥底題永遠唔准出 stage／player DTO
+      stageSet(ctx, {
+        mode: "message",
+        payload: { title: "好人題目", lines: [card.prompt], tone: "normal" },
+        prevMode: resumableMode(store.state.room.stage.mode),
+      });
+      toast(ctx, "已公佈好人題目");
+      ctx.result = { promptCardId: card.id, questionNo: st.questionNo + 1 };
+      break;
+    }
+    case "uc.vote.start": {
+      ensurePlaying(store);
+      const st = cloneUcMatch(store);
+      if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+      const openRound = store.currentRound();
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先開票或 void");
+      // 出局者唔可以投亦唔可以被投
+      const candidates = st.participantIds.filter((id) => !st.eliminatedIds.includes(id) && store.player(id)?.status === "approved");
+      if (candidates.length < 2) throw new CmdError("W_ALREADY_STATE", "得返唔夠兩隻人，直接結算啦");
+      const cardId = "card_ucmatch";
+      const durationSeconds = 10;
+      let card = store.card(cardId);
+      if (!card) {
+        const newCard: Card = {
+          id: cardId,
+          type: "vote",
+          gameId: "draw",
+          voteMode: "players",
+          prompt: UNDERCOVER_PROMPT,
+          options: candidates,
+          seconds: durationSeconds,
+          points: 0,
+          version: 1,
+          state: "draft",
+        };
+        card = newCard;
+        push(ctx, { t: "card.put", d: { card: newCard } });
+      } else {
+        push(ctx, {
+          t: "card.update",
+          d: { cardId, patch: { options: candidates, prompt: UNDERCOVER_PROMPT, seconds: durationSeconds, version: card.version + 1 } },
+        });
+      }
+      const openCount = room.rounds.filter((r) => r.cardId === cardId).length + 1;
+      const round: Round = {
+        id: `${cardId}#${openCount}`,
+        cardId,
+        cardVersion: (card.version ?? 1) + 1,
+        endsAt: Date.now() + durationSeconds * 1000,
+        closedAt: null,
+        state: "open",
+        eligiblePlayerIds: candidates,
+      };
+      push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
+      push(ctx, { t: "card.update", d: { cardId, patch: { state: "open" } } });
+      st.roundId = round.id;
+      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      setStageIfUnlocked(ctx, { mode: "undercover", payload: { roundId: round.id, cardId } });
+      toast(ctx, `第 ${st.questionNo + 1} 題投票開始（${durationSeconds} 秒，${candidates.length} 人可投）`);
+      ctx.result = { roundId: round.id, candidates: candidates.length, durationSeconds };
+      break;
+    }
+    case "uc.eliminate": {
+      const st = cloneUcMatch(store);
+      if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+      // B4：只准「已開投票並且已收卷」之後 foul（未投票唔可以淘汰）
+      const liveRound = st.roundId ? store.round(st.roundId) : undefined;
+      if (!liveRound || liveRound.state === "open")
+        throw new CmdError("W_WRONG_PHASE", "本題未收卷：先「開投票（10 秒）」等開票，再 foul");
+      if (ucQuestionDone(st)) throw new CmdError("W_ALREADY_STATE", "呢題已經 foul 咗一個，請撳「下一題／結算」");
+      const targetId = (cmd.targetId ?? optStr(p, "playerId") ?? "").trim();
+      if (!targetId) throw new CmdError("W_BAD_SCHEMA", "要 playerId");
+      if (!st.participantIds.includes(targetId)) throw new CmdError("W_BAD_SCHEMA", "呢個人唔係本局參賽者");
+      if (st.eliminatedIds.includes(targetId)) throw new CmdError("W_ALREADY_STATE", "已經淘汰咗");
+      st.eliminatedIds = [...st.eliminatedIds, targetId];
+      st.eliminatedByQuestion = { ...(st.eliminatedByQuestion ?? {}), [targetId]: st.questionNo };
+      const wasUndercover = st.undercoverIds.includes(targetId);
+      const remaining = ucRemainingUndercover(st);
+      if (remaining === 0) st.result = "good";
+      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      const target = store.player(targetId);
+      stageSet(ctx, {
+        mode: "message",
+        payload: {
+          title: wasUndercover ? "係臥底！" : "唔係臥底",
+          lines: [
+            `#${target?.number ?? "?"} ${target?.name ?? "?"} 出局`,
+            remaining === 0 ? "所有臥底已出局 → 好人勝（撳「結算」加分）" : `仲有 ${remaining} 個臥底未出局`,
+          ],
+          tone: wasUndercover ? "good" : "bad",
+        },
+        prevMode: resumableMode(store.state.room.stage.mode),
+      });
+      toast(ctx, `${target?.name ?? targetId}：${wasUndercover ? "係臥底" : "唔係臥底"}（仲有 ${remaining} 個）`);
+      ctx.result = { targetId, wasUndercover, remaining };
+      break;
+    }
+    case "uc.eliminate.undo": {
+      const st = cloneUcMatch(store);
+      if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算，唔可以取消淘汰");
+      const last = st.eliminatedIds[st.eliminatedIds.length - 1];
+      if (!last) throw new CmdError("W_ALREADY_STATE", "冇淘汰記錄");
+      // P1-c：只准喺「本題未換題」時 undo（換咗題就唔可以還原上一題嘅人）
+      const lastQ = st.eliminatedByQuestion?.[last];
+      if (lastQ !== undefined && lastQ !== st.questionNo)
+        throw new CmdError("W_ALREADY_STATE", "已經換咗題，唔可以取消上一題嘅淘汰");
+      st.eliminatedIds = st.eliminatedIds.slice(0, -1);
+      if (st.eliminatedByQuestion) {
+        const map = { ...st.eliminatedByQuestion };
+        delete map[last];
+        st.eliminatedByQuestion = map;
+      }
+      if (ucRemainingUndercover(st) > 0) st.result = null;
+      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      const target = store.player(last);
+      stageSet(ctx, {
+        mode: "message",
+        payload: { title: "取消淘汰", lines: [`#${target?.number ?? "?"} ${target?.name ?? "?"} 返返嚟`, `仲有 ${ucRemainingUndercover(st)} 個臥底未出局`], tone: "normal" },
+        prevMode: resumableMode(store.state.room.stage.mode),
+      });
+      toast(ctx, `取消淘汰：${target?.name ?? last}`);
+      ctx.result = { playerId: last, remaining: ucRemainingUndercover(st) };
+      break;
+    }
+    case "uc.match.next": {
+      const st = cloneUcMatch(store);
+      if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+      const remaining = ucRemainingUndercover(st);
+      // B4：本題未 foul 過唔准換題（連撳兩次 next 會被擋）
+      if (remaining > 0 && !ucQuestionDone(st))
+        throw new CmdError("W_WRONG_PHASE", "本題未 foul 過人：先開投票再淘汰一個，先可以下一題");
+      if (remaining === 0) {
+        const r = settleUndercoverMatch(ctx, st, "good");
+        ctx.result = { settled: true, ...r, matchNo: st.matchNo };
+        break;
+      }
+      if (st.questionNo >= 2) {
+        const r = settleUndercoverMatch(ctx, st, "undercover");
+        ctx.result = { settled: true, ...r, matchNo: st.matchNo };
+        break;
+      }
+      st.questionNo += 1;
+      st.promptRevealed = false;
+      st.promptCardId = st.topicIds[st.questionNo] ?? null;
+      st.roundId = null;
+      push(ctx, { t: "round.current", d: { currentRoundId: null } });
+      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+      setStageIfUnlocked(ctx, { mode: "blackout", payload: {}, prevMode: "scoreboard" });
+      toast(ctx, `第 ${st.questionNo + 1} 題（換新白紙）`);
+      ctx.result = { settled: false, questionNo: st.questionNo + 1, promptCardId: st.promptCardId };
+      break;
+    }
+    case "uc.match.settle": {
+      const st0 = ucMatchState(store);
+      if (st0.settled) {
+        // 冪等：唔會再加分，只回報「已結算」
+        toast(ctx, `第 ${st0.matchNo} 局已經結算（唔會重複加分）`);
+        ctx.result = { already: true, matchNo: st0.matchNo, result: st0.result };
+        break;
+      }
+      // FIX-8：勝負未定之前唔准一撳即判（只有「兩個臥底都出局」或「打完 3 題」先准）
+      const remaining0 = ucRemainingUndercover(st0);
+      if (!(remaining0 === 0 || st0.result === "good" || (st0.questionNo >= 2 && ucQuestionDone(st0))))
+        throw new CmdError("W_WRONG_PHASE", "仲未夠 3 題／仲有臥底未出局，未可以結算（要結算請先撳「下一題／結算」）");
+      const st = cloneUcMatch(store);
+      const result = st.result === "good" || ucRemainingUndercover(st) === 0 ? "good" : "undercover";
+      const r = settleUndercoverMatch(ctx, st, result);
+      ctx.result = { settled: true, matchNo: st.matchNo, ...r };
+      break;
+    }
+    case "uc.match.reset": {
+      const st0 = ucMatchState(store);
+      const nextNo = st0.matchNo + 1;
+      const cleared: UcMatch = {
+        matchNo: nextNo,
+        participantIds: [],
+        undercoverIds: [],
+        eliminatedIds: [],
+        questionNo: 0,
+        topicIds: [],
+        promptCardId: null,
+        promptRevealed: false,
+        roundId: null,
+        result: null,
+        settled: true,
+        usedTopicIds: st0.usedTopicIds ?? [],
+      };
+      const openRound = store.currentRound();
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally")) {
+        push(ctx, { t: "round.update", d: { roundId: openRound.id, patch: { state: "void" } } });
+      }
+      push(ctx, { t: "round.current", d: { currentRoundId: null } });
+      const ucCard = store.card("card_ucmatch");
+      if (ucCard) push(ctx, { t: "card.update", d: { cardId: ucCard.id, patch: { state: "draft" } } });
+      push(ctx, { t: "game.set", d: { gameState: { undercover: cleared } } });
+      setStageIfUnlocked(ctx, { mode: "scoreboard", payload: {} });
+      toast(ctx, `清咗本局（下一局係第 ${nextNo} 局）`);
+      ctx.result = { matchNo: nextNo };
+      break;
+    }
+
     case "card.open": {
       ensurePlaying(store);
       const cardId = cmd.targetId ?? reqStr(p, "cardId");
@@ -1360,6 +1799,9 @@ export function executeCommand(
       if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
       // 搗蛋鬼卡要用 saboteur.openRound：generic open 會開出一個唔喺 saboteur.rounds 註冊嘅 round（永遠結算唔到）
       if (card.gameId === "saboteur") throw new CmdError("W_BAD_SCHEMA", "搗蛋鬼卡要用 saboteur.openRound 開（generic card.open 會開出未註冊嘅搗蛋鬼 round）");
+      // FIX-10：一圖多人題目卡（有 undercoverPrompt）唔准 generic 開（會將好人題推去全部手機，未公佈就穿橋）
+      if (card.gameId === "draw" && card.undercoverPrompt)
+        throw new CmdError("W_WRONG_PHASE", "一圖多人題目卡唔可以用 card.open（請用主持台「一圖多人」面板：公佈好人題目）");
       const openRound = store.currentRound();
       if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
         throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先 reveal 或 void");
@@ -1435,6 +1877,10 @@ export function executeCommand(
         push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "revealed" } } });
         if (card.type === "choice") gradeChoiceRound(ctx, round, card);
         if (card.type === "vote" && card.voteMode === "works") gradeDrawRound(ctx, round, card);
+        if (typeof card.tolerance === "number") {
+          const actual = round.actualAnswer ?? card.actualAnswer;
+          if (typeof actual === "number") gradeToleranceRound(ctx, round, card, actual);
+        }
       }
       setStageIfUnlocked(ctx, { mode: "reveal", payload: { roundId: round.id, cardId: card.id } });
       toast(ctx, "揭曉");
@@ -1509,7 +1955,7 @@ export function executeCommand(
       } else {
         stageSet(ctx, { mode, payload, prevMode });
       }
-      toast(ctx, `大mon → ${mode}`);
+      toast(ctx, `大mon → ${MODE_TOAST_LABEL[mode] ?? mode}`);
       break;
     }
     case "stage.lock": {
@@ -1879,6 +2325,165 @@ export function executeCommand(
       break;
     }
 
+    /* ── v0.3.0：拍賣時間估歌（最少秒數贏）── */
+    case "bid.publish": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const round = store.round(roundId);
+      if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      const card = store.card(round.cardId);
+      if (!card || card.type !== "bid") throw new CmdError("W_BAD_SCHEMA", "唔係 bid 卡");
+      // A2：本首已經收成終態（finish／reveal／void）就唔准再公佈，否則 revealed 會被拉返 closed 再判分
+      if (round.auction?.finished || round.state === "revealed" || round.state === "void")
+        throw new CmdError("W_ALREADY_STATE", "本首已經完結（唔可以再公佈排名／再判分）");
+      // B3：已經公佈過就回傳原排名，唔准重建（重建會重置 cursor／judged，同一首歌可以再派分）
+      if (round.auction && round.auction.ranking.length) {
+        setStageIfUnlocked(ctx, { mode: "bid", payload: { roundId, cardId: card.id, published: true } });
+        toast(ctx, "排名已經公佈咗（唔會重算／唔會重置判分）");
+        ctx.result = { roundId, ranking: round.auction.ranking, cursor: round.auction.cursor, already: true };
+        break;
+      }
+      const subs = bidRanking(store, roundId);
+      if (!subs.length) throw new CmdError("W_ALREADY_STATE", "冇人競投（最少 1 秒先算）");
+      const ranking = subs.map((x) => ({ playerId: x.playerId, seconds: x.amount ?? 0, ts: x.ts }));
+      const auction = { ranking, cursor: 0, judged: [] as string[], finished: false };
+      push(ctx, {
+        t: "round.update",
+        d: { roundId, patch: { state: "closed", closedAt: round.closedAt ?? Date.now(), auction } },
+      });
+      push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "closed" } } });
+      setStageIfUnlocked(ctx, { mode: "bid", payload: { roundId, cardId: card.id, published: true } });
+      const first = ranking[0];
+      toast(ctx, `競投結果：最少 ${first?.seconds ?? 0} 秒由 ${store.player(first?.playerId ?? "")?.name ?? "?"} 先聽`);
+      ctx.result = { roundId, ranking, cursor: 0 };
+      break;
+    }
+    case "bid.judge": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const round = store.round(roundId);
+      if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      const card = store.card(round.cardId);
+      if (!card || card.type !== "bid") throw new CmdError("W_BAD_SCHEMA", "唔係 bid 卡");
+      const auction = round.auction;
+      if (!auction || !auction.ranking.length) throw new CmdError("W_ALREADY_STATE", "先 bid.publish 出排名");
+      if (auction.finished) {
+        toast(ctx, "本首已經完結（重複判分唔會再加）");
+        ctx.result = { already: true, roundId };
+        break;
+      }
+      const current = auction.ranking[auction.cursor];
+      const wanted = optStr(p, "playerId");
+      if (wanted && wanted !== current?.playerId)
+        throw new CmdError("W_STALE_COMMAND", `而家輪到 ${current?.playerId ?? "（冇）"}，唔係 ${wanted}`);
+      const targetId = wanted ?? current?.playerId ?? "";
+      if (!targetId) throw new CmdError("W_BAD_SCHEMA", "冇指定玩家");
+      const idx = auction.ranking.findIndex((r) => r.playerId === targetId);
+      if (idx < 0) throw new CmdError("W_BAD_SCHEMA", "呢個人唔喺排名");
+      const correct = p.correct === true;
+      const target = store.player(targetId);
+      if (correct) {
+        const dup = store.state.ledger.some(
+          (e) => !e.voided && e.roundId === roundId && e.gameId === "auction" && e.target.id === targetId && e.reason === "估歌・聽歌",
+        );
+        if (!dup && card.points !== 0) {
+          push(ctx, {
+            t: "ledger.append",
+            d: {
+              events: [
+                makeEvent({
+                  target: { type: "player", id: targetId },
+                  gameId: "auction",
+                  roundId,
+                  cardId: card.id,
+                  delta: card.points,
+                  reason: "估歌・聽歌",
+                  by: "host",
+                }),
+              ],
+            },
+          });
+        }
+        const judged = [...new Set([...auction.judged, targetId])];
+        // B1：本首完結要收成終態（revealed），唔係 closed —— 否則下一張拍賣卡永遠開唔到
+        push(ctx, {
+          t: "round.update",
+          d: {
+            roundId,
+            patch: { state: "revealed", closedAt: round.closedAt ?? Date.now(), auction: { ...auction, judged, finished: true } },
+          },
+        });
+        push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
+        stageSet(ctx, {
+          mode: "message",
+          payload: {
+            title: "估中！",
+            lines: [`${target?.name ?? "?"} +${card.points}`, `佢只係聽咗 ${auction.ranking[idx]?.seconds ?? 0} 秒`],
+            tone: "good",
+          },
+          prevMode: "bid",
+        });
+        toast(ctx, `估中：${target?.name ?? targetId} +${card.points}`);
+        ctx.result = { roundId, playerId: targetId, correct: true, finished: true, points: card.points };
+        break;
+      }
+      const nextCursor = idx + 1;
+      if (nextCursor >= auction.ranking.length) {
+        push(ctx, {
+          t: "round.update",
+          d: {
+            roundId,
+            patch: { state: "revealed", closedAt: round.closedAt ?? Date.now(), auction: { ...auction, cursor: nextCursor, finished: true } },
+          },
+        });
+        push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
+        stageSet(ctx, {
+          mode: "message",
+          payload: { title: "全部人都估唔到", lines: ["呢首冇人得分", "主持可以揭曉歌名／播下一首"], tone: "bad" },
+          prevMode: "bid",
+        });
+        toast(ctx, "全部人都估唔到（0 分）");
+        ctx.result = { roundId, correct: false, finished: true, cursor: nextCursor };
+        break;
+      }
+      push(ctx, { t: "round.update", d: { roundId, patch: { auction: { ...auction, cursor: nextCursor } } } });
+      setStageIfUnlocked(ctx, { mode: "bid", payload: { roundId, cardId: card.id, published: true } });
+      const next = auction.ranking[nextCursor];
+      toast(ctx, `下一位：${store.player(next?.playerId ?? "")?.name ?? "?"}（${next?.seconds ?? 0} 秒）`);
+      ctx.result = { roundId, correct: false, cursor: nextCursor, nextPlayerId: next?.playerId };
+      break;
+    }
+    case "bid.finish": {
+      const roundId = optStr(p, "roundId") ?? room.currentRoundId;
+      if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
+      const round = store.round(roundId);
+      if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      const card = store.card(round.cardId);
+      const auction = round.auction;
+      if (auction?.finished) {
+        toast(ctx, "本首已經完結");
+        ctx.result = { already: true };
+        break;
+      }
+      // B1：零人競投／未 publish 都收得（收成 revealed，否則下一首開唔到卡）
+      push(ctx, {
+        t: "round.update",
+        d: {
+          roundId,
+          patch: { state: "revealed", closedAt: round.closedAt ?? Date.now(), ...(auction ? { auction: { ...auction, finished: true } } : {}) },
+        },
+      });
+      if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
+      stageSet(ctx, {
+        mode: "message",
+        payload: { title: "本首完結", lines: ["主持會播下一首"], tone: "normal" },
+        prevMode: "bid",
+      });
+      toast(ctx, "本首完結");
+      ctx.result = { roundId, finished: true };
+      break;
+    }
+
     /* ── M3：畫畫（作品牆／評審） ── */
     case "draw.judge": {
       const cardId = cmd.targetId ?? reqStr(p, "cardId");
@@ -2142,6 +2747,46 @@ export function executeCommand(
       for (const pl of store.state.room.players) push(ctx, { t: "player.setRole", d: { playerId: pl.id, role: null } });
       push(ctx, { t: "game.set", d: { gameState: { saboteur: null } } });
       toast(ctx, "搗蛋鬼：重設身份");
+      break;
+    }
+
+    /* ── v0.3.0：笨蛋殺手（一個老闆一個殺手；身份只出主持台，唔用 Player.secretRole） ── */
+    case "killer.assign": {
+      ensurePlaying(store);
+      const approved = store.approvedPlayers();
+      if (approved.length < 3) throw new CmdError("W_ALREADY_STATE", "至少 3 位 approved 玩家先玩到");
+      const ids = shuffled(approved.map((pl) => pl.id));
+      const bossId = ids[0] as string;
+      const killerId = ids[1] as string;
+      push(ctx, { t: "game.set", d: { gameState: { killer: { bossId, killerId, assignedAt: Date.now() } } } });
+      toast(ctx, `笨蛋殺手：抽咗老闆＋殺手（主持台先見到身份）`);
+      ctx.result = { bossId, killerId, players: approved.length };
+      break;
+    }
+    case "killer.redraw": {
+      const prev = store.state.room.gameState?.killer ?? null;
+      if (!prev) throw new CmdError("W_ALREADY_STATE", "未抽（先 killer.assign）");
+      const approved = store.approvedPlayers();
+      if (approved.length < 3) throw new CmdError("W_ALREADY_STATE", "至少 3 位 approved 玩家先玩到");
+      let bossId = prev.bossId ?? "";
+      let killerId = prev.killerId ?? "";
+      for (let i = 0; i < 20; i += 1) {
+        const ids = shuffled(approved.map((pl) => pl.id));
+        const b = ids[0] as string;
+        const k = ids[1] as string;
+        bossId = b;
+        killerId = k;
+        if (!(b === prev.bossId && k === prev.killerId)) break;
+      }
+      push(ctx, { t: "game.set", d: { gameState: { killer: { bossId, killerId, assignedAt: Date.now() } } } });
+      toast(ctx, "重抽咗老闆＋殺手");
+      ctx.result = { bossId, killerId };
+      break;
+    }
+    case "killer.clear": {
+      push(ctx, { t: "game.set", d: { gameState: { killer: null } } });
+      toast(ctx, "清咗笨蛋殺手身份");
+      ctx.result = { cleared: true };
       break;
     }
 

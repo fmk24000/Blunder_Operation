@@ -23,6 +23,10 @@ export type StageMode =
   | "finale"
   | "award"
   | "timer"
+  /** v0.3.0：自由文字上大mon（好人題目／淘汰結果／心機字） */
+  | "message"
+  /** v0.3.0：逐個 game 分數矩陣（Excel 第 68 行） */
+  | "game-scores"
   | "blackout";
 
 export type SortKey = "score-desc" | "score-asc" | "number" | "name" | "group";
@@ -114,6 +118,10 @@ export type Card = {
   hint?: string;
   openKind?: "text" | "number";
   maxBid?: number;
+  /** 一圖多人：臥底題（關鍵詞）。呢個欄永遠唔准出 stage／player DTO */
+  undercoverPrompt?: string;
+  /** 開放題容差（Q12 ±2 尺）：|amount - actualAnswer| <= tolerance → 全體加 points */
+  tolerance?: number;
   /** bid 卡引用歌單 */
   songId?: string;
   /** vote 卡投咩：players＝投人（搗蛋鬼）；works＝投作品（畫畫） */
@@ -144,6 +152,15 @@ export type Submission = {
   judged?: { correct: boolean; points: number; by: "auto" | "host" };
 };
 
+/** v0.3.0 拍賣時間估歌：最少秒數先聽；同秒最後提交先 */
+export type RoundAuction = {
+  ranking: { playerId: string; seconds: number; ts: number }[];
+  cursor: number;
+  judged: string[];
+  /** 本首已完結（有人估中或者主持收） */
+  finished?: boolean;
+};
+
 export type Round = {
   id: string;
   cardId: string;
@@ -155,6 +172,8 @@ export type Round = {
   eligiblePlayerIds: string[];
   actualAnswer?: number;
   autoClosed?: boolean;
+  /** v0.3.0：拍賣排名／而家輪到邊個（bid.publish 寫入） */
+  auction?: RoundAuction;
 };
 
 export type ScoreEvent = {
@@ -165,6 +184,8 @@ export type ScoreEvent = {
   roundId?: string;
   cardId?: string;
   submissionId?: string;
+  /** v0.3.0：一圖多人一場波嘅結算標記（去重用；舊 journal 冇呢個欄） */
+  matchId?: string;
   lineage?: { sourceEventIds: string[] };
   delta: number;
   reason: string;
@@ -184,7 +205,8 @@ export type StageState = {
 export type Award = {
   id: "grand" | "second" | "third";
   targetId: string | null;
-  rule: "max" | "nearest-median" | "min";
+  /** nearest-median 只保留做舊 journal replay；v0.3.0 起 second 用 nearest-avg（中庸之道＝最接近平均數） */
+  rule: "max" | "nearest-median" | "nearest-avg" | "min";
   manual: boolean;
   revealed: boolean;
 };
@@ -243,7 +265,47 @@ export type Room = {
   seqEpoch: string;
   audioLease?: AudioLease;
   /** 內部：各關額外狀態（唔會直出 DTO） */
-  gameState?: { saboteur?: SaboteurState };
+  gameState?: {
+    saboteur?: SaboteurState | null;
+    /** v0.3.0 一圖多人（畫畫臥底）整局狀態；身份只可以經 HostView 出 */
+    undercover?: UndercoverMatchState | null;
+    /** v0.3.0 笨蛋殺手（老闆＋殺手）；身份只可以經 HostView 出 */
+    killer?: KillerState | null;
+  };
+};
+
+/** v0.3.0：一圖多人（畫畫臥底）一整局狀態（最多 3 題、2 個臥底） */
+export type UndercoverMatchState = {
+  /** 第幾局（1,2,3…） */
+  matchNo: number;
+  /** 開局時 approved 快照 */
+  participantIds: string[];
+  /** 2 個（可以重抽）；只可以出 HostView */
+  undercoverIds: string[];
+  eliminatedIds: string[];
+  /** 0..2（最多 3 題） */
+  questionNo: number;
+  /** 本局用邊 3 對題（開局時抽定） */
+  topicIds: string[];
+  /** 現時題目卡（好／臥底兩題都喺同一張卡） */
+  promptCardId: string | null;
+  /** 有冇「公佈好人題目」 */
+  promptRevealed: boolean;
+  /** 現時投票 round */
+  roundId: string | null;
+  result: "good" | "undercover" | null;
+  settled: boolean;
+  /** 內部：已用過嘅題目卡（跨局避免重複；少於 3 對時循環再用） */
+  usedTopicIds?: string[];
+  /** B4：每次淘汰屬於第幾題（playerId → questionNo；同一題只准 foul 一個） */
+  eliminatedByQuestion?: Record<string, number>;
+};
+
+/** v0.3.0：笨蛋殺手（一個老闆一個殺手） */
+export type KillerState = {
+  bossId: string | null;
+  killerId: string | null;
+  assignedAt?: number;
 };
 
 export type SaboteurRound = {
@@ -301,12 +363,15 @@ export type QuizQuestion = {
   type: "choice" | "open";
   category: string;
   prompt: string;
+  imageUrl?: string;
   options?: string[];
   correct?: number;
   explanation?: string;
   referenceAnswer?: string;
   hint?: string;
   openKind?: "text" | "number";
+  /** 容差（Q12 ±2 尺） */
+  tolerance?: number;
   seconds: number;
   points: number;
   actualAnswer?: number;
@@ -415,7 +480,13 @@ export type StageView = {
   reveal: StageReveal | null;
   vote: { roundId: string; cardId: string; prompt: string; options: { id: string; label: string }[]; counts: number[]; answeredCount: number; eligibleCount: number } | null;
   undercover: UndercoverView | null;
-  bid: { roundId: string; cardId: string; prompt: string; maxBid: number; endsAt: number | null; bidCount: number; eligibleCount: number; closed: boolean; settled: boolean; winnerName: string | null; winnerAmount: number | null } | null;
+  /** v0.3.0：一圖多人完整局（只送公開資訊；臥底身份永遠唔會出現） */
+  undercoverMatch?: UndercoverMatchView | null;
+  /** v0.3.0：message mode 大字內容 */
+  message?: { title?: string; lines?: string[]; tone?: "normal" | "good" | "bad" } | null;
+  /** v0.3.0：逐個 game 分數矩陣 */
+  gameScores?: GameScoresView | null;
+  bid: { roundId: string; cardId: string; prompt: string; maxBid: number; endsAt: number | null; bidCount: number; eligibleCount: number; closed: boolean; settled: boolean; winnerName: string | null; winnerAmount: number | null; ranking?: { playerId: string; name: string; number: number; seconds: number; tried: boolean; current: boolean }[]; currentName?: string | null; currentSeconds?: number | null; remaining?: number } | null;
   drawWall: { works: DrawWork[]; focusId: string | null } | null;
   song: { songIndex: number; totalSongs: number; state: string; title: string | null } | null;
   roleReveal: { saboteurName: string | null; caught: boolean; votes: { name: string; count: number }[] } | null;
@@ -434,6 +505,43 @@ export type StageView = {
     awards: { id: string; revealed: boolean; name: string | null; score: number | null; reason: string | null }[];
   } | null;
   toast: string | null;
+};
+
+/** v0.3.0 一圖多人：大mon／主持共用嘅公開投影（永遠冇 undercoverIds） */
+export type UndercoverMatchView = {
+  matchNo: number;
+  /** 1-based（1／3） */
+  questionNo: number;
+  totalQuestions: number;
+  participantCount: number;
+  /** 仲有幾個臥底未出局（大家都知有 2 個，所以係公開進度） */
+  remainingUndercover: number;
+  totalUndercover: number;
+  eliminated: { id: string; name: string; number: number; wasUndercover: boolean }[];
+  promptRevealed: boolean;
+  /** 只有 promptRevealed 之後才送（好人題） */
+  prompt: string | null;
+  voting: boolean;
+  roundId: string | null;
+  endsAt: number | null;
+  /** 最近一次淘汰（大mon 顯示「係唔係臥底」） */
+  lastElimination: { id: string; name: string; number: number; wasUndercover: boolean } | null;
+  result: "good" | "undercover" | null;
+  settled: boolean;
+};
+
+/** v0.3.0 逐個 game 分數矩陣（Excel 第 68 行） */
+export type GameScoresView = {
+  games: { gameId: string; title: string }[];
+  rows: {
+    id: string;
+    name: string;
+    number: number;
+    avatar: Avatar;
+    scores: number[];
+    other: number;
+    total: number;
+  }[];
 };
 
 export type PlayerSelfView = {
@@ -493,6 +601,8 @@ export type PlayerSelfView = {
     myResult: "correct" | "wrong" | "unjudged" | "none";
   } | null;
   roleInfo: { secretRole: "saboteur" | "crew"; saboteurAnswer?: string } | null;
+  /** v0.3.0 一圖多人：只送「你有冇出局」＋賽果，永遠唔送身份 */
+  undercoverMatch?: { matchNo: number; questionNo: number; eliminated: boolean; result: "good" | "undercover" | null } | null;
   finale: StageView["finale"];
   toast: string | null;
 };
@@ -532,4 +642,8 @@ export type HostView = {
   caps: { approved: number; pending: number; maxApproved: number; maxPending: number };
   assets: { id: string; kind: "image" | "audio"; file: string; mime: string; size: number; originalName: string; authorId?: string; cardId?: string; createdAt: number }[];
   saboteurState: SaboteurState | null;
+  /** v0.3.0 一圖多人：主持先見到臥底身份（原始 state） */
+  undercoverMatch: UndercoverMatchState | null;
+  /** v0.3.0 笨蛋殺手：老闆／殺手身份（只出主持台） */
+  killerState: KillerState | null;
 };

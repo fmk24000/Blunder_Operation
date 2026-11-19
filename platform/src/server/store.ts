@@ -331,7 +331,7 @@ export class Store {
       ledger: [],
       sessions: [],
       receipts: new Map(),
-      settings: { autoClose: true, maxBid: 100, pinHash: "", allowRepeatAwards: false },
+      settings: { autoClose: true, maxBid: 10, pinHash: "", allowRepeatAwards: false },
       playback: null,
       activity: [],
       assets: [],
@@ -497,17 +497,16 @@ export class Store {
       revealed: false,
     });
     const grand = empty("grand", "max");
-    const second = empty("second", "nearest-median");
+    // v0.3.0 中庸之道：改為最接近「平均數」（保留 nearest-median union 值但唔再用）
+    const second = empty("second", "nearest-avg");
     const third = empty("third", "min");
     if (n === 0) return [grand, second, third];
     const byScoreDesc = [...players].sort((a, b) => b.score - a.score || a.number - b.number);
     const byScoreAsc = [...players].sort((a, b) => a.score - b.score || a.number - b.number);
     grand.targetId = (byScoreDesc[0] as { id: string }).id;
-    // 中位數
-    const sorted = [...players].sort((a, b) => a.score - b.score);
-    const mid = Math.floor(n / 2);
-    const median =
-      n % 2 === 1 ? (sorted[mid] as { score: number }).score : ((sorted[mid - 1] as { score: number }).score + (sorted[mid] as { score: number }).score) / 2;
+    // 平均數（中庸之道用；唔係中位數）
+    const sum = players.reduce((acc, p) => acc + p.score, 0);
+    const median = sum / n;
     if (n === 1) return [grand, second, third];
     if (n === 2) {
       const remaining = byScoreAsc.filter((p) => !(p.id === grand.targetId));

@@ -152,10 +152,26 @@ function updateClock() {
         node.textContent = left === null ? "—" : fmtClock(left);
         node.style.color = left !== null && left <= 5000 ? "var(--red)" : "";
     }
+    const bidBtn = el("#bid-btn");
+    if (bidBtn && view?.task?.kind === "bid") {
+        const secs = bidSeconds(view.task);
+        bidBtn.textContent = `競投（${secs} 秒）`;
+        bidBtn.disabled = secs <= 0 || submitting;
+    }
     showToast(view?.toast);
 }
 function confirmButton(label, enabled) {
     return `<button class="primary" id="confirm-btn" ${enabled && !submitting ? "" : "disabled"}>${submitting ? "送出中…" : label}</button>`;
+}
+/** 競投剩餘秒數：UI 同 payload 都用同一個計法（最少 1 秒、最多 maxBid；0＝唔准投） */
+function bidSeconds(task) {
+    const left = live?.msLeft(task.endsAt);
+    if (left === null || left === undefined)
+        return Math.max(1, Math.min(Number(task.maxBid) || 10, 10));
+    const secs = Math.ceil(left / 1000);
+    if (secs <= 0)
+        return 0;
+    return Math.min(secs, Number(task.maxBid) || secs);
 }
 function renderTask(v) {
     const task = v.task;
@@ -164,7 +180,25 @@ function renderTask(v) {
     const clock = left === null ? "" : `<div class="row" style="justify-content:space-between"><span class="muted">剩</span><span data-countdown="1" style="font-size:28px;font-weight:800;color:var(--accent)">--</span></div>`;
     if (submitted) {
         const mine = v.mySubmission;
-        const shown = mine.choice !== undefined ? `A/B/C/D #${(mine.choice ?? 0) + 1}` : mine.amount !== undefined ? `${mine.amount}` : mine.text ? esc(mine.text) : "";
+        if (task.kind === "bid") {
+            return `<div class="play-card"><div class="play-q">${esc(task.prompt)}</div>
+      <div class="reveal-box">你投咗 <b>${mine.amount ?? 0}</b> 秒。等主持公佈排名…</div>
+      <div class="muted">最少秒數先聽；同秒就最後撳嗰個先。</div></div>`;
+        }
+        // FIX-4：投票（目標係玩家 id）要顯示人名，唔可以出 pl_xxx
+        const targetLabel = (id) => {
+            const entry = (v.scores ?? []).find((x) => x.id === id);
+            return entry ? `#${entry.number} ${entry.name}` : id;
+        };
+        const shown = task.kind === "vote" && mine.text
+            ? esc(targetLabel(mine.text))
+            : mine.choice !== undefined
+                ? `A/B/C/D #${(mine.choice ?? 0) + 1}`
+                : mine.amount !== undefined
+                    ? `${mine.amount}`
+                    : mine.text
+                        ? esc(mine.text)
+                        : "";
         return `<div class="play-card"><div class="play-q">${esc(task.prompt)}</div>
       <div class="reveal-box">已提交${shown ? `：<b>${shown}</b>` : ""}。等其他人…</div>
       <div class="muted">已答 ${v.progress?.answered ?? "?"}/${v.progress?.eligible ?? "?"}</div></div>`;
@@ -206,16 +240,15 @@ function renderTask(v) {
     </div>`;
     }
     if (task.kind === "bid") {
-        const draft = selected.choice !== undefined ? String(selected.choice) : "";
+        // v0.3.0 拍賣時間估歌：一個大掣，撳落去嗰刻剩幾秒＝你嘅聽歌時間（最少 1 秒）
+        const secs = bidSeconds(task);
         return `<div class="play-card">
       <div class="play-q">${esc(task.prompt)}</div>
-      <div class="muted">出價上限 ${task.maxBid}（出價唔會扣分）</div>${clock}
-      <div class="bid-input">${esc(draft || "0")}</div>
-      <div class="keypad">${["1", "2", "3", "4", "5", "6", "7", "8", "9", "00", "0", "⌫"]
-            .map((k) => `<button data-key="${k}">${k}</button>`)
-            .join("")}</div>
+      <div class="muted">撳落去嗰刻剩幾秒，就係你可以聽歌嘅時間（最多 ${task.maxBid} 秒）</div>
+      <div class="countdown" data-countdown="1" style="font-size:64px;font-weight:800;text-align:center;color:var(--accent)">--</div>
+      <button class="primary" id="bid-btn" data-bid="1" style="padding:26px;font-size:30px" ${secs <= 0 || submitting ? "disabled" : ""}>競投（${secs} 秒）</button>
+      <div class="muted" style="text-align:center">最少秒數先聽；同秒就最後撳嗰個先。</div>
       ${submitError ? `<div class="error-box">${esc(submitError)}</div>` : ""}
-      ${confirmButton("確認出價", draft !== "")}
     </div>`;
     }
     return `<div class="play-card"><div class="play-q">${esc(task.prompt)}</div><div class="waiting">等主持…</div></div>`;
@@ -275,8 +308,12 @@ function render() {
     else {
         body = `<div class="play-card"><div class="play-q">${v.phase === "lobby" ? "等主持開始" : "等主持指示"}</div><div class="waiting">大mon 會有畫面</div></div>`;
     }
+    const ucHint = v?.undercoverMatch?.eliminated
+        ? `<div class="play-card" style="border-left:6px solid var(--red)"><div class="play-q">你已出局</div><div class="muted">今局你唔可以再投票（仲可以睇大mon）。</div></div>`
+        : "";
     root.innerHTML = `
     <div class="play-wrap">
+    ${ucHint}
     ${body}
     ${submitError ? `<div class="error-box">${esc(submitError)}</div>` : ""}
     ${connBanner(status, v)}
@@ -329,6 +366,20 @@ function bindTask(v) {
             const cf = el("#confirm-btn");
             if (cf)
                 cf.disabled = !selected.targetId || submitting;
+        });
+    }
+    const bidBtn = el("#bid-btn");
+    if (bidBtn) {
+        bidBtn.addEventListener("click", () => {
+            if (submitting)
+                return;
+            const secs = bidSeconds(task);
+            if (secs <= 0) {
+                submitError = "冇秒數剩，投唔到";
+                render();
+                return;
+            }
+            void sendSubmit({ kind: "bid", amount: secs }, crypto.randomUUID());
         });
     }
     el("#confirm-btn")?.addEventListener("click", () => void onConfirm(task));

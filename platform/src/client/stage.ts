@@ -41,6 +41,8 @@ const MODE_LABEL: Record<string, string> = {
   finale: "結算",
   award: "頒獎",
   timer: "計時",
+  message: "",
+  "game-scores": "分項結算",
   blackout: "",
 };
 
@@ -117,6 +119,18 @@ function rulesHtml(v: any): string {
   </div>`;
 }
 
+/** B5：26–30 人都要睇得齊 —— 超過 12 人自動分 2／3 欄＋縮字，唔再 slice */
+function scoreRowsHtml(entries: any[], avatarSize = 48): string {
+  const n = entries.length;
+  const cls = n > 20 ? "multi cols-3" : n > 12 ? "multi cols-2" : "";
+  return `<div class="scoreboard-list ${cls}">${entries
+    .map(
+      (s: any, i: number) =>
+        `<div class="sb-row"><span class="num">${i + 1}</span>${avatarHtml(s.avatar, avatarSize)}<span class="name">${esc(s.name)}</span><span class="score">${s.score}</span></div>`,
+    )
+    .join("")}</div>`;
+}
+
 function boardHtml(v: any): string {
   const entries = v.scores ?? [];
   const groups = v.groups ?? [];
@@ -133,12 +147,7 @@ function boardHtml(v: any): string {
   return `
   <div class="stage-main">
     <div class="stage-mode-title">分數</div>
-    <div class="scoreboard-list">${entries
-      .slice(0, 12)
-      .map(
-        (s: any, i: number) => `<div class="sb-row"><span class="num">${i + 1}</span>${avatarHtml(s.avatar, 52)}<span class="name">${esc(s.name)}</span><span class="score">${s.score}</span></div>`,
-      )
-      .join("")}</div>
+    ${scoreRowsHtml(entries, 52)}
     ${groupBlock}
     ${scoreBar(v)}
   </div>`;
@@ -238,9 +247,14 @@ function undercoverHtml(v: any): string {
   if (!u) {
     return `<div class="stage-main stage-idle"><div class="stage-mode-title">臥底投票</div><div class="stage-sub">等主持開始…</div>${scoreBar(v)}</div>`;
   }
+  const m = v.undercoverMatch;
+  const matchLine = m
+    ? `<div class="stage-sub">第 ${m.matchNo} 局・第 ${m.questionNo}／${m.totalQuestions} 題・仲有 ${m.remainingUndercover} 個臥底未出局</div>`
+    : "";
   if (u.phase === "voting") {
     return `<div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
       <div class="stage-mode-title">請投出你心目中嘅臥底</div>
+      ${matchLine}
       <div class="countdown" data-countdown="1">--</div>
       <div class="stage-sub">已投 ${u.answeredCount}／${u.eligibleCount}</div>
     </div>`;
@@ -248,6 +262,7 @@ function undercoverHtml(v: any): string {
   const max = Math.max(1, ...u.candidates.map((c: any) => c.count));
   return `<div class="stage-main">
     <div class="stage-mode-title">投票結果</div>
+    ${matchLine}
     <div class="uc-cands">${u.candidates
       .map(
         (c: any) => `<div class="uc-cand"><span class="uc-name">#${c.number} ${esc(c.name)}</span>
@@ -284,26 +299,39 @@ function voteHtml(v: any): string {
 
 function bidHtml(v: any): string {
   const b = v.bid;
-  if (!b.settled) {
-    // 密封出價：stage 只顯示參與人數＋倒數（§5.1 規格澄清：揭曉前唔顯示個別金額）
-    return `
-    <div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
-      <div class="row" style="justify-content:space-between;width:100%"><div class="stage-mode-title">競投中・上限 ${b.maxBid}</div>
-      <div class="countdown" data-countdown="1">--</div></div>
-      <div class="q-prompt" style="font-size:56px">${esc(b.prompt)}</div>
-      <div class="bid-winner" style="margin-top:30px">已出價 <b style="color:var(--accent)">${b.bidCount}</b> / ${b.eligibleCount} 人</div>
-      <div class="helptext">${b.closed ? "已收卷，等主持結算／揭曉" : "密封出價：開票前唔會顯示任何金額；最高價得標（同價先交者贏）"}</div>
+  const ranking: any[] = b.ranking ?? [];
+  if (ranking.length) {
+    // 公佈競投結果：最少秒數排第一；而家由邊個聽
+    const rows = ranking
+      .map(
+        (r: any, i: number) => `<div class="uc-cand ${r.current ? "current" : ""}">
+          <span class="uc-name">${i + 1}. #${r.number} ${esc(r.name)}${r.tried ? "（試過）" : ""}</span>
+          <span class="uc-bar"><i style="width:${Math.max(6, 100 - (r.seconds / Math.max(1, b.maxBid)) * 100)}%"></i></span>
+          <b class="uc-count">${r.seconds} 秒</b></div>`,
+      )
+      .join("");
+    const now = b.currentName
+      ? `<div class="bid-winner">而家由 <b style="color:var(--accent)">${esc(b.currentName)}</b> 聽歌（${b.currentSeconds} 秒）</div>`
+      : `<div class="bid-winner">${b.settled ? "本首已完結" : "等主持開始"}</div>`;
+    return `<div class="stage-main">
+      <div class="stage-mode-title">競投結果（最少秒數先聽）</div>
+      <div class="q-prompt" style="font-size:44px">${esc(b.prompt)}</div>
+      ${now}
+      <div class="uc-cands" style="width:100%">${rows}</div>
+      <div class="helptext">仲有 ${b.remaining} 人未試；播歌位置由主持自己控制（唔經系統）</div>
       ${scoreBar(v)}
     </div>`;
   }
+  // 競投中：密封（唔顯示個別秒數）
   return `
-  <div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
-    <div class="stage-mode-title">競投結果</div>
-    <div class="q-prompt" style="font-size:52px">${esc(b.prompt)}</div>
-    <div class="bid-winner">最高價：${esc(b.winnerName ?? "—")}　<b>${b.winnerAmount ?? ""}</b></div>
-    <div class="helptext">出價 ${b.bidCount}／${b.eligibleCount} 人；揭曉後請得標者答歌名</div>
-    ${scoreBar(v)}
-  </div>`;
+    <div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
+      <div class="row" style="justify-content:space-between;width:100%"><div class="stage-mode-title">競投中・最多 ${b.maxBid} 秒</div>
+      <div class="countdown" data-countdown="1">--</div></div>
+      <div class="q-prompt" style="font-size:56px">${esc(b.prompt)}</div>
+      <div class="bid-winner" style="margin-top:30px">已競投 <b style="color:var(--accent)">${b.bidCount}</b> / ${b.eligibleCount} 人</div>
+      <div class="helptext">${b.closed ? "競投已完，等主持公佈排名" : "撳落去嗰刻剩幾秒＝你嘅聽歌時間；最少秒數先聽（同秒最後撳先）"}</div>
+      ${scoreBar(v)}
+    </div>`;
 }
 
 function songHtml(v: any): string {
@@ -332,13 +360,52 @@ function roleRevealHtml(v: any): string {
   </div>`;
 }
 
+/** v0.3.0 message mode：大字（好人題目／淘汰中唔中／勝負） */
+function messageHtml(v: any): string {
+  const m = v.message ?? { lines: [] };
+  const lines: string[] = m.lines ?? [];
+  const tone = m.tone === "good" ? "var(--green)" : m.tone === "bad" ? "var(--red)" : "var(--accent)";
+  const body = lines.length
+    ? lines
+        .map((l, i) => `<div style="font-size:${i === 0 ? 76 : 46}px;font-weight:800;line-height:1.25;color:${i === 0 ? tone : "var(--ink)"}">${esc(l)}</div>`)
+        .join("")
+    : `<div class="helptext">等主持…</div>`;
+  return `<div class="stage-main" style="align-items:center;justify-content:center;text-align:center">
+    ${m.title ? `<div class="stage-mode-title">${esc(m.title)}</div>` : ""}
+    ${body}
+    ${scoreBar(v)}
+  </div>`;
+}
+
+/** v0.3.0 game-scores：每個 game 每個人幾多分（Excel 第 68 行） */
+function gameScoresHtml(v: any): string {
+  const g = v.gameScores;
+  if (!g) return `<div class="stage-main stage-idle"><div class="stage-mode-title">各 game 結算</div>${scoreBar(v)}</div>`;
+  const head = `<tr><th>#</th><th class="gs-name">玩家</th>${g.games
+    .map((x: any) => `<th>${esc(x.title)}</th>`)
+    .join("")}<th>其他調整</th><th>總分</th></tr>`;
+  const rows = (g.rows ?? [])
+    .map(
+      (r: any) =>
+        `<tr><td>${r.number}</td><td class="gs-name">${esc(r.name)}</td>${(r.scores ?? [])
+          .map((x: number) => `<td>${x}</td>`)
+          .join("")}<td>${r.other}</td><td><b>${r.total}</b></td></tr>`,
+    )
+    .join("");
+  // FIX-2：人多（26 人）都唔可以 cut：超出可視高度就 scroll，表頭 sticky
+  return `<div class="stage-main"><div class="stage-mode-title">各 game 結算</div>
+    <div class="gs-wrap"><table class="gs-table"><thead>${head}</thead><tbody>${rows}</tbody></table></div>
+    ${scoreBar(v)}
+  </div>`;
+}
+
 function finalHtml(v: any): string {
   const f = v.finale;
   if (!f) return "";
   const stats = f.stats ?? {};
   const awardRows = (f.awards ?? [])
     .map((a: any) => {
-      const medal = a.id === "grand" ? "🥇 大獎" : a.id === "second" ? "🥈 2獎" : "🥉 3獎";
+      const medal = a.id === "grand" ? "🥇 最高分獎" : a.id === "second" ? "🥈 中庸之道獎" : "🥉 多謝參與獎";
       return `<div class="award-slot ${a.revealed ? "revealed" : ""}"><span class="medal">${medal}</span><span>${a.revealed && a.name ? esc(a.name) + `　<b style="color:var(--accent)">${a.score ?? ""}</b>` : "?"}</span></div>`;
     })
     .join("");
@@ -346,13 +413,7 @@ function finalHtml(v: any): string {
   <div class="stage-main">
     <div class="stage-mode-title">${v.stage.mode === "award" ? "頒獎" : "結算"}</div>
     <div class="finale-grid">
-      <div class="scoreboard-list">${(f.entries ?? [])
-        .slice(0, 12)
-        .map(
-          (s: any, i: number) =>
-            `<div class="sb-row"><span class="num">${i + 1}</span>${avatarHtml(s.avatar, 48)}<span class="name">${esc(s.name)}</span><span class="score">${s.score}</span></div>`,
-        )
-        .join("")}</div>
+      ${scoreRowsHtml(f.entries ?? [], 48)}
       <div>
         <div class="card-box" style="font-size:30px;line-height:1.6">
           <div>總分 <b style="color:var(--accent)">${stats.total}</b></div>
@@ -448,6 +509,12 @@ function stageHtml(v: any): string {
         break;
       case "role-reveal":
         html = roleRevealHtml(v);
+        break;
+      case "message":
+        html = messageHtml(v);
+        break;
+      case "game-scores":
+        html = gameScoresHtml(v);
         break;
       case "finale":
       case "award":

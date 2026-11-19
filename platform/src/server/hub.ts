@@ -54,6 +54,8 @@ const HOST_SECTIONS = [
   "rounds",
   "cards",
   "undercover",
+  "undercoverMatch",
+  "killerState",
   "quiz",
   "songs",
   "playback",

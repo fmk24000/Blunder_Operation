@@ -1,24 +1,28 @@
 /** 主持台 /host（可多開；PLAN-v3.1 §8.2） */
 import { Live, api, esc, avatarHtml, connBanner, showToast, el, lsGet, lsSet, lsDel, type ConnStatus } from "./common.js";
 
+/** v0.3.0：主 tab 只留 5 個（控制／玩家／分數／題庫／頒獎）；其餘收埋落「進階」（code 全部保留） */
 const TABS: [string, string][] = [
   ["control", "控制"],
   ["players", "玩家"],
-  ["groups", "分組"],
   ["score", "分數"],
-  ["cards", "出卡"],
   ["quiz", "題庫"],
+  ["awards", "頒獎"],
+];
+
+const ADVANCED_TABS: [string, string][] = [
+  ["groups", "分組"],
+  ["cards", "出卡"],
   ["rules", "規則頁"],
   ["songs", "歌單"],
   ["draw", "畫畫"],
   ["saboteur", "搗蛋鬼"],
-  ["awards", "頒獎"],
   ["status", "狀態"],
 ];
 
 const MODES = [
   "idle", "rules", "scoreboard", "question", "tally", "reveal", "draw-wall", "draw-focus",
-  "bid", "vote", "role-reveal", "song", "leaderboard", "finale", "award", "timer", "blackout",
+  "bid", "vote", "role-reveal", "song", "leaderboard", "finale", "award", "timer", "message", "game-scores", "blackout",
 ];
 
 let live: Live | null = null;
@@ -429,6 +433,7 @@ const MODE_LABEL: Record<string, string> = {
   idle: "待機", rules: "規則頁", scoreboard: "分數板", question: "問題", tally: "分佈", reveal: "揭曉",
   "draw-wall": "作品牆", "draw-focus": "作品放大", bid: "競投", vote: "投票", "role-reveal": "身份揭曉",
   song: "聽歌", leaderboard: "排行榜", finale: "結算", award: "頒獎", timer: "計時", blackout: "黑屏",
+  message: "大字訊息", "game-scores": "分項結算",
 };
 
 function uuid(): string {
@@ -572,9 +577,18 @@ function controlSection(v: any): string {
       <div class="ctrl-quick">
         <button class="primary" data-act="stage.qr">大mon 返 QR／入場頁${mode === "blackout" ? "（離開黑屏）" : ""}</button>
       </div>
+      <div class="ctrl-quiz">
+        <div class="mg-label">問答真流程（會真正收卷／評分）</div>
+        <div class="btn-row">
+          <button class="primary" data-act="qa.question">開下一題（card.open）</button>
+          <button data-act="qa.dist">公佈分佈（先收卷）</button>
+          <button class="primary" data-act="qa.reveal">公佈答案（先收卷＋評分）</button>
+        </div>
+        <div class="hint">上面三個掣接真 command；下面「只換畫面」嗰組只係推 stage mode，唔會收卷／評分。</div>
+      </div>
       <div class="mode-groups">
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
-        ${group("問答", ["question", "tally", "reveal"])}
+        ${group("只換畫面（唔會收卷／評分）", ["question", "tally", "reveal"])}
         ${group(
           "估歌",
           ["bid", "song"],
@@ -582,7 +596,7 @@ function controlSection(v: any): string {
         )}
         ${group("畫畫", ["draw-wall", "draw-focus", "vote", "undercover"])}
         ${group("搗蛋鬼／其他", ["role-reveal", "timer", "blackout"])}
-        ${group("結算／頒獎", ["finale", "award"])}
+        ${group("結算／頒獎", ["finale", "award", "game-scores"])}
       </div>
       <div class="ctrl-emergency">
         <button class="danger" data-act="stage.blackout:1">黑屏</button>
@@ -618,7 +632,7 @@ function controlSection(v: any): string {
             <span class="pill">auto-close：${v.settings?.autoClose ? "開" : "關"}</span>
             <button data-act="settings.autoclose:${v.settings?.autoClose ? 0 : 1}">${v.settings?.autoClose ? "關咗佢" : "開返"}</button>
             <span class="muted">maxBid ${v.settings?.maxBid}</span>
-            <input id="maxbid" type="number" min="1" max="10000" value="${v.settings?.maxBid ?? 100}" style="width:100px">
+            <input id="maxbid" type="number" min="1" max="10000" value="${v.settings?.maxBid ?? 10}" style="width:100px">
             <button data-act="settings.maxbid">改上限</button>
           </div>
         </div>
@@ -626,8 +640,156 @@ function controlSection(v: any): string {
 
       <div class="hint">Activity：${(v.activity ?? []).slice(-4).map((a: any) => esc(a.text)).join("｜") || "—"}</div>
     </div>
-    ${undercoverPanel(v)}
+    ${undercoverMatchPanel(v)}
+    ${killerPanel(v)}
+    ${bidPanel(v)}
+    <details class="ctrl-settings"><summary>舊：臥底投票（單輪投票，唔用一圖多人流程）</summary>${undercoverPanel(v)}</details>
   </section>`;
+}
+
+/** FIX-3b：拍賣時間估歌控制（由「進階→歌單」搬上控制頁；舊歌單 tab 嘅 code 仍然保留） */
+function bidPanel(v: any): string {
+  const round = v.currentRound;
+  const card = round ? (v.cards ?? []).find((c: any) => c.id === round.cardId) : null;
+  const isBid = card?.type === "bid";
+  const auction = isBid ? round.auction : null;
+  const subs = isBid ? (v.submissions ?? []).filter((x: any) => x.roundId === round.id && x.confirmed && typeof x.amount === "number" && x.amount >= 1) : [];
+  const ranked = [...subs].sort((a: any, b: any) => a.amount - b.amount || b.ts - a.ts);
+  const nameOf = (id: string): string => esc((v.players ?? []).find((x: any) => x.id === id)?.name ?? "?");
+  const draftCards = (v.cards ?? []).filter((c: any) => c.gameId === "auction" && c.type === "bid" && c.state === "draft");
+  const openBlocked = Boolean(round && (round.state === "open" || round.state === "closed" || round.state === "tally"));
+  const rankingRows = (auction?.ranking ?? [])
+    .map(
+      (r: any, i: number) =>
+        `<div class="ledger-row"><span class="pill ${i === auction?.cursor && !auction?.finished ? "hot" : ""}">${i + 1}</span><span class="grow">${nameOf(r.playerId)}</span><b>${r.seconds} 秒</b>${
+          (auction?.judged ?? []).includes(r.playerId) ? `<span class="pill on">已判</span>` : ""
+        }</div>`,
+    )
+    .join("");
+  return `<div class="card-box" style="margin-top:10px"><h4>拍賣時間估歌</h4>
+    <div class="row wrap">
+      <span class="pill">${isBid ? `現時：${esc(card.prompt)}・${esc(round.state)}` : "未開拍賣卡"}</span>
+      <span class="pill">已競投 ${ranked.length} 人</span>
+      <span class="pill">最少：${ranked[0] ? `${nameOf(ranked[0].playerId)}（${ranked[0].amount} 秒）` : "—"}</span>
+      <span class="pill">第二：${ranked[1] ? `${nameOf(ranked[1].playerId)}（${ranked[1].amount} 秒）` : "—"}</span>
+    </div>
+    <div class="btn-row">
+      <button class="primary" data-act="bid.publish" ${isBid && ranked.length ? "" : "disabled"}>公佈競投排名</button>
+      <button class="primary" data-act="bid.judge:1" ${auction ? "" : "disabled"}>而家嗰位答對 +${isBid ? card.points : 1}</button>
+      <button data-act="bid.judge:0" ${auction ? "" : "disabled"}>答唔到 → 下一位</button>
+      <button data-act="bid.finish" ${auction || (isBid && round && round.state !== "revealed" && round.state !== "void") ? "" : "disabled"}>本首完結</button>
+    </div>
+    ${rankingRows ? `<div style="max-height:220px;overflow:auto">${rankingRows}</div>` : ""}
+    <div class="row wrap"><span class="muted">開拍賣卡（第 1–6 首）：</span>${
+      draftCards
+        .map((c: any) => `<button class="btn-sm primary" data-act="card.open:${c.id}" ${openBlocked ? "disabled" : ""}>${esc(c.prompt.slice(0, 12))}</button>`)
+        .join("") || '<span class="muted">（冇 draft 拍賣卡）</span>'
+    }</div>
+    <div class="hint">流程：開卡（10 秒倒數）→ 玩家撳「競投」→ 公佈排名 → 主持自己播歌 → 答對 +1／答唔到去下一位 → 本首完結。舊歌單 tab 仍然有同一組控制。</div>
+  </div>`;
+}
+
+/** v0.3.0 笨蛋殺手：主持抽老闆＋殺手（身份只喺主持台顯示；輸贏主持手動加分，gameId=killer） */
+function killerPanel(v: any): string {
+  const k = v.killerState;
+  const approved: any[] = (v.players ?? []).filter((p: any) => p.status === "approved");
+  const name = (id: string | null): string => {
+    if (!id) return "—";
+    const p = approved.find((x: any) => x.id === id);
+    return p ? `#${p.number} ${esc(p.name)}` : id;
+  };
+  if (!k) {
+    return `<div class="card-box" style="margin-top:10px"><h4>笨蛋殺手</h4>
+      <div class="hint">一個老闆一個殺手（隨機抽、可以重抽）；身份用紙派，系統只喺主持台顯示。3 粒子彈、要殺兩個人，最後全體投票。</div>
+      <div class="row wrap"><button class="primary" data-act="killer.assign">抽老闆＋殺手</button></div></div>`;
+  }
+  return `<div class="card-box" style="margin-top:10px"><h4>笨蛋殺手</h4>
+    <div class="row wrap"><span class="pill hot">老闆：${name(k.bossId)}</span><span class="pill hot">殺手：${name(k.killerId)}</span></div>
+    <div class="btn-row"><button data-act="killer.redraw">重抽</button><button data-act="killer.clear">清除身份</button></div>
+    <div class="btn-row">
+      <span class="muted">加分：</span>
+      <button class="btn-sm" data-act="killer.score:boss:1">老闆 +1</button>
+      <button class="btn-sm" data-act="killer.score:boss:2">老闆 +2</button>
+      <button class="btn-sm" data-act="killer.score:killer:1">殺手 +1</button>
+      <button class="btn-sm" data-act="killer.score:killer:2">殺手 +2</button>
+    </div>
+    <div class="row wrap">
+      <span class="muted">加分畀邊個（好人／任何人）：</span>
+      <select id="killer-target">${approved.map((p: any) => `<option value="${esc(p.id)}">#${p.number} ${esc(p.name)}</option>`).join("")}</select>
+      <button class="btn-sm" data-act="killer.any:1">+1</button>
+      <button class="btn-sm" data-act="killer.any:2">+2</button>
+    </div>
+    <div class="hint">輸贏由主持加分（gameId=killer，會計入「分項結算」個笨蛋殺手欄）。</div></div>`;
+}
+
+/** v0.3.0 一圖多人（畫畫臥底）：主持逐步撳，每一步都顯示當前狀態（第幾局／第幾題／仲有幾個臥底／邊個出局） */
+function undercoverMatchPanel(v: any): string {
+  const st = v.undercoverMatch;
+  const approved: any[] = (v.players ?? []).filter((p: any) => p.status === "approved");
+  const find = (id: string): any => approved.find((p: any) => p.id === id);
+  const label = (id: string): string => {
+    const p = find(id);
+    return p ? `#${p.number} ${esc(p.name)}` : id;
+  };
+  if (!st || (st.participantIds ?? []).length === 0) {
+    return `<div class="card-box" style="margin-top:10px"><h4>一圖多人（畫畫臥底）${st ? `・下一局係第 ${st.matchNo} 局` : ""}</h4>
+      <div class="hint">開局＝由 approved 玩家隨機抽 2 個臥底＋抽 3 對題目。每題流程：公佈好人題目 → 開投票（10 秒）→ 淘汰一個 → 下一題；最多 3 題。</div>
+      <div class="row wrap"><label class="row">臥底數 <input id="ucm-count" type="number" min="1" max="4" value="2" style="width:70px"></label>
+      <button class="primary" data-act="ucm.start">開新一局</button></div></div>`;
+  }
+  const remaining = (st.undercoverIds ?? []).filter((id: string) => !st.eliminatedIds.includes(id)).length;
+  const eliminated = (st.eliminatedIds ?? []).map(
+    (id: string) => `<span class="pill ${st.undercoverIds.includes(id) ? "hot" : "gray"}">${label(id)}${st.undercoverIds.includes(id) ? "（臥底）" : ""}</span>`,
+  );
+  const undercoverList = (st.undercoverIds ?? []).map((id: string) => `<span class="pill hot">${label(id)}</span>`).join("") || "—";
+  const candidates = (st.participantIds ?? []).filter((id: string) => !st.eliminatedIds.includes(id));
+  const voting = Boolean(st.roundId) && v.currentRound?.state === "open" && v.currentRound?.id === st.roundId;
+  // FIX-8：勝負未定唔准結算（同 server 前置檢查一致）
+  const canSettle = remaining === 0 || st.result === "good" || st.questionNo >= 2;
+  const status = [
+    `第 ${st.matchNo} 局`,
+    `第 ${st.questionNo + 1}／3 題`,
+    `仲有 ${remaining} 個臥底未出局`,
+    st.promptRevealed ? "已公佈好人題目" : "未公佈題目",
+    voting ? "投票中" : "冇投票進行",
+    st.settled ? `已結算：${st.result === "good" ? "好人勝" : st.result === "undercover" ? "臥底勝" : "?"}` : "未結算",
+  ]
+    .map((x) => `<span class="pill">${esc(x)}</span>`)
+    .join("");
+  // FIX-1：主持要見到本局抽咗邊 3 對題（派題目卡要用），現時嗰對高亮
+  const cards: any[] = v.cards ?? [];
+  const topicRows = (st.topicIds ?? [])
+    .map((cid: string, i: number) => {
+      const c = cards.find((x: any) => x.id === cid);
+      const current = cid === st.promptCardId;
+      return `<div class="ledger-row" ${current ? 'style="background:var(--bg-soft);font-weight:700"' : ""}>
+        <span class="pill ${current ? "on" : "gray"}">第 ${i + 1}/3 題${current ? "・現在" : ""}</span>
+        <span class="grow">好人題：${esc(c?.prompt ?? cid)}</span>
+        <span class="pill hot">臥底題（關鍵詞）：${esc(c?.undercoverPrompt ?? "?")}</span></div>`;
+    })
+    .join("");
+  return `<div class="card-box" style="margin-top:10px"><h4>一圖多人（畫畫臥底）</h4>
+    <div class="row wrap">${status}</div>
+    <div class="row wrap"><span class="pill hot">臥底（主持專用）</span>${undercoverList}</div>
+    <div style="margin-top:6px"><div class="muted">本局題目（派卡用：好人題＋臥底題各一張；現時嗰對高亮）</div>${topicRows || '<div class="muted">（未抽題）</div>'}</div>
+    <div class="row wrap"><span class="muted">已出局：</span>${eliminated.join("") || '<span class="muted">（未有）</span>'}</div>
+    <div class="btn-row">
+      <button data-act="ucm.redraw">重抽臥底</button>
+      <button class="${st.promptRevealed ? "" : "primary"}" data-act="ucm.reveal">公佈好人題目</button>
+      <button class="primary" data-act="ucm.vote" ${st.settled ? "disabled" : ""}>開投票（10 秒）</button>
+      <button data-act="ucm.undo">取消上一個淘汰</button>
+      <button class="primary" data-act="ucm.next">下一題／結算</button>
+      <button data-act="ucm.settle" ${canSettle ? "" : "disabled"} title="${canSettle ? "判勝負＋加分" : "仲未夠 3 題／仲有臥底未出局（請撳「下一題／結算」）"}">分數結算</button>
+      <button data-act="ucm.reset">清走本局（再開一局）</button>
+    </div>
+    <div class="row wrap">
+      <span class="muted">淘汰邊個：</span>
+      <select id="ucm-target">${candidates.map((id: string) => `<option value="${esc(id)}">${label(id)}</option>`).join("")}</select>
+      <button class="danger" data-act="ucm.eliminate">淘汰佢</button>
+      <span class="muted">（大mon 會即刻講中／唔中）</span>
+    </div>
+    <div class="hint">計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
+  </div>`;
 }
 
 function undercoverPanel(v: any): string {
@@ -751,7 +913,7 @@ function openGradingHtml(v: any): string {
     card.openKind === "number"
       ? `<div class="row wrap"><span class="pill">估數字</span>
         <input id="actual-answer" type="number" step="any" placeholder="真實答案" value="${round.actualAnswer ?? card.actualAnswer ?? ""}" style="width:140px">
-        <button class="primary" data-act="judge.actual">入真實答案＋最接近 +2</button>
+        <button class="primary" data-act="judge.actual">入真實答案＋按容差加分</button>
         <span class="muted">${round.actualAnswer !== undefined ? `actualAnswer=${round.actualAnswer}` : "未入"}</span></div>`
       : "";
   return `<div style="border-top:1px solid var(--line);padding-top:10px">
@@ -779,7 +941,7 @@ function cardsSection(v: any): string {
         <button data-act="card.tally" ${round.state === "open" || round.state === "closed" ? "" : "disabled"}>切分佈</button>
         ${curIsSab ? "" : `<button class="primary" data-act="card.reveal" ${round.state === "closed" || round.state === "tally" ? "" : "disabled"}>揭曉</button>`}
         ${curIsSab ? "" : `<button data-act="card.reopen">重開（新 round）</button>`}</div>` : `<div class="muted">未開卡</div>`}
-      ${cards.length ? `<div>${cards.map((c: any) => `<div class="ledger-row"><span class="pill ${round?.cardId === c.id ? "on" : ""}">${esc(c.type)}</span><span class="grow">${esc(c.prompt)}</span><span class="muted">${c.id}</span>${c.gameId === "saboteur" ? `<span class="pill gray">用搗蛋鬼面板開輪</span>` : `<button class="btn-sm primary" data-act="card.open:${c.id}" ${round && (round.state === "open" || round.state === "closed" || round.state === "tally") ? "disabled" : ""}>開</button>`}</div>`).join("")}</div>` : `<div class="hint">呢關未有卡。用下面新增。</div>`}
+      ${cards.length ? `<div>${cards.map((c: any) => `<div class="ledger-row"><span class="pill ${round?.cardId === c.id ? "on" : ""}">${esc(c.type)}</span><span class="grow">${esc(c.prompt)}</span><span class="muted">${c.id}</span>${c.gameId === "saboteur" ? `<span class="pill gray">用搗蛋鬼面板開輪</span>` : c.undercoverPrompt ? `<span class="pill gray">一圖多人專用（用一圖多人面板）</span>` : `<button class="btn-sm primary" data-act="card.open:${c.id}" ${round && (round.state === "open" || round.state === "closed" || round.state === "tally") ? "disabled" : ""}>開</button>`}</div>`).join("")}</div>` : `<div class="hint">呢關未有卡。用下面新增。</div>`}
       ${openGradingHtml(v)}
     </div>
   </section>
@@ -800,8 +962,11 @@ function quizSection(v: any): string {
   const quiz = v.quiz ?? [];
   return `<section><h3>題庫（${quiz.length} 題；改完即時生效）</h3>
     <div class="card-box">
-      <div class="btn-row"><button class="primary" data-act="quiz.add:choice">加 MC 題</button><button data-act="quiz.add:open">加 Open 題</button>
-      <button data-act="quiz.import">一鍵匯入舊 QUIZ（只 MC，open 只顯示 diff）</button></div>
+      <div class="btn-row"><button class="primary" data-act="quiz.add:choice">加 MC 題</button><button data-act="quiz.add:open">加 Open 題</button></div>
+      <details class="ctrl-settings"><summary>進階：舊題匯入（會覆蓋同名 MC 題）</summary>
+        <div class="row wrap"><button data-act="quiz.import">一鍵匯入舊 QUIZ（只 MC，open 只顯示 diff）</button>
+        <span class="muted">撳完會先問你確認，唔會靜靜哋覆蓋。</span></div>
+      </details>
       <div class="hint">換題只改資料（data/quiz.seed.json／呢個編輯器），唔使改 code。大mon／手機喺 reveal 前永遠唔會見到正解。</div>
       ${
         importReport
@@ -849,7 +1014,7 @@ function rulesSection(v: any): string {
       <div class="hint">兩個 host 同時改同一頁：second 會收 W_RULES_CONFLICT，再載入最新（唔會蓋走）。字數上限：每 block 120 字／全頁 1200 字／blocks ≤20。</div>
     </div>
     <div class="card-box" style="margin-top:10px"><h4>關卡次序（改完即刻套用）</h4>
-      <div class="hint">用 ▲▼ 調次序；預設係「畫畫 → 估歌」。改完大mon／rundown 即刻跟新次序。</div>
+      <div class="hint">用 ▲▼ 調次序；預設係「一圖多人 → 拍賣 → 笨蛋殺手 → 問答」。改完大mon／rundown 即刻跟新次序。</div>
       ${(v.rundown ?? []).map((it: any, i: number) => `<div class="ledger-row"><span class="grow">${i + 1}. ${esc(it.title)}</span>
         <button class="btn-sm" data-act="rd.moveup:${i}" ${i === 0 ? "disabled" : ""}>▲</button>
         <button class="btn-sm" data-act="rd.movedown:${i}" ${i === (v.rundown ?? []).length - 1 ? "disabled" : ""}>▼</button></div>`).join("")}
@@ -874,8 +1039,8 @@ function rulesSection(v: any): string {
 
 function awardsSection(v: any): string {
   const awards = v.awards ?? [];
-  const medal: Record<string, string> = { grand: "🥇 大獎", second: "🥈 2獎", third: "🥉 3獎" };
-  const rule: Record<string, string> = { grand: "最高分", second: "最接近中位數", third: "最低分" };
+  const medal: Record<string, string> = { grand: "🥇 最高分獎", second: "🥈 中庸之道獎", third: "🥉 多謝參與獎" };
+  const rule: Record<string, string> = { grand: "最高分獎", second: "中庸之道獎（最接近平均數）", third: "多謝參與獎（最低分）" };
   return `<section><h3>頒獎（phase=${v.phase}）</h3>
     <div class="card-box">
       <div class="btn-row"><button class="primary" data-act="award.compute">重算三獎</button><button data-act="award.reset">重設揭曉</button></div>
@@ -901,10 +1066,22 @@ function songsSection(v: any): string {
   const round = v.currentRound;
   const curCard = round ? (v.cards ?? []).find((c: any) => c.id === round.cardId) : null;
   const isBid = curCard?.type === "bid";
-  const bids = isBid && round ? (v.submissions ?? []).filter((x: any) => x.roundId === round.id && x.confirmed && typeof x.amount === "number") : [];
-  const ranked = [...bids].sort((a: any, b: any) => b.amount - a.amount || a.ts - b.ts);
+  const bids =
+    isBid && round ? (v.submissions ?? []).filter((x: any) => x.roundId === round.id && x.confirmed && typeof x.amount === "number" && x.amount >= 1) : [];
+  // v0.3.0：最少秒數先聽；同秒 → 最後提交（ts 最大）先
+  const ranked = [...bids].sort((a: any, b: any) => a.amount - b.amount || b.ts - a.ts);
   const winner = ranked[0];
   const second = ranked[1];
+  const auction = isBid && round ? round.auction : null;
+  const nameOf = (id: string): string => esc((v.players ?? []).find((x: any) => x.id === id)?.name ?? "?");
+  const rankingRows = (auction?.ranking ?? [])
+    .map(
+      (r: any, i: number) =>
+        `<div class="ledger-row"><span class="pill ${i === auction?.cursor && !auction?.finished ? "hot" : ""}">${i + 1}</span><span class="grow">${nameOf(r.playerId)}</span><b>${r.seconds} 秒</b>${
+          (auction?.judged ?? []).includes(r.playerId) ? `<span class="pill on">已判</span>` : ""
+        }</div>`,
+    )
+    .join("");
   return `<section><h3>音源（media deck・唯一 AudioLease）</h3>
     <div class="card-box">
       <div class="row wrap"><span class="pill ${lease && lease.deckId === ensureDeckId() && !lease.releasedAt ? "on" : "off"}">${lease ? `lease：${esc(lease.deckId)}・gen ${lease.generation}${lease.releasedAt ? "（已到期，等 5s margin）" : ""}` : "冇 lease"}</span>
@@ -942,17 +1119,23 @@ function songsSection(v: any): string {
   <section><h3>拍賣卡（bid・只 points 模式 D32）</h3>
     <div class="card-box">
       <div class="row wrap"><select id="bid-song">${songs.map((sg: any) => `<option value="${sg.id}">${esc(sg.title)}</option>`).join("")}</select>
-        <input id="bid-prompt" placeholder="卡題目（例：聽 15 秒，估歌名）" value="聽 15 秒，估歌名" style="flex:1 1 180px">
-        <input id="bid-max" type="number" value="100" title="出價上限" style="width:90px">
-        <input id="bid-seconds" type="number" value="30" title="秒" style="width:70px">
-        <input id="bid-points" type="number" value="5" title="答對分" style="width:70px">
+        <input id="bid-prompt" placeholder="卡題目（例：聽幾秒，估歌名）" value="聽幾秒，估歌名" style="flex:1 1 180px">
+        <input id="bid-max" type="number" value="10" title="最多幾秒（10）" style="width:90px">
+        <input id="bid-seconds" type="number" value="10" title="競投倒數秒數" style="width:70px">
+        <input id="bid-points" type="number" value="1" title="答對分" style="width:70px">
         <button class="primary" data-act="bid.card">新增拍賣卡</button></div>
-      ${isBid && round ? `<div class="row wrap"><span class="pill hot">${esc(round.state)}</span><span>出價 ${bids.length} 人</span>
-        <span>最高：${winner ? `${esc((v.players ?? []).find((x: any) => x.id === winner.playerId)?.name ?? "?")}（${winner.amount}）` : "—"}</span>
-        <span>次高：${second ? `${esc((v.players ?? []).find((x: any) => x.id === second.playerId)?.name ?? "?")}（${second.amount}）` : "—"}</span></div>
-        <div class="row wrap"><button class="primary" data-act="bid.settle:1">得標者答對 +${curCard.points}</button><button data-act="bid.settle:0">答錯 0 分</button>
-        <button data-act="bid.settleBackup:1">次高價補答（一半分）</button></div>` : `<div class="muted">未開拍賣卡</div>`}
-      <div class="hint">最高價得標；同價先交者贏；出價唔扣分。結算後用「揭曉歌名」出 stage reveal。</div>
+      ${isBid && round ? `<div class="row wrap"><span class="pill hot">${esc(round.state)}</span><span>已競投 ${bids.length} 人</span>
+        <span>最少：${winner ? `${nameOf(winner.playerId)}（${winner.amount} 秒）` : "—"}</span>
+        <span>第二：${second ? `${nameOf(second.playerId)}（${second.amount} 秒）` : "—"}</span></div>
+        <div class="row wrap">
+          <button class="primary" data-act="bid.publish">公佈競投排名</button>
+          <button class="primary" data-act="bid.judge:1" ${auction ? "" : "disabled"}>而家嗰位答對 +${curCard.points}</button>
+          <button data-act="bid.judge:0" ${auction ? "" : "disabled"}>答唔到 → 下一位</button>
+          <button data-act="bid.finish" ${auction || (isBid && round && round.state !== "revealed" && round.state !== "void") ? "" : "disabled"}>本首完結</button>
+        </div>
+        ${rankingRows ? `<div style="max-height:240px;overflow:auto">${rankingRows}</div>` : ""}
+        <div class="row wrap"><button class="btn-sm" data-act="bid.settle:1">舊：得標者答對 +${curCard.points}</button><button class="btn-sm" data-act="bid.settle:0">舊：答錯 0 分</button></div>` : `<div class="muted">未開拍賣卡</div>`}
+      <div class="hint">最少秒數先聽；同秒就最後撳嗰個先。主持自己 MacBook 播歌，播歌位置唔會因為換人而變。</div>
     </div>
   </section>`;
 }
@@ -1094,7 +1277,7 @@ function render(): void {
       <span class="grow"></span>
       <button class="btn-sm ghost" data-act="logout">登出</button>
     </div>
-    <div class="host-tabs"><div class="tabbar">${TABS.map(([id, label]) => `<button class="${tab === id ? "active" : ""}" data-act="tab:${id}">${label}</button>`).join("")}</div></div>
+    <div class="host-tabs"><div class="tabbar">${TABS.map(([id, label]) => `<button class="${tab === id ? "active" : ""}" data-act="tab:${id}">${label}</button>`).join("")}<details class="tab-more" ${ADVANCED_TABS.some(([id]) => id === tab) ? "open" : ""}><summary class="${ADVANCED_TABS.some(([id]) => id === tab) ? "active" : ""}">進階</summary><div class="tabbar">${ADVANCED_TABS.map(([id, label]) => `<button class="${tab === id ? "active" : ""}" data-act="tab:${id}">${label}</button>`).join("")}</div></details></div></div>
     <div class="host-wrap">${body}</div>
     <div id="toast"></div>`;
   restoreForm(formSnap);
@@ -1403,13 +1586,52 @@ async function handleAct(act: string): Promise<void> {
         [ids[i], ids[j]] = [ids[j], ids[i]];
         await cmd("rundown.reorder", undefined, { ids });
       } else if (sub === "resetOrder") {
-        const order = ["draw", "auction", "saboteur", "quiz"];
+        const order = ["draw", "auction", "killer", "quiz"];
         const ids = (view?.rundown ?? [])
           .slice()
           .sort((a: any, b: any) => order.indexOf(a.gameId) - order.indexOf(b.gameId))
           .map((x: any) => x.id);
         await cmd("rundown.reorder", undefined, { ids });
       } else await cmd(`rundown.${sub}`);
+      break;
+    case "killer":
+      if (sub === "assign") await cmd("killer.assign");
+      else if (sub === "redraw") await cmd("killer.redraw");
+      else if (sub === "clear") await cmd("killer.clear");
+      else if (sub === "any") {
+        const anyWho = val("#killer-target");
+        const anyDelta = parseIntStrict(arg);
+        if (!anyWho || anyDelta === null || anyDelta === 0) {
+          failAct("揀一個人同入非 0 整數");
+          return;
+        }
+        await cmd("score.add", anyWho, { targetType: "player", targetId: anyWho, delta: anyDelta, reason: "笨蛋殺手・主持加分", gameId: "killer" });
+      } else if (sub === "score") {
+        const who = arg === "boss" ? view?.killerState?.bossId : view?.killerState?.killerId;
+        const delta = parseIntStrict(arg2);
+        if (!who) {
+          failAct("未抽身份");
+          return;
+        }
+        if (delta === null || delta === 0) {
+          failAct("加分要非 0 整數");
+          return;
+        }
+        await cmd("score.add", who, { targetType: "player", targetId: who, delta, reason: `笨蛋殺手・${arg === "boss" ? "老闆" : "殺手"}`, gameId: "killer" });
+      }
+      break;
+    case "ucm":
+      if (sub === "start") {
+        const n = Number(val("#ucm-count")) || 2;
+        await cmd("uc.match.start", undefined, { undercoverCount: n });
+      } else if (sub === "redraw") await cmd("uc.match.redraw");
+      else if (sub === "reveal") await cmd("uc.prompt.reveal");
+      else if (sub === "vote") await cmd("uc.vote.start");
+      else if (sub === "eliminate") await cmd("uc.eliminate", undefined, { playerId: val("#ucm-target") });
+      else if (sub === "undo") await cmd("uc.eliminate.undo");
+      else if (sub === "next") await cmd("uc.match.next");
+      else if (sub === "settle") await cmd("uc.match.settle");
+      else if (sub === "reset") await cmd("uc.match.reset");
       break;
     case "uc":
       if (sub === "start") {
@@ -1438,6 +1660,25 @@ async function handleAct(act: string): Promise<void> {
       else if (sub === "blackout") await cmd("stage.blackout", undefined, { on: arg === "1" });
       else if (sub === "rules") await cmd("stage.rules", undefined, { on: arg === "1" });
       else if (sub === "mode") await cmd("stage.set", undefined, { mode: arg });
+      break;
+    case "qa":
+      if (sub === "question") {
+        const item = (view?.rundown ?? []).find((i: any) => i.gameId === "quiz");
+        const ids: string[] = item?.cardIds ?? [];
+        const cards = view?.cards ?? [];
+        const next = ids.map((id) => cards.find((c: any) => c.id === id)).find((c: any) => c && c.state === "draft");
+        if (!next) {
+          failAct("冇未開過嘅題（或者全部出完）");
+          return;
+        }
+        await cmd("card.open", next.id);
+      } else if (sub === "dist") {
+        if (view?.currentRound?.state === "open") await cmd("card.close");
+        await cmd("card.tally");
+      } else if (sub === "reveal") {
+        if (view?.currentRound?.state === "open") await cmd("card.close");
+        await cmd("card.reveal");
+      }
       break;
     case "ticker":
       if (sub === "toggle") await cmd("stage.ticker", undefined, { visible: !view?.stage?.ticker?.visible });
@@ -1570,9 +1811,15 @@ async function handleAct(act: string): Promise<void> {
           referenceAnswer: q.type === "open" ? val(`[data-q-ref="${arg}"]`) || undefined : undefined,
           seconds: Number(val(`[data-q-seconds="${arg}"]`)) || undefined,
           points: Number(val(`[data-q-points="${arg}"]`)) || undefined,
+          tolerance: q.tolerance,
+          imageUrl: q.imageUrl,
         },
       });
     } else if (sub === "import") {
+      if (!window.confirm("確定匯入舊 QUIZ？同名 MC 題（包括 13 題新題嘅同名 id）會被覆蓋。")) {
+        showToast("已取消匯入");
+        return;
+      }
       const res = await fetch("/quiz-legacy-mc.json").then((r) => r.json()).catch(() => null);
       if (!res) {
         failAct("搵唔到舊 QUIZ 資料");
@@ -1674,11 +1921,17 @@ async function handleAct(act: string): Promise<void> {
           gameId: "auction",
           prompt: val("#bid-prompt") || "聽 15 秒，估歌名",
           songId: val("#bid-song"),
-          maxBid: Number(val("#bid-max")) || 100,
-          seconds: Number(val("#bid-seconds")) || 30,
-          points: Number(val("#bid-points")) || 5,
+          maxBid: Number(val("#bid-max")) || 10,
+          seconds: Number(val("#bid-seconds")) || 10,
+          points: Number(val("#bid-points")) || 1,
         },
       });
+    } else if (sub === "publish") {
+      await cmd("bid.publish", undefined, { roundId: view?.currentRound?.id });
+    } else if (sub === "judge") {
+      await cmd("bid.judge", undefined, { roundId: view?.currentRound?.id, correct: arg === "1" });
+    } else if (sub === "finish") {
+      await cmd("bid.finish", undefined, { roundId: view?.currentRound?.id });
     } else if (sub === "settle") {
       await cmd("bid.settle", undefined, { roundId: view?.currentRound?.id, correct: arg === "1" });
     } else if (sub === "settleBackup") {

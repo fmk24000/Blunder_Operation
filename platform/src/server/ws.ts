@@ -7,7 +7,7 @@ import type { Card, Submission } from "../shared/types.js";
 import type { Env } from "./env.js";
 import type { Hub, ClientConn } from "./hub.js";
 import type { Store } from "./store.js";
-import { executeCommand, CmdError } from "./commands.js";
+import { executeCommand, CmdError, bidSecondsAllowed, roundExpired } from "./commands.js";
 import { hashToken } from "./auth.js";
 
 function sha256(s: string): string {
@@ -58,7 +58,8 @@ function validateSubmission(
   if (card.type === "bid") {
     if (typeof payload.amount !== "number" || !Number.isInteger(payload.amount)) throw new CmdError("W_BAD_SCHEMA", "要整數出價");
     const max = card.maxBid ?? maxBid;
-    if (payload.amount < 0 || payload.amount > max) throw new CmdError("W_BAD_SCHEMA", `出價要 0–${max}`);
+    // v0.3.0：競投＝剩餘秒數，最少 1 秒（0 秒唔准投）
+    if (payload.amount < 1 || payload.amount > max) throw new CmdError("W_BAD_SCHEMA", `競投秒數要 1–${max}`);
     return { kind: "bid", amount: payload.amount };
   }
   if (card.type === "vote") {
@@ -251,8 +252,9 @@ export function registerWs(app: FastifyInstance, store: Store, hub: Hub, env: En
         err(conn, hub, "W_FORBIDDEN_ROLE", "你已經唔喺名單");
         return;
       }
-      if (card.gameId === "draw" && card.voteMode === "players" && round.endsAt !== null && Date.now() >= round.endsAt) {
-        hub.send(conn, { type: "submit.result", roundId: msg.roundId, submissionId: msg.submissionId, status: "rejected", code: "W_ROUND_CLOSED", message: "投票時間已過" });
+      // P1-f：到期之後一律拒新提交（唔再靠 250ms tick；所有卡類都適用）
+      if (roundExpired(round.endsAt, Date.now())) {
+        hub.send(conn, { type: "submit.result", roundId: msg.roundId, submissionId: msg.submissionId, status: "rejected", code: "W_ROUND_CLOSED", message: "回合已收（時間到）" });
         return;
       }
       const existingById = store.state.submissions.find((s) => s.id === msg.submissionId);
@@ -287,6 +289,9 @@ export function registerWs(app: FastifyInstance, store: Store, hub: Hub, env: En
       let validated: { kind: Submission["kind"]; choice?: number; amount?: number; text?: string };
       try {
         validated = validateSubmission(card, msg.payload ?? ({} as SubmitPayload), store.state.settings.maxBid);
+        // P1-f：競投秒數唔可以多過剩餘秒數（+1 秒網絡誤差）
+        if (card.type === "bid" && !bidSecondsAllowed(validated.amount ?? 0, round.endsAt, Date.now()))
+          throw new CmdError("W_ROUND_CLOSED", "競投秒數大過而家剩餘嘅秒數（唔可以偷多幾秒）");
         if (card.type === "vote" && card.voteMode !== "works") {
           const targetId = validated.text ?? "";
           if (targetId === playerId) throw new CmdError("W_SELF_VOTE", "唔可以投自己");

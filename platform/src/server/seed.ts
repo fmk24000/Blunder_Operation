@@ -5,6 +5,8 @@ import type { Card, QuizQuestion, RundownItem, RuleBlock, RulePage } from "../sh
 import type { Mutation } from "./journal.js";
 
 export type QuizSeedFile = { version: number; source: string; questions: QuizQuestion[] };
+export type UndercoverTopic = { id: string; prompt: string; undercoverPrompt: string };
+export type UndercoverSeedFile = { version: number; source: string; topics: UndercoverTopic[] };
 export type RuleSeedFile = {
   version: number;
   source: string;
@@ -35,6 +37,11 @@ function readSeed<T>(appRoot: string, name: string): T {
 
 export function loadQuizSeed(appRoot: string): QuizQuestion[] {
   return readSeed<QuizSeedFile>(appRoot, "quiz.seed.json").questions;
+}
+
+/** v0.3.0：一圖多人 7 對題目（好人題＋臥底關鍵詞）；換題只改呢個檔 */
+export function loadUndercoverSeed(appRoot: string): UndercoverTopic[] {
+  return readSeed<UndercoverSeedFile>(appRoot, "undercover.seed.json").topics;
 }
 
 export function loadRulePagesSeed(appRoot: string, updatedBy = "seed"): RulePage[] {
@@ -76,12 +83,14 @@ export function questionToCard(q: QuizQuestion): Card {
       version: 1,
       state: "draft",
     };
+    if (q.imageUrl !== undefined) card.imageUrl = q.imageUrl;
     if (q.options) card.options = q.options;
     if (q.correct !== undefined) card.correct = q.correct;
     if (q.explanation !== undefined) card.explanation = q.explanation;
     if (q.referenceAnswer !== undefined) card.referenceAnswer = q.referenceAnswer;
     if (q.hint !== undefined) card.hint = q.hint;
     if (q.openKind !== undefined) card.openKind = q.openKind;
+    if (q.tolerance !== undefined) card.tolerance = q.tolerance;
     if (q.actualAnswer !== undefined) card.actualAnswer = q.actualAnswer;
     if ((q as QuizQuestion & { autoAnswer?: string }).autoAnswer) {
       card.autoAnswer = "minutes-to-midnight";
@@ -90,27 +99,61 @@ export function questionToCard(q: QuizQuestion): Card {
   }
 }
 
+/** v0.3.0：一圖多人題目卡（同一張卡帶好人題＋臥底題；臥底題永遠唔出 DTO） */
+export function undercoverTopicToCard(t: UndercoverTopic): Card {
+  return {
+    id: `uc_${t.id}`,
+    type: "open",
+    gameId: "draw",
+    prompt: t.prompt,
+    undercoverPrompt: t.undercoverPrompt,
+    seconds: null,
+    points: 0,
+    version: 1,
+    state: "draft",
+  };
+}
+
 export function quizQuestionsToCards(questions: QuizQuestion[]): Card[] {
   return questions.map((q) => questionToCard(q));
 }
 
 export const GAME_TITLES: Record<string, string> = {
+  draw: "一圖多人畫畫猜",
   auction: "拍賣時間估歌",
-  draw: "一圖多用畫畫猜人",
+  killer: "笨蛋殺手",
+  quiz: "問答環節",
   saboteur: "搗蛋鬼",
-  quiz: "問答",
 };
 
-export function defaultRundown(quizCardIds: string[]): RundownItem[] {
-  const games = ["draw", "auction", "saboteur", "quiz"];
+/** v0.3.0 預設 4 關次序：一圖多人 → 拍賣估歌 → 笨蛋殺手 → 問答 */
+export const DEFAULT_GAMES = ["draw", "auction", "killer", "quiz"];
+
+/** v0.3.0：預設 6 張拍賣卡（第 1–6 首），主持唔使逐首建卡 */
+export function defaultAuctionCards(): Card[] {
+  return Array.from({ length: 6 }, (_, i) => ({
+    id: `bid_s${i + 1}`,
+    type: "bid",
+    gameId: "auction",
+    prompt: `第 ${i + 1} 首・聽幾秒估歌名`,
+    maxBid: 10,
+    seconds: 10,
+    points: 1,
+    version: 1,
+    state: "draft",
+  }));
+}
+
+export function defaultRundown(quizCardIds: string[], drawCardIds: string[] = [], auctionCardIds: string[] = []): RundownItem[] {
+  const games = DEFAULT_GAMES;
   return games.map((gameId, i) => {
     const item: RundownItem = {
       id: `rd_${gameId}`,
       index: i,
       gameId,
       title: `第 ${i + 1} 關・${GAME_TITLES[gameId]}`,
-      state: i === 0 ? "todo" : "todo",
-      cardIds: gameId === "quiz" ? quizCardIds : [],
+      state: "todo",
+      cardIds: gameId === "quiz" ? quizCardIds : gameId === "draw" ? drawCardIds : gameId === "auction" ? auctionCardIds : [],
       rulesText: "",
     };
     return item;
@@ -127,14 +170,18 @@ export function bootstrapMutations(
 ): Mutation[] {
   const questions = loadQuizSeed(appRoot);
   const quizCards = quizQuestionsToCards(questions);
+  const ucCards = loadUndercoverSeed(appRoot).map(undercoverTopicToCard);
+  const auctionCards = defaultAuctionCards();
   const rulePages = loadRulePagesSeed(appRoot);
-  const rundown = defaultRundown(quizCards.map((c) => c.id));
+  const rundown = defaultRundown(quizCards.map((c) => c.id), ucCards.map((c) => c.id), auctionCards.map((c) => c.id));
   const ts = Date.now();
   return [
     { t: "room.init", d: { id: roomId, code, phase: "lobby", createdAt: ts } },
-    { t: "settings.set", d: { settings: { autoClose, maxBid: 100, pinHash, allowRepeatAwards: false } } },
+    { t: "settings.set", d: { settings: { autoClose, maxBid: 10, pinHash, allowRepeatAwards: false } } },
     { t: "rules.set", d: { rulePages } },
     { t: "quiz.set", d: { cards: quizCards } },
+    ...ucCards.map((card) => ({ t: "card.put", d: { card } })),
+    ...auctionCards.map((card) => ({ t: "card.put", d: { card } })),
     { t: "rundown.set", d: { rundown, currentItemId: null, phase: "lobby" } },
   ];
 }

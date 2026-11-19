@@ -5,6 +5,7 @@
 import type {
   Award,
   Card,
+  GameScoresView,
   Group,
   HostView,
   MediaPlayback,
@@ -21,15 +22,16 @@ import type {
   Submission,
   PlayerSelfView,
   DrawWork,
+  UndercoverMatchView,
 } from "../shared/types.js";
 import type { Store } from "./store.js";
 
 export type ConnStats = { hosts: number; stages: number; players: number; total: number };
 
 const AWARD_REASON: Record<Award["id"], string> = {
-  grand: "最高分",
-  second: "最接近中位數",
-  third: "最低分",
+  grand: "最高分獎",
+  second: "中庸之道獎",
+  third: "多謝參與獎",
 };
 
 function publicPlayer(p: Player): PublicPlayer {
@@ -182,6 +184,101 @@ function buildUndercover(store: Store): UndercoverView | null {
   };
 }
 
+/** v0.3.0 一圖多人：大mon／玩家見嘅公開投影（永遠冇 undercoverIds／臥底題） */
+function buildUndercoverMatchView(store: Store): UndercoverMatchView | null {
+  const st = store.state.room.gameState?.undercover ?? null;
+  if (!st) return null;
+  const card = st.promptCardId ? store.card(st.promptCardId) : undefined;
+  const eliminatedIdSet = new Set(st.eliminatedIds);
+  const eliminated = st.eliminatedIds.map((id) => {
+    const p = store.player(id);
+    return { id, name: p?.name ?? "?", number: p?.number ?? 0, wasUndercover: st.undercoverIds.includes(id) };
+  });
+  const remainingUndercover = st.undercoverIds.filter((id) => !eliminatedIdSet.has(id)).length;
+  const round = st.roundId ? store.round(st.roundId) : undefined;
+  const last = eliminated.length ? eliminated[eliminated.length - 1] : null;
+  return {
+    matchNo: st.matchNo,
+    questionNo: st.questionNo + 1,
+    totalQuestions: 3,
+    participantCount: st.participantIds.length,
+    remainingUndercover,
+    totalUndercover: st.undercoverIds.length,
+    eliminated,
+    promptRevealed: st.promptRevealed,
+    // 好人題先可以出；臥底題永遠唔准出 stage／player DTO
+    prompt: st.promptRevealed ? (card?.prompt ?? null) : null,
+    voting: round?.state === "open",
+    roundId: st.roundId,
+    endsAt: round?.state === "open" ? round.endsAt : null,
+    lastElimination: last ? { ...last } : null,
+    result: st.result,
+    settled: st.settled,
+  };
+}
+
+/** v0.3.0 message mode：大mon 大字（payload 由 command 寫入） */
+function buildMessage(store: Store): StageView["message"] {
+  const stage = store.state.room.stage;
+  if (stage.mode !== "message") return null;
+  const payload = stage.payload as Record<string, unknown>;
+  const rawLines = Array.isArray(payload.lines) ? payload.lines : typeof payload.text === "string" ? [payload.text] : [];
+  const lines = rawLines.filter((x): x is string => typeof x === "string" && x.length > 0).slice(0, 12);
+  const tone = payload.tone === "good" || payload.tone === "bad" ? payload.tone : "normal";
+  return {
+    title: typeof payload.title === "string" ? payload.title : undefined,
+    lines,
+    tone,
+  };
+}
+
+/** v0.3.0 game-scores：由 ledger 嘅 gameId 聚合（冇 gameId 嘅算「其他」） */
+const GAME_SCORE_TITLES: { gameId: string; title: string }[] = [
+  { gameId: "draw", title: "一圖多人" },
+  { gameId: "auction", title: "拍賣估歌" },
+  { gameId: "killer", title: "笨蛋殺手" },
+  { gameId: "quiz", title: "問答" },
+];
+
+function buildGameScores(store: Store): GameScoresView | null {
+  if (store.state.room.stage.mode !== "game-scores") return null;
+  const players = store.approvedPlayers().slice().sort((a, b) => a.number - b.number);
+  const idx = new Map(GAME_SCORE_TITLES.map((g, i) => [g.gameId, i]));
+  const rows = players.map((p) => ({
+    id: p.id,
+    name: p.name,
+    number: p.number,
+    avatar: p.avatar,
+    scores: GAME_SCORE_TITLES.map(() => 0),
+    other: 0,
+    total: 0,
+  }));
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  for (const e of store.state.ledger) {
+    if (e.voided) continue;
+    if (e.target.type !== "player") continue;
+    const row = byId.get(e.target.id);
+    if (!row) continue;
+    row.total += e.delta;
+    const i = e.gameId ? idx.get(e.gameId) : undefined;
+    if (i === undefined) row.other += e.delta;
+    else row.scores[i] = (row.scores[i] ?? 0) + e.delta;
+  }
+  return { games: GAME_SCORE_TITLES.map((g) => ({ ...g })), rows };
+}
+
+/** v0.3.0 一圖多人：玩家自己只知「有冇出局」＋賽果（唔准送身份） */
+function playerUndercoverMatch(store: Store, playerId: string): PlayerSelfView["undercoverMatch"] {
+  const st = store.state.room.gameState?.undercover ?? null;
+  if (!st || !st.participantIds.includes(playerId)) return null;
+  return {
+    matchNo: st.matchNo,
+    questionNo: st.questionNo + 1,
+    eliminated: st.eliminatedIds.includes(playerId),
+    result: st.result,
+  };
+}
+
 export function buildStageView(store: Store): StageView {
   const room = store.state.room;
   const stage = room.stage;
@@ -319,16 +416,38 @@ export function buildStageView(store: Store): StageView {
 
   if (stage.mode === "bid" && cur) {
     const { round, card } = cur;
+    const bidOrder = new Map(store.state.submissions.map((x, i) => [x.id, i]));
     const subs = store
       .submissionsForRound(round.id)
-      .filter((s) => s.confirmed && typeof s.amount === "number")
-      .sort((a, b) => a.ts - b.ts);
+      .filter((s) => s.confirmed && typeof s.amount === "number" && (s.amount ?? 0) >= 1)
+      .sort(
+        (a, b) =>
+          (a.amount ?? 0) - (b.amount ?? 0) ||
+          (bidOrder.get(b.id) ?? 0) - (bidOrder.get(a.id) ?? 0) ||
+          b.ts - a.ts,
+      );
     const closed = round.state !== "open";
-    const best = [...subs].sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0) || a.ts - b.ts)[0];
+    const best = subs[0];
     const winner = best ? store.player(best.playerId) : undefined;
-    // 規格澄清（2026-11-16，lead 拍板）：密封出價＝stage 揭曉前（任何 mode）都唔送個別金額；
-    // settle 之後只送得標者＋金額。StageView 係公開投影，唔可以「送咗但前端唔顯示」。
-    const settled = store.state.ledger.some((e) => e.roundId === round.id && e.gameId === "auction" && e.by === "host" && !e.voided);
+    // 規格澄清（2026-11-16，lead 拍板）：bid.publish 之前唔送個別秒數；
+    // publish 之後（round.auction 有值）大mon 要顯示完整排名（主播自己撳咗公佈）。
+    const settled =
+      !!round.auction ||
+      store.state.ledger.some((e) => e.roundId === round.id && e.gameId === "auction" && e.by === "host" && !e.voided);
+    const auction = round.auction;
+    const cursor = auction?.cursor ?? 0;
+    const ranking = (auction?.ranking ?? []).map((r, i) => {
+      const p = store.player(r.playerId);
+      return {
+        playerId: r.playerId,
+        name: p?.name ?? "?",
+        number: p?.number ?? 0,
+        seconds: r.seconds,
+        tried: i < cursor,
+        current: i === cursor && !auction?.finished,
+      };
+    });
+    const currentEntry = auction && !auction.finished ? auction.ranking[cursor] : undefined;
     bid = {
       roundId: round.id,
       cardId: card.id,
@@ -341,6 +460,10 @@ export function buildStageView(store: Store): StageView {
       settled,
       winnerName: settled ? winner?.name ?? null : null,
       winnerAmount: settled ? best?.amount ?? null : null,
+      ranking,
+      currentName: currentEntry ? (store.player(currentEntry.playerId)?.name ?? "?") : null,
+      currentSeconds: currentEntry ? currentEntry.seconds : null,
+      remaining: ranking.filter((r) => !r.tried).length,
     };
   }
 
@@ -441,6 +564,9 @@ export function buildStageView(store: Store): StageView {
     reveal,
     vote,
     undercover: buildUndercover(store),
+    undercoverMatch: buildUndercoverMatchView(store),
+    message: buildMessage(store),
+    gameScores: buildGameScores(store),
     bid,
     drawWall,
     song,
@@ -472,7 +598,14 @@ function playerReveal(store: Store, round: Round | undefined, card: Card | undef
   if (sub) {
     if (sub.judged) myResult = sub.judged.correct ? "correct" : "wrong";
     else if (card.type === "choice" && typeof card.correct === "number") myResult = sub.choice === card.correct ? "correct" : "wrong";
-    else myResult = "unjudged";
+    else {
+      // P1-e：數字開放題自動容差評分之後，手機要見到「中／唔中」（唔好永遠「主持評分中」）
+      const actual = round.actualAnswer ?? card.actualAnswer;
+      const tol = card.tolerance;
+      if (card.type === "open" && typeof tol === "number" && typeof sub.amount === "number" && typeof actual === "number")
+        myResult = Math.abs(sub.amount - actual) <= tol ? "correct" : "wrong";
+      else myResult = "unjudged";
+    }
   }
   return {
     roundId: round.id,
@@ -606,6 +739,7 @@ export function buildPlayerView(store: Store, playerId: string): PlayerSelfView 
       : null,
     reveal,
     roleInfo,
+    undercoverMatch: playerUndercoverMatch(store, playerId),
     finale,
     toast: toast ? toast.text : null,
   };
@@ -674,5 +808,7 @@ export function buildHostView(store: Store, hostId: string, hostName: string, co
       createdAt: a.createdAt,
     })),
     saboteurState: room.gameState?.saboteur ? JSON.parse(JSON.stringify(room.gameState.saboteur)) : null,
+    undercoverMatch: room.gameState?.undercover ? JSON.parse(JSON.stringify(room.gameState.undercover)) : null,
+    killerState: room.gameState?.killer ? JSON.parse(JSON.stringify(room.gameState.killer)) : null,
   } as HostView;
 }
