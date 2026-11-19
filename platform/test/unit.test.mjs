@@ -1700,7 +1700,7 @@ test("一圖多人計分：好人勝 → 好人 +1、留到最後 +2（疊加）
   const sv = buildStageView(store);
   assert.equal(sv.stage.mode, "message");
   assert.match(sv.message.title, /第 1 局結算/);
-  const ev = store.state.ledger.filter((e) => e.matchId === "uc_m1");
+  const ev = store.state.ledger.filter((e) => e.matchId === store.state.room.gameState.undercover.matchUid);
   assert.ok(ev.every((e) => e.gameId === "draw"));
   assert.ok(ev.some((e) => e.reason === "一圖多人・好人勝"));
   assert.ok(ev.some((e) => e.reason === "一圖多人・留到最後"));
@@ -1736,9 +1736,11 @@ test("uc.match.settle：冪等（重複撳唔會重複加分）", () => {
   const first = run(store, "uc.match.settle");
   assert.equal(first.result.settled, true);
   const snapshot = store.state.ledger.length;
+  const matchUid = store.state.room.gameState.undercover.matchUid;
+  assert.ok(matchUid, "每局要有唯一 matchUid（v0.4.1 去重鍵）");
   const second = run(store, "uc.match.settle");
   assert.equal(second.result.already, true);
-  assert.equal(store.state.ledger.filter((e) => !e.voided && e.matchId === "uc_m1").length, snapshot);
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.matchId === matchUid).length, snapshot);
   assert.throws(() => run(store, "uc.eliminate", { playerId: store.state.room.gameState.undercover.participantIds[0] }), isCmdError("W_ALREADY_STATE"));
 });
 
@@ -2975,50 +2977,48 @@ test("v04-D・quiz.open：仲有回合未完成／唔係 playing phase 會清楚
   run(store, "room.start");
   store.commit([{ t: "card.update", d: { cardId: "q1", patch: { state: "open" } } }]);
   store.commit([{ t: "card.update", d: { cardId: "q2", patch: { state: "open" } } }]);
-  // 收咗卷（closed）嘅回合：真係要先 reveal，換題一律報錯（open 嘅回合係「返去答題畫面」，見下一條 test）
+  // 收咗卷（closed）但未揭曉：指定同一題再開 → 清楚報錯（要先 reveal／重設）
   const round = { id: "q1#1", cardId: "q1", cardVersion: 1, endsAt: null, closedAt: Date.now(), state: "closed", eligiblePlayerIds: [] };
   store.commit([{ t: "round.put", d: { round, currentRoundId: round.id } }]);
-  assert.throws(() => run(store, "quiz.open", {}, "q2"), isCmdError("W_ALREADY_STATE", /未完成/));
+  assert.throws(() => run(store, "quiz.open", {}, "q1"), isCmdError("W_ALREADY_STATE", /收咗卷|揭曉/));
   assert.equal(store.currentRound().id, "q1#1", "被拒之後 currentRound 唔可以變");
+  // 指定「另一題」→ 舊題作廢（唔派分）＋開新題，主持唔會卡死
+  const switched = run(store, "quiz.open", {}, "q2");
+  assert.equal(switched.ok, true);
+  assert.equal(store.round("q1#1").state, "void", "未揭曉嘅舊題作廢");
+  assert.equal(store.currentRound().cardId, "q2");
 });
 
-test("v04-D・P1-1：開卷中跳去別題再撳「開始 30 秒作答」→ 返去開緊嗰個 round（唔會卡死）", () => {
+test("v04-D・P1-1：開卷中跳去別題再撳「開始 30 秒作答」→ 舊題作廢、開新題（唔會卡死）", () => {
   const { store } = makeStore("d-quiz-open-return");
   addPlayers(store, 2);
   run(store, "room.start");
   putQuizCards(store, 4);
   run(store, "quiz.open"); // q1 開卷
   const openRoundId = store.currentRound().id;
-  const roundCount = store.state.room.rounds.length;
   assert.equal(store.card("q1").state, "open");
 
-  // 主持開卷中撳「出題目」睇 q3（大mon 轉咗 show q3，手機仲答緊 q1）
+  // 主持開卷中撳「出題目」睇 q3：q1 要即刻收卷（手機唔可以再答上一題）
   run(store, "quiz.show", {}, "q3");
   assert.equal(store.state.room.stage.payload.cardId, "q3");
+  assert.equal(store.round(openRoundId).state, "closed", "跳題要收卷");
+  assert.equal(store.card("q1").state, "closed");
 
-  // 再撳「開始 30 秒作答」（client 會帶大mon 嗰張卡＝q3）→ 唔准 throw
+  // 再撳「開始 30 秒作答」（client 會帶大mon 嗰張卡＝q3）→ 唔准 throw，要開到 q3
   const res = run(store, "quiz.open");
   assert.equal(res.ok, true, "開卷中撳『開始作答』唔可以 throw（主持會卡死）");
-  assert.equal(store.currentRound().id, openRoundId, "currentRound 冇變");
-  assert.equal(store.state.room.rounds.length, roundCount, "唔會開多個 round");
-  assert.equal(store.card("q3").state, "draft", "唔會偷偷開別題");
-  assert.equal(store.state.room.stage.payload.roundId, openRoundId, "大mon 要返去開緊嗰個 round");
-  assert.equal(store.state.room.stage.payload.cardId, "q1");
-  assert.notEqual(store.state.room.stage.payload.showOptions, false, "返答題畫面（要有選項＋倒數）");
-  assert.equal(res.result.alreadyOpen, true);
-  assert.equal(res.result.returnedTo, "q1");
+  assert.equal(store.round(openRoundId).state, "void", "未揭曉嘅舊題要作廢（唔派分）");
+  assert.equal(store.currentRound().cardId, "q3", "要開大mon 而家 show 緊嗰題");
+  assert.equal(store.card("q3").state, "open");
+  assert.notEqual(store.state.room.stage.payload.showOptions, false, "要有選項＋倒數");
+  // 作廢唔會派分
+  assert.equal(store.state.ledger.filter((e) => e.roundId === openRoundId && !e.voided).length, 0);
 
-  // 明確 targetId 指定另一張卡（例如主持用 dropdown 跳完再撳）→ 一樣返去開緊嗰題
-  run(store, "quiz.show", {}, "q4");
-  const res2 = run(store, "quiz.open", {}, "q4");
-  assert.equal(res2.ok, true);
-  assert.equal(store.currentRound().id, openRoundId);
-  assert.equal(store.state.room.stage.payload.cardId, "q1");
-  assert.equal(store.card("q4").state, "draft");
-
-  // round 過時變 closed（真係要先 reveal）→ 呢個時候換題照舊清楚報錯
-  store.commit([{ t: "round.update", d: { roundId: openRoundId, patch: { state: "closed" } } }]);
-  assert.throws(() => run(store, "quiz.open", {}, "q4"), isCmdError("W_ALREADY_STATE", /未完成/));
+  // 同一題已收卷未揭曉 → 再撳「開始作答」要清楚報錯，唔好靜靜開多個 round
+  run(store, "card.close");
+  const before = store.state.room.rounds.length;
+  assert.throws(() => run(store, "quiz.open", {}, "q3"), isCmdError("W_ALREADY_STATE", /收咗卷|揭曉/));
+  assert.equal(store.state.room.rounds.length, before, "唔可以開多個 round");
 });
 
 test("v04-D・quiz.reset：13 張 quiz 卡返 draft、currentRoundId 清空、其他關卡唔受影響", () => {
@@ -3181,4 +3181,103 @@ test("I5：舊 undercover.start 喺本局已結算時要清楚報錯（唔好開
   store.commit([{ t: "game.set", d: { gameState: { undercover: st } } }]);
   assert.throws(() => run(store, "undercover.start", { durationSeconds: 10 }), isCmdError("W_ALREADY_STATE", /已結算/));
   assert.ok(!store.currentRound(), "唔可以靜靜開一個孤兒 round");
+});
+
+/* ───────── v0.4.1 整合第二輪修正（codex audit INT 嘅 findings） ───────── */
+
+/** 直接淘汰晒所有臥底再結算（唔使模擬 3 題投票流程，專測計分去重） */
+function forceSettleGood(store) {
+  const st = JSON.parse(JSON.stringify(store.state.room.gameState.undercover));
+  st.eliminatedIds = [...st.undercoverIds];
+  store.commit([{ t: "game.set", d: { gameState: { undercover: st } } }]);
+  return run(store, "uc.match.settle");
+}
+
+test("J1：重設流程 → 再開一局 → 再結算，分數要照派（唔會同上一局撞 id 而漏分）", () => {
+  const { store } = ucSetup("j1-reset-resettle", 6);
+  run(store, "uc.match.start");
+  const first = forceSettleGood(store);
+  assert.equal(first.ok, true);
+  const after1 = store.state.ledger.filter((e) => e.gameId === "draw" && !e.voided).length;
+  assert.ok(after1 >= 4, `第一局要有分（實際 ${after1}）`);
+
+  run(store, "rundown.reset");
+  run(store, "uc.match.start");
+  const second = forceSettleGood(store);
+  assert.equal(second.ok, true);
+  const after2 = store.state.ledger.filter((e) => e.gameId === "draw" && !e.voided).length;
+  assert.equal(after2 - after1, after1, `第二局要再派同樣數量嘅分（${after1} → ${after2}）`);
+
+  // 同一局重複結算仍然要冪等
+  const again = run(store, "uc.match.settle");
+  assert.equal(again.ok, true);
+  const after3 = store.state.ledger.filter((e) => e.gameId === "draw" && !e.voided).length;
+  assert.equal(after3, after2, "同一局重複結算唔可以再加分");
+});
+
+test("J2：quiz.show 跳題時，場上開緊嘅 quiz round 要先收卷（手機唔可以再答上一題）", () => {
+  const { store } = makeStore("j2-show-closes");
+  const players = addPlayers(store, 3);
+  run(store, "room.start");
+  putQuizCards(store, 3);
+  run(store, "quiz.show", undefined, "q1");
+  const opened = run(store, "quiz.open", undefined, "q1");
+  assert.equal(opened.ok, true);
+  const roundId = store.state.room.currentRoundId;
+  assert.ok(roundId, "要有開住嘅 round");
+
+  const show2 = run(store, "quiz.show", undefined, "q2");
+  assert.equal(show2.ok, true);
+  const round = store.round(roundId);
+  assert.equal(round.state, "closed", "跳題要順手收卷（唔評分）");
+  assert.equal(store.state.room.currentRoundId, roundId, "currentRound 唔變（分佈／答案仲用返呢個 round）");
+  assert.equal(store.state.room.stage.mode, "question");
+  assert.equal(store.state.room.stage.payload.showOptions, false);
+  // 手機唔應該再有 task
+  const pv = buildPlayerView(store, players[0].id);
+  assert.ok(!pv.task, `手機唔可以再見上一題選項：${JSON.stringify(pv.task)}`);
+});
+
+test("J3：quiz.show 遇到非問答回合（競投／投票）要清楚報錯，唔好偷走人哋回合", () => {
+  const { store } = makeStore("j3-show-bid-guard");
+  addPlayers(store, 3);
+  run(store, "room.start");
+  putQuizCards(store, 2);
+  putCard(store, { id: "bid_x", type: "bid", gameId: "auction", prompt: "聽幾秒估歌名", maxBid: 10, state: "draft" });
+  run(store, "card.open", {}, "bid_x");
+  assert.throws(() => run(store, "quiz.show", undefined, "q1"), isCmdError("W_ALREADY_STATE", /競投|投票/));
+});
+
+test("J4：quiz.reset 清走 Q13 類型嘅即場答案，但保留 Q12 固定參考答案／容差", () => {
+  const { store } = makeStore("j4-reset-actual");
+  addPlayers(store, 3);
+  run(store, "room.start");
+  putQuizCards(store, 2);
+  // 模擬主持入過 Q13 真實答案（動態）＋ Q12 固定 40 尺 ±2
+  run(store, "card.update", { patch: { actualAnswer: 37 } }, "q2");
+  run(store, "card.update", { patch: { referenceAnswer: 40, tolerance: 2 } }, "q1");
+  assert.equal(store.card("q2").actualAnswer, 37, "先要有動態答案");
+  const reset = run(store, "quiz.reset");
+  assert.equal(reset.ok, true);
+  assert.equal(store.card("q2").actualAnswer, undefined, "重設要清走即場答案（唔好攞上一局個數評分）");
+  assert.equal(store.card("q1").referenceAnswer, 40, "固定參考答案要保留");
+  assert.equal(store.card("q1").tolerance, 2, "容差要保留");
+});
+
+test("J5：quiz.show 冇指定題目（撳「出題目」掣）而家答緊題 → 擋住，唔會誤收卷", () => {
+  const { store } = makeStore("j5-show-noarg-guard");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  putQuizCards(store, 3);
+  const opened = run(store, "quiz.open", {}, "q1");
+  assert.equal(opened.ok, true);
+  const rid = store.state.room.currentRoundId;
+  assert.throws(() => run(store, "quiz.show"), isCmdError("W_ALREADY_STATE", /答緊題|dropdown/));
+  assert.equal(store.round(rid).state, "open", "唔可以靜靜收卷");
+  assert.equal(store.state.room.stage.payload.cardId, "q1");
+  // 明確揀題（dropdown）就照舊可以跳，並會先收卷（唔評分）
+  const jump = run(store, "quiz.show", {}, "q3");
+  assert.equal(jump.ok, true);
+  assert.equal(store.round(rid).state, "closed");
+  assert.equal(store.state.room.stage.payload.cardId, "q3");
 });

@@ -276,8 +276,10 @@ export type Room = {
 
 /** v0.3.0：一圖多人（畫畫臥底）一整局狀態（最多 3 題、2 個臥底） */
 export type UndercoverMatchState = {
-  /** 第幾局（1,2,3…） */
+  /** 第幾局（1,2,3…；顯示用；重設流程之後會再由 1 開始） */
   matchNo: number;
+  /** v0.4.1：永久唯一局 id（計分去重鍵）。舊 journal 冇呢個欄位就 fallback 去 uc_m<matchNo>。 */
+  matchUid?: string;
   /** 開局時 approved 快照 */
   participantIds: string[];
   /** 2 個（可以重抽）；只可以出 HostView */

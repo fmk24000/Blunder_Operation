@@ -523,7 +523,21 @@ function startLive() {
 /* ───────────── 各 section ───────────── */
 /* v04-D：問答進度（卡 state ＋ currentRound 計「出咗幾題／下一題／當前」） */
 function quizProgress(v) {
-    const quiz = v?.quiz ?? [];
+    // v0.4.1（codex audit INT）：同 server quizOrder() 用同一個次序（rundown 嘅 quiz item cardIds），
+    // 否則主持 reorder 過之後，panel 講「下一題 Q3」同 server 實際出嗰題會唔同。
+    const rawQuiz = v?.quiz ?? [];
+    const quizItem = (v?.rundown ?? []).find((i) => i.gameId === "quiz");
+    const order = quizItem?.cardIds ?? [];
+    const ordered = [];
+    for (const id of order) {
+        const c = rawQuiz.find((x) => x.id === id);
+        if (c && !ordered.some((x) => x.id === c.id))
+            ordered.push(c);
+    }
+    for (const c of rawQuiz)
+        if (!ordered.some((x) => x.id === c.id))
+            ordered.push(c);
+    const quiz = ordered;
     const cur = v?.currentRound ?? null;
     const curIdx = cur ? quiz.findIndex((q) => q.id === cur.cardId) : -1;
     const shown = quiz.filter((q) => q.state !== "draft").length;
@@ -607,7 +621,7 @@ function controlSection(v) {
         <div class="mg-label">問答真流程（會真正收卷／評分）</div>
         ${quizProgressLine(v)}
         <div class="btn-row">
-          <button class="primary" data-act="quiz.show">出題目（只上大mon・唔倒數）</button>
+          <button class="primary" data-act="quiz.show" ${v.currentRound?.state === "open" ? "disabled" : ""} title="${v.currentRound?.state === "open" ? "而家答緊題：先公佈答案，或者用題庫 dropdown 揀題" : "只喺大mon 出題目（唔開卷）"}">出題目（只上大mon・唔倒數）</button>
           <button class="primary" data-act="quiz.open">開始 30 秒作答</button>
         </div>
         <div class="btn-row">
@@ -759,13 +773,14 @@ function undercoverMatchPanel(v) {
     const undercoverList = (st.undercoverIds ?? []).map((id) => `<span class="pill hot">${label(id)}</span>`).join("") || "—";
     // 候選＝未出局參賽者（已出局唔可以再被投）
     const candidates = (st.participantIds ?? []).filter((id) => !st.eliminatedIds.includes(id));
+    const questionDone = Object.values(st.eliminatedByQuestion ?? {}).some((q) => q === st.questionNo);
     // FIX-8：勝負未定唔准結算（同 server 前置檢查一致）
-    const canSettle = remaining === 0 || st.result === "good" || st.questionNo >= 2;
+    // v0.4.1（codex audit INT）：第三題都要 foul 咗一個先准結算，否則粒掣撳完必然 W_WRONG_PHASE
+    const canSettle = remaining === 0 || st.result === "good" || (st.questionNo >= 2 && questionDone);
     // 票數／票軌／進度：全部嚟自 host view（唔自己計）
     const u = v.undercover;
     const voting = !st.settled && u?.phase === "voting";
     const revealed = !st.settled && u?.phase === "result";
-    const questionDone = Object.values(st.eliminatedByQuestion ?? {}).some((q) => q === st.questionNo);
     const counts = revealed ? [...(u.candidates ?? [])].sort((a, b) => b.count - a.count) : [];
     const topCount = counts.length ? Math.max(...counts.map((c) => c.count)) : 0;
     const topCandidates = topCount > 0 ? counts.filter((c) => c.count === topCount) : [];

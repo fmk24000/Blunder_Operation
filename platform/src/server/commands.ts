@@ -988,7 +988,9 @@ function ucEliminateOne(ctx: Ctx, targetId: string): { targetId: string; wasUnde
  *  冪等：matchId 去重 ＋ settled 擋，重複撳唔會再加。 */
 function settleUndercoverMatch(ctx: Ctx, st: UcMatch, result: "good" | "undercover"): { added: number; result: "good" | "undercover" } {
   const store = ctx.store;
-  const matchId = `uc_m${st.matchNo}`;
+  // v0.4.1（codex audit INT）：用永久唯一 matchUid。以前用 uc_m<matchNo>，rundown.reset 之後
+  // 新局又係 matchNo=1，會被當成上一局重複而漏派分（實測 8 筆變 2 筆）。
+  const matchId = st.matchUid ?? `uc_m${st.matchNo}`;
   st.result = result;
   st.settled = true;
   const already = new Set(
@@ -1475,6 +1477,25 @@ export function executeCommand(
     /* ── v04-D：問答流程 ── */
     case "quiz.show": {
       // 只出題目：大mon 出題目文字（唔出選項、唔倒數、唔開 round）；手機維持等主持
+      // v0.4.1（codex audit INT）：如果場上仲有 quiz round 開緊，主持跳去下一題時一定要先收卷，
+      // 否則手機會繼續顯示上一題嘅選項（仲答得），同「等主持開始作答」相反。
+      const liveQuizRound = store.currentRound();
+      const explicitShow = Boolean(cmd.targetId ?? optStr(p, "cardId"));
+      if (liveQuizRound && liveQuizRound.state === "open") {
+        const liveCard = store.card(liveQuizRound.cardId);
+        // 冇指定題目（＝撳「出題目」掣）而家答緊：擋住，避免主持誤撳跳題令手機答緊嗰題被收卷。
+        // 要換題請用 dropdown 明確揀（嗰個係有意識嘅操作），或者先「公佈答案」。
+        if (liveCard && liveCard.gameId === "quiz" && !explicitShow) {
+          throw new CmdError("W_ALREADY_STATE", "而家答緊題：先撳「公佈答案」，或者用 dropdown 揀題再跳");
+        }
+        if (liveCard && liveCard.gameId === "quiz") {
+          push(ctx, { t: "round.update", d: { roundId: liveQuizRound.id, patch: { state: "closed", closedAt: Date.now() } } });
+          push(ctx, { t: "card.update", d: { cardId: liveCard.id, patch: { state: "closed" } } });
+          toast(ctx, "上一題已收卷（未評分）");
+        } else {
+          throw new CmdError("W_ALREADY_STATE", "而家有其他回合（競投／投票）進行緊：先完成或者 void 佢，再出問答題目");
+        }
+      }
       const cardId = cmd.targetId ?? optStr(p, "cardId");
       const card = cardId ? quizCardOrThrow(store, cardId) : nextDraftQuizCard(store);
       if (!card)
@@ -1524,8 +1545,17 @@ export function executeCommand(
       const card = pickedCard ?? nextDraftQuizCard(store);
       if (!card) throw new CmdError("W_ALREADY_STATE", "冇未出嘅題：先撳「重設問答」再玩，或者用 dropdown 揀返任何一題");
       // 收咗卷／分佈中嘅回合真係要先揭曉（呢個時候唔可以靜靜換畫面）
-      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
-        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成：先撳「公佈答案」或者「重設問答」");
+      if (openRound && openRound.state === "open")
+        throw new CmdError("W_ALREADY_STATE", "上一題仲開緊（未收卷）：先撳「公佈分佈／公佈答案」，或者用「重設問答」");
+      if (openRound && (openRound.state === "closed" || openRound.state === "tally")) {
+        // v0.4.1（codex audit INT + Team D P1）：主持跳去另一題再撳「開始作答」——
+        // 舊嗰題已收卷但未揭曉：作廢佢（唔派分），然後開新一題，避免主持卡死。
+        if (openRound.cardId === card.id)
+          throw new CmdError("W_ALREADY_STATE", "呢題已經收咗卷（未揭曉）：撳「公佈答案」評分，或者「重設問答」再玩");
+        push(ctx, { t: "round.update", d: { roundId: openRound.id, patch: { state: "void" } } });
+        push(ctx, { t: "round.current", d: { currentRoundId: null } });
+        toast(ctx, "上一題未揭曉：已作廢（未派分）");
+      }
       if (card.state === "revealed")
         throw new CmdError("W_ALREADY_STATE", "呢題已經揭曉：要重玩請撳「重設問答」，或者用 dropdown 跳去任何一題只出題目");
       const round = openCardRound(ctx, card);
@@ -1540,7 +1570,14 @@ export function executeCommand(
       const ids = new Set(cards.map((c) => c.id));
       if (!cards.length) throw new CmdError("W_ALREADY_STATE", "題庫係空：冇問答題可以重設");
       // 1) 全部 quiz 卡返 draft（version +1）
-      const reset = cards.map((c) => ({ ...c, state: "draft" as const, version: c.version + 1 }));
+      // v0.4.1（codex audit INT）：Q13 嘅 actualAnswer 係「每次玩主持即場入」嘅動態答案，
+      // 重設再玩一定要清走，否則未入新答案就揭曉會用上一局個數去評分。
+      const clearDynamic = p.keepActualAnswer !== true;
+      const reset = cards.map((c) => {
+        const next = { ...c, state: "draft" as const, version: c.version + 1 };
+        if (clearDynamic && next.actualAnswer !== undefined) delete next.actualAnswer;
+        return next;
+      });
       push(ctx, { t: "quiz.set", d: { cards: reset } });
       // 2) void 未完成嘅 quiz round，並清 currentRoundId（只准 quiz 卡嘅 round）
       const voidRounds = room.rounds.filter(
@@ -1846,6 +1883,7 @@ export function executeCommand(
       const undercoverIds = shuffled(participants.map((x) => x.id)).slice(0, ucCount);
       const st: UcMatch = {
         matchNo,
+        matchUid: newId("ucm"),
         participantIds: participants.map((x) => x.id),
         undercoverIds,
         eliminatedIds: [],

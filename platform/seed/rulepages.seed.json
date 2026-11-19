@@ -1,6 +1,6 @@
 {
   "version": 3,
-  "source": "2026-11-19 v0.4：逐條對住 design/26party.xlsx（FLOW.md）重寫四頁規則（一圖多人畫畫猜／拍賣時間估歌／笨蛋殺手／問答環節），粵語口語、主持台上照讀；每頁每個 block ≤120 字、全頁一屏放得落。",
+  "source": "2026-11-19 v0.4：逐條對壽星 FLOW 重寫（killer 以大mon 原句為準，冇加 FLOW 以外嘅投票步驟）",
   "pages": [
     {
       "id": "rule-draw",
@@ -29,7 +29,11 @@
         },
         {
           "type": "score-table",
-          "items": ["好人贏：全部好人 +1", "臥底贏：全部臥底 +1", "最後未被 foul：每人 +2"]
+          "items": [
+            "好人贏：全部好人 +1",
+            "臥底贏：全部臥底 +1",
+            "最後未被 foul：每人 +2"
+          ]
         }
       ]
     },
@@ -42,7 +46,10 @@
       "enabled": true,
       "autoAdvanceSeconds": 0,
       "blocks": [
-        { "type": "heading", "text": "玩法" },
+        {
+          "type": "heading",
+          "text": "玩法"
+        },
         {
           "type": "steps",
           "items": [
@@ -58,7 +65,13 @@
             "估中 +1；估唔到踩「你投嘅秒數 ×2」指壓板，跟住到下一位（播歌位置不變）"
           ]
         },
-        { "type": "score-table", "items": ["估中：+1 分", "估唔到：0 分，去踩指壓板"] }
+        {
+          "type": "score-table",
+          "items": [
+            "估中：+1 分",
+            "估唔到：0 分，去踩指壓板"
+          ]
+        }
       ]
     },
     {
@@ -70,14 +83,17 @@
       "enabled": true,
       "autoAdvanceSeconds": 0,
       "blocks": [
-        { "type": "heading", "text": "玩法" },
+        {
+          "type": "heading",
+          "text": "玩法"
+        },
         {
           "type": "steps",
           "items": [
             "主持抽一個老闆＋一個殺手（可以重抽），身份用紙派",
             "老闆同殺手用指定接頭動作互相確認",
             "殺手只有 3 粒子彈，要殺兩個人",
-            "其他人靠推理，最後全體投票捉殺手"
+            "殺手用完子彈／殺夠人之後，主持揭曉身份、判輸贏"
           ]
         },
         {
@@ -96,7 +112,10 @@
       "enabled": true,
       "autoAdvanceSeconds": 0,
       "blocks": [
-        { "type": "heading", "text": "玩法" },
+        {
+          "type": "heading",
+          "text": "玩法"
+        },
         {
           "type": "steps",
           "items": [
@@ -109,7 +128,11 @@
         },
         {
           "type": "score-table",
-          "items": ["MC 答對：+1 分", "Q12 一匹布：±2 尺內都當答對（2 分）", "Q13：主持入真實答案，完全答中 +2"]
+          "items": [
+            "MC 答對：+1 分",
+            "Q12 一匹布：±2 尺內都當答對（2 分）",
+            "Q13：主持入真實答案，完全答中 +2"
+          ]
         }
       ]
     }
