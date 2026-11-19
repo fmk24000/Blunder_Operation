@@ -55,11 +55,21 @@
 - 每頁一屏放得落（1920×1080），加 test 鎖住字數／block type 白名單／一屏高度。
 - 對照表：`platform/docs/RULES-v0.4.md`。
 
+### 其他（codex audit 第二輪修嘅嘢）
+- **一圖多人局加永久唯一 `matchUid`**：以前用 `uc_m<局數>` 做計分去重，重設流程之後新局又係第 1 局，
+  會被當成上一局重複而**漏派分**。而家用 matchUid，重設再玩照派分；舊 journal 自動 fallback。
+- **問答跳題唔會再偷偷留住上一題**：`quiz.show` 遇到仲開緊嘅 quiz round 會先收卷（唔評分）；
+  撳「出題目」掣而家答緊題會擋住並叫主持用 dropdown 明確揀或者先公佈答案（避免誤收卷）。
+- **重設問答會清走 Q13 即場答案**（保留 Q12 固定參考答案／±2 尺容差），唔會用上一局個數評分。
+- 主持台「分數結算」掣要第三題都 foul 咗先開得（同 server 前置一致）；
+  題目監控嘅「下一題 Q幾」跟返 server 次序（rundown cardIds）。
+- 笨蛋殺手規則頁去掉 FLOW 冇嘅「全體投票」，改寫「用完子彈／殺夠人之後主持揭曉判輸贏」。
+
 ### 其他
 - 資產版本 `?v=20261120a`（強制大mon／主持台／手機重新下載新 JS）。
-- Tests **116 → 149**（新增 33 條：Team A 9、Team B 6、Team C 1、Team D 12、整合修正 5）。
-- 驗收：`node --test` 149/149、E2E 59/59（真 command＋真 WS 投票＋真 30 秒回合），
-  host／stage／play 真 browser 截圖。
+- Tests **116 → 154**（新增 38 條：Team A 9、Team B 6、Team C 1、Team D 12、整合／audit 修正 10）。
+- 驗收：`node --test` 154/154、E2E 59/59（真 command＋真 WS 投票＋真 30 秒回合），
+  host／stage 真 browser 截圖。
 
 ## v0.3.3 — 2026-11-19
 

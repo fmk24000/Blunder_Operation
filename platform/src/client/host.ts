@@ -583,6 +583,18 @@ function quizProgressLine(v: any): string {
 
 function controlSection(v: any): string {
   const rd = v.rundown ?? [];
+  const quizInfo = quizProgress(v);
+  // codex audit INT2 P2：跳題之後大mon 可能 show 緊新題，但「分佈／答案」仍然係對現時 round。
+  // 明確講返俾主持知呢三個掣而家係對邊一題。
+  const curRoundQ = quizInfo.cur && quizInfo.curIdx >= 0 ? `Q${quizInfo.curIdx + 1}` : "";
+  const stageQ = v.stage?.payload?.cardId ? quizInfo.quiz.findIndex((q: any) => q.id === v.stage.payload.cardId) : -1;
+  const stageQTxt = stageQ >= 0 ? `Q${stageQ + 1}` : "";
+  const roundHint =
+    curRoundQ && stageQTxt && curRoundQ !== stageQTxt
+      ? `大mon 而家 show 緊 ${stageQTxt}；「收卷／分佈／答案」係對現時 round ${curRoundQ}（撳「開始作答」開新題會先作廢 ${curRoundQ}，唔會派分）。`
+      : curRoundQ
+        ? `「收卷／分佈／答案」係對現時 round ${curRoundQ}。`
+        : "";
   const cur = rd.find((i: any) => i.id === v.currentItemId);
   const curIdx = cur ? rd.findIndex((i: any) => i.id === cur.id) : -1;
   const nxt = rd[curIdx + 1] ?? rd.find((i: any) => i.state !== "done" && i.state !== "skipped");
@@ -655,6 +667,7 @@ function controlSection(v: any): string {
           <button data-act="quiz.reset">重設問答（可以再玩）</button>
         </div>
         <div class="hint">「出題目」只喺大mon 出題目文字（唔出選項、唔倒數、手機唔變）；你讀完題目先撳「開始 30 秒作答」，大mon＋手機才會一齊出選項同倒數。全部出完可以撳「重設問答」再玩。</div>
+        ${roundHint ? `<div class="hint" style="color:var(--ink)"><b>${esc(roundHint)}</b></div>` : ""}
       </div>
       <div class="mode-groups">
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
