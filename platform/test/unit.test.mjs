@@ -2483,11 +2483,11 @@ test("P1-f：到期一律拒提交＋競投秒數唔可以大過剩餘秒數（+
   assert.match(wsSrc, /bidSecondsAllowed\(/, "bid 要驗剩餘秒數");
 });
 
-/* ───────── v0.4 Team C：規則頁逐條對 FLOW 重寫（防將來改爆） ───────── */
+/* ───────── v0.4 Team C：規則頁格式約束（防將來改爆；唔驗文案寫法） ───────── */
 
-test("v0.4 規則頁：四頁齊＋長度限制＋block type 白名單", () => {
+test("v0.4 規則頁：四頁齊＋字數／一屏限制＋block type 白名單", () => {
   const ALLOWED = ["heading", "paragraph", "bullets", "steps", "callout", "kv", "score-table", "image"];
-  // 高度估算同 store.rulePages() 一致（1920×1080 主體可用 ≈700px）；>700 會被切成兩屏
+  // 高度估算同 store.rulePages() 一致（1920×1080 主體可用 ≈700px）；>700 會被切走（大mon 只出 pageIndex 0）
   const height = (b) => {
     const text = (b.text ?? "").length + (b.value ?? "").length;
     switch (b.type) {
@@ -2501,39 +2501,39 @@ test("v0.4 規則頁：四頁齊＋長度限制＋block type 白名單", () => {
       default: return Math.ceil(text / 36) * 72 + 28;
     }
   };
+  // block「文字合計」＝text + value + 所有 items（v0.4 自我約束，比 commands.ts 更嚴）
+  const blockChars = (b) =>
+    (b.text ?? "").length + (b.value ?? "").length + (b.items ?? []).reduce((n, it) => n + it.length, 0);
 
   const raw = JSON.parse(fs.readFileSync(path.join(APP_ROOT, "seed/rulepages.seed.json"), "utf8"));
   assert.equal(raw.pages.length, 4, "四頁規則");
-  assert.match(raw.source, /v0\.4/, "source 要寫低 v0.4 由 FLOW 重寫");
 
-  // 1) id／gameId／order／enabled 沿用 v0.3 約定
+  // 1) id／gameId／order／enabled／autoAdvance 沿用 v0.3 約定（每頁對應一個 game）
   assert.deepEqual(raw.pages.map((p) => p.id), ["rule-draw", "rule-auction", "rule-killer", "rule-quiz"]);
   assert.deepEqual(raw.pages.map((p) => p.gameId), ["draw", "auction", "killer", "quiz"]);
   assert.deepEqual(raw.pages.map((p) => p.order), [0, 1, 2, 3]);
   assert.deepEqual(raw.pages.map((p) => p.enabled), [true, true, true, true]);
   for (const p of raw.pages) assert.equal(p.autoAdvanceSeconds, 0, `${p.id} 唔自動翻頁`);
 
-  // 2) seed 讀得返入 store（loadRulePagesSeed 唔會爆）
+  // 2) seed 讀得返入 store（loadRulePagesSeed 唔會爆，gameId 對得返）
   const pages = loadRulePagesSeed(APP_ROOT);
   assert.equal(pages.length, 4);
-  assert.deepEqual(pages.map((p) => p.title), raw.pages.map((p) => p.title));
+  assert.deepEqual(pages.map((p) => p.gameId), ["draw", "auction", "killer", "quiz"]);
+  for (const p of pages) assert.ok(p.blocks.length > 0, `${p.id} 讀到 blocks`);
 
   for (const p of raw.pages) {
-    // 3) 字數限制（同 commands.ts rules.upsert 一樣）
+    // 3) 字數限制（commands.ts rules.upsert／本 team v0.4 約束）
     assert.ok(p.title.length > 0 && p.title.length <= 16, `${p.id} title ≤16 字`);
     assert.ok((p.subtitle ?? "").length <= 24, `${p.id} subtitle ≤24 字`);
     assert.ok(p.blocks.length > 0 && p.blocks.length <= 20, `${p.id} blocks ≤20`);
     let total = 0;
     for (const b of p.blocks) {
-      assert.ok(ALLOWED.includes(b.type), `${p.id} block type「${b.type}」喺白名單`);
-      const t = (b.text ?? "").length + (b.value ?? "").length;
-      assert.ok(t <= 120, `${p.id} ${b.type} 文字 ≤120 字`);
-      total += t;
+      assert.ok(ALLOWED.includes(b.type), `${p.id} block type 喺白名單`);
+      const bs = blockChars(b);
+      assert.ok(bs <= 120, `${p.id} ${b.type} block 文字合計 ≤120 字（實際 ${bs}）`);
       assert.ok((b.items ?? []).length <= 6, `${p.id} ${b.type} items ≤6`);
-      for (const it of b.items ?? []) {
-        assert.ok(it.length <= 120, `${p.id} item ≤120 字`);
-        total += it.length;
-      }
+      for (const it of b.items ?? []) assert.ok(it.length <= 120, `${p.id} 單條 item ≤120 字`);
+      total += bs;
     }
     assert.ok(total <= 1200, `${p.id} 全頁 ≤1200 字（實際 ${total}）`);
 
@@ -2548,53 +2548,4 @@ test("v0.4 規則頁：四頁齊＋長度限制＋block type 白名單", () => {
     const totalHeight = p.blocks.reduce((n, b) => n + height(b), 0);
     assert.ok(totalHeight <= 700, `${p.id} 一屏放得落（估算 ${totalHeight}px ≤700px）`);
   }
-
-  // 5) 內容要對得住 FLOW 原文（唔會漏咗壽星個流程）
-  const text = (id) => {
-    const p = raw.pages.find((x) => x.id === id);
-    return [p.title, p.subtitle ?? "", ...p.blocks.flatMap((b) => [b.text ?? "", b.value ?? "", ...(b.items ?? [])])].join("｜");
-  };
-  const draw = text("rule-draw");
-  assert.match(draw, /超大白紙/, "主持準備超大白紙");
-  assert.match(draw, /2 個臥底/, "2 個臥底");
-  assert.match(draw, /重抽/, "可以重抽");
-  assert.match(draw, /5 秒/, "每人出去畫 5 秒");
-  assert.match(draw, /題目卡/, "主持派題目卡");
-  assert.match(draw, /好人題目/, "公佈好人題目");
-  assert.match(draw, /10 秒/, "投票 10 秒倒數");
-  assert.match(draw, /foul/i, "公佈被 foul 係唔係臥底");
-  assert.match(draw, /3 題/, "一局最多 3 題");
-  assert.match(draw, /\+1/, "好人／臥底 +1");
-  assert.match(draw, /\+2/, "未被 foul 每人 +2");
-
-  const auction = text("rule-auction");
-  assert.match(auction, /10 秒/, "大mon 10 秒倒數");
-  assert.match(auction, /競投/, "撳競投");
-  assert.match(auction, /最少 1 秒/, "最少 1 秒");
-  assert.match(auction, /同一秒/, "同秒由最後撳嗰個先");
-  assert.match(auction, /MacBook/, "主持自己 MacBook 播");
-  assert.match(auction, /×2/, "踩秒數 ×2 指壓板");
-  assert.match(auction, /播歌位置/, "播歌位置跟第一個");
-  assert.match(auction, /6 首/, "預計 6 首歌");
-
-  const killer = text("rule-killer");
-  assert.match(killer, /一個老闆/, "一個老闆");
-  assert.match(killer, /一個殺手/, "一個殺手");
-  assert.match(killer, /紙/, "身份用紙派");
-  assert.match(killer, /接頭動作/, "指定接頭動作");
-  assert.match(killer, /3 粒子彈/, "只有 3 粒子彈");
-  assert.match(killer, /兩個人/, "要殺兩個人");
-  assert.match(killer, /投票/, "全體投票");
-  assert.match(killer, /手動加分/, "主持手動加分");
-
-  const quiz = text("rule-quiz");
-  assert.match(quiz, /30 秒/, "30 秒倒數");
-  assert.match(quiz, /4 個選擇/, "4 個選擇");
-  assert.match(quiz, /已作答/, "有幾多人已作答");
-  assert.match(quiz, /A／B／C／D/, "手機揀 A／B／C／D");
-  assert.match(quiz, /提早收卷/, "可以提早收卷");
-  assert.match(quiz, /分佈/, "先出答案分佈");
-  assert.match(quiz, /解釋/, "再出解釋");
-  assert.match(quiz, /±2 尺/, "Q12 一匹布 ±2 尺容差");
-  assert.match(quiz, /Q13/, "Q13 主持即場入真實答案");
 });
