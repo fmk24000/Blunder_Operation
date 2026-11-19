@@ -805,6 +805,98 @@ export function tickUndercover(store: Store): boolean {
   return true;
 }
 
+/* ── v0.4.0：唯一一條「畫畫關投票」code path（undercover.start／uc.vote.start 都行呢個） ── */
+
+type StartDrawVoteOpts = {
+  /** 只准呢批人做候選（一圖多人局用）；唔傳＝全部 approved */
+  participantIds?: string[] | null;
+  /** 一定唔准做候選（已出局／主持剔走） */
+  excludeIds?: string[];
+  durationSeconds?: number;
+  /** 有＝重用／更新呢張投票卡（card_ucmatch）；冇＝開新卡 card_undercover_<ts> */
+  cardId?: string | null;
+};
+
+/** 開一輪「畫畫關：手機投票揀人」回合。
+ *  候選 ＝ approved ∩（有 participantIds 就只用佢）− excludeIds；
+ *  eligiblePlayerIds ＝ 候選（已出局／被剔走嘅人唔可以投）。 */
+function startDrawVote(ctx: Ctx, opts: StartDrawVoteOpts = {}): { round: Round; card: Card; candidates: string[] } {
+  const store = ctx.store;
+  const room = store.state.room;
+  const exclude = opts.excludeIds ?? [];
+  const rawDur = Number(opts.durationSeconds ?? 10);
+  const durationSeconds = Math.max(5, Math.min(60, Math.round(Number.isFinite(rawDur) ? rawDur : 10)));
+  const openRound = store.currentRound();
+  if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
+    throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先開票或 void");
+  const only = Array.isArray(opts.participantIds) ? new Set(opts.participantIds) : null;
+  const candidates = store
+    .approvedPlayers()
+    .map((x) => x.id)
+    .filter((id) => (only ? only.has(id) : true))
+    .filter((id) => !exclude.includes(id));
+  if (candidates.length < 2) throw new CmdError("W_BAD_SCHEMA", "至少要兩個候選人");
+  const reuseId = typeof opts.cardId === "string" && opts.cardId.length > 0 ? opts.cardId : null;
+  const cardId = reuseId ?? `card_undercover_${Date.now()}`;
+  let card = store.card(cardId);
+  let cardVersion: number;
+  if (card) {
+    cardVersion = (card.version ?? 1) + 1;
+    push(ctx, {
+      t: "card.update",
+      d: { cardId, patch: { prompt: UNDERCOVER_PROMPT, options: candidates, seconds: durationSeconds, version: cardVersion } },
+    });
+    card = { ...card, prompt: UNDERCOVER_PROMPT, options: candidates, seconds: durationSeconds, version: cardVersion };
+  } else {
+    cardVersion = 1;
+    card = {
+      id: cardId,
+      type: "vote",
+      gameId: "draw",
+      voteMode: "players",
+      prompt: UNDERCOVER_PROMPT,
+      options: candidates,
+      seconds: durationSeconds,
+      points: 0,
+      version: 1,
+      state: "draft",
+    };
+    push(ctx, { t: "card.put", d: { card } });
+    const item = store.currentItem();
+    if (item) {
+      const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: [...i.cardIds, cardId] } : { ...i }));
+      push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+    }
+  }
+  const openCount = room.rounds.filter((r) => r.cardId === cardId).length + 1;
+  const round: Round = {
+    id: `${cardId}#${openCount}`,
+    cardId,
+    cardVersion,
+    endsAt: Date.now() + durationSeconds * 1000,
+    closedAt: null,
+    state: "open",
+    // fix(v04-B)：選民＝候選（舊 undercover.start 用晒全部 approved，已出局／被剔走都可以投）
+    eligiblePlayerIds: candidates,
+  };
+  push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
+  push(ctx, { t: "card.update", d: { cardId, patch: { state: "open" } } });
+  setStageIfUnlocked(ctx, { mode: "undercover", payload: { roundId: round.id, cardId } });
+  return { round, card, candidates };
+}
+
+/** 讀一輪投票嘅 confirmed 票（targetId → 票數） */
+function drawVoteTally(store: Store, round: Round): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const x of store.state.submissions) {
+    if (x.roundId !== round.id || !x.confirmed || x.kind !== "vote") continue;
+    const target = (x.text ?? "").trim();
+    if (!target) continue;
+    counts.set(target, (counts.get(target) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /* ── v0.3.0：一圖多人（畫畫臥底）——state helpers ── */
 
 type UcMatch = NonNullable<NonNullable<Room["gameState"]>["undercover"]>;
@@ -845,6 +937,42 @@ function ucQuestionElimCount(st: UcMatch): number {
 /** B4：本題已經 foul 過人（可以換下一題） */
 function ucQuestionDone(st: UcMatch): boolean {
   return ucQuestionElimCount(st) >= 1;
+}
+
+/** foul 一個人出局（uc.eliminate＝主持指定；uc.vote.foulTop＝server 計最高票之後叫佢）。
+ *  前置條件同 v0.3.0 一樣：本題要開過投票兼已收卷、本題未 foul 過、唔可以 foul 已出局者。 */
+function ucEliminateOne(ctx: Ctx, targetId: string): { targetId: string; wasUndercover: boolean; remaining: number } {
+  const store = ctx.store;
+  const st = cloneUcMatch(store);
+  if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+  // B4：只准「已開投票並且已收卷」之後 foul（未投票唔可以淘汰）
+  const liveRound = st.roundId ? store.round(st.roundId) : undefined;
+  if (!liveRound || liveRound.state === "open")
+    throw new CmdError("W_WRONG_PHASE", "本題未收卷：先「開投票（10 秒）」等開票，再 foul");
+  if (ucQuestionDone(st)) throw new CmdError("W_ALREADY_STATE", "呢題已經 foul 咗一個，請撳「下一題／結算」");
+  if (!st.participantIds.includes(targetId)) throw new CmdError("W_BAD_SCHEMA", "呢個人唔係本局參賽者");
+  if (st.eliminatedIds.includes(targetId)) throw new CmdError("W_ALREADY_STATE", "已經淘汰咗");
+  st.eliminatedIds = [...st.eliminatedIds, targetId];
+  st.eliminatedByQuestion = { ...(st.eliminatedByQuestion ?? {}), [targetId]: st.questionNo };
+  const wasUndercover = st.undercoverIds.includes(targetId);
+  const remaining = ucRemainingUndercover(st);
+  if (remaining === 0) st.result = "good";
+  push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+  const target = store.player(targetId);
+  stageSet(ctx, {
+    mode: "message",
+    payload: {
+      title: wasUndercover ? "係臥底！" : "唔係臥底",
+      lines: [
+        `#${target?.number ?? "?"} ${target?.name ?? "?"} 出局`,
+        remaining === 0 ? "所有臥底已出局 → 好人勝（撳「結算」加分）" : `仲有 ${remaining} 個臥底未出局`,
+      ],
+      tone: wasUndercover ? "good" : "bad",
+    },
+    prevMode: resumableMode(store.state.room.stage.mode),
+  });
+  toast(ctx, `${target?.name ?? targetId}：${wasUndercover ? "係臥底" : "唔係臥底"}（仲有 ${remaining} 個）`);
+  return { targetId, wasUndercover, remaining };
 }
 
 /** 一圖多人結算：好人勝→全部好人 +1／臥底勝→全部臥底 +1；未出局者每人 +2（同上面疊加）。
@@ -1462,48 +1590,21 @@ export function executeCommand(
     }
     case "undercover.start": {
       ensurePlaying(store);
+      // v0.4.0：同 uc.vote.start 行同一條 path（backward compat：舊 API 仍然開新卡）
       const excludeRaw = p.excludePlayerIds;
       const exclude = Array.isArray(excludeRaw) ? (excludeRaw as string[]) : [];
-      const durRaw = Number(p.durationSeconds ?? 10);
-      const durationSeconds = Math.max(5, Math.min(60, Math.round(Number.isFinite(durRaw) ? durRaw : 10)));
-      const openRound = store.currentRound();
-      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
-        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先開票或 void");
-      const candidates = store.approvedPlayers().filter((x) => !exclude.includes(x.id));
-      if (candidates.length < 2) throw new CmdError("W_BAD_SCHEMA", "至少要兩個候選人");
-      const ucCardId = `card_undercover_${Date.now()}`;
-      const ucCard: Card = {
-        id: ucCardId,
-        type: "vote",
-        gameId: "draw",
-        voteMode: "players",
-        prompt: UNDERCOVER_PROMPT,
-        options: candidates.map((c) => c.id),
-        seconds: durationSeconds,
-        points: 0,
-        version: 1,
-        state: "draft",
-      };
-      push(ctx, { t: "card.put", d: { card: ucCard } });
-      const ucItem = store.currentItem();
-      if (ucItem) {
-        const rundown = room.rundown.map((i) => (i.id === ucItem.id ? { ...i, cardIds: [...i.cardIds, ucCardId] } : { ...i }));
-        push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
-      }
-      const ucRound: Round = {
-        id: `${ucCardId}#1`,
-        cardId: ucCardId,
-        cardVersion: 1,
-        endsAt: Date.now() + durationSeconds * 1000,
-        closedAt: null,
-        state: "open",
-        eligiblePlayerIds: store.approvedPlayers().map((x) => x.id),
-      };
-      push(ctx, { t: "round.put", d: { round: ucRound, currentRoundId: ucRound.id } });
-      push(ctx, { t: "card.update", d: { cardId: ucCardId, patch: { state: "open" } } });
-      setStageIfUnlocked(ctx, { mode: "undercover", payload: { roundId: ucRound.id, cardId: ucCardId } });
+      const v = startDrawVote(ctx, {
+        excludeIds: exclude,
+        durationSeconds: Number(p.durationSeconds ?? 10),
+      });
+      const durationSeconds = v.card.seconds ?? 10;
       toast(ctx, `臥底投票開始（${durationSeconds} 秒）`);
-      ctx.result = { roundId: ucRound.id, cardId: ucCardId, durationSeconds, candidates: candidates.map((c) => c.id) };
+      ctx.result = {
+        roundId: v.round.id,
+        cardId: v.card.id,
+        durationSeconds,
+        candidates: v.candidates,
+      };
       break;
     }
     case "undercover.reveal": {
@@ -1604,88 +1705,49 @@ export function executeCommand(
       ensurePlaying(store);
       const st = cloneUcMatch(store);
       if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
-      const openRound = store.currentRound();
-      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
-        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先開票或 void");
-      // 出局者唔可以投亦唔可以被投
-      const candidates = st.participantIds.filter((id) => !st.eliminatedIds.includes(id) && store.player(id)?.status === "approved");
-      if (candidates.length < 2) throw new CmdError("W_ALREADY_STATE", "得返唔夠兩隻人，直接結算啦");
-      const cardId = "card_ucmatch";
-      const durationSeconds = 10;
-      let card = store.card(cardId);
-      if (!card) {
-        const newCard: Card = {
-          id: cardId,
-          type: "vote",
-          gameId: "draw",
-          voteMode: "players",
-          prompt: UNDERCOVER_PROMPT,
-          options: candidates,
-          seconds: durationSeconds,
-          points: 0,
-          version: 1,
-          state: "draft",
-        };
-        card = newCard;
-        push(ctx, { t: "card.put", d: { card: newCard } });
-      } else {
-        push(ctx, {
-          t: "card.update",
-          d: { cardId, patch: { options: candidates, prompt: UNDERCOVER_PROMPT, seconds: durationSeconds, version: card.version + 1 } },
-        });
-      }
-      const openCount = room.rounds.filter((r) => r.cardId === cardId).length + 1;
-      const round: Round = {
-        id: `${cardId}#${openCount}`,
-        cardId,
-        cardVersion: (card.version ?? 1) + 1,
-        endsAt: Date.now() + durationSeconds * 1000,
-        closedAt: null,
-        state: "open",
-        eligiblePlayerIds: candidates,
-      };
-      push(ctx, { t: "round.put", d: { round, currentRoundId: round.id } });
-      push(ctx, { t: "card.update", d: { cardId, patch: { state: "open" } } });
-      st.roundId = round.id;
+      // v0.4.0：同 undercover.start 行同一條 path（候選＝參賽者−已出局；選民＝候選）
+      const v = startDrawVote(ctx, {
+        participantIds: st.participantIds,
+        excludeIds: st.eliminatedIds,
+        durationSeconds: 10,
+        cardId: "card_ucmatch",
+      });
+      st.roundId = v.round.id;
       push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
-      setStageIfUnlocked(ctx, { mode: "undercover", payload: { roundId: round.id, cardId } });
-      toast(ctx, `第 ${st.questionNo + 1} 題投票開始（${durationSeconds} 秒，${candidates.length} 人可投）`);
-      ctx.result = { roundId: round.id, candidates: candidates.length, durationSeconds };
+      toast(ctx, `第 ${st.questionNo + 1} 題投票開始（${v.card.seconds ?? 10} 秒，${v.candidates.length} 人可投）`);
+      ctx.result = { roundId: v.round.id, candidates: v.candidates.length, durationSeconds: v.card.seconds ?? 10 };
       break;
     }
     case "uc.eliminate": {
-      const st = cloneUcMatch(store);
-      if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
-      // B4：只准「已開投票並且已收卷」之後 foul（未投票唔可以淘汰）
-      const liveRound = st.roundId ? store.round(st.roundId) : undefined;
-      if (!liveRound || liveRound.state === "open")
-        throw new CmdError("W_WRONG_PHASE", "本題未收卷：先「開投票（10 秒）」等開票，再 foul");
-      if (ucQuestionDone(st)) throw new CmdError("W_ALREADY_STATE", "呢題已經 foul 咗一個，請撳「下一題／結算」");
       const targetId = (cmd.targetId ?? optStr(p, "playerId") ?? "").trim();
       if (!targetId) throw new CmdError("W_BAD_SCHEMA", "要 playerId");
-      if (!st.participantIds.includes(targetId)) throw new CmdError("W_BAD_SCHEMA", "呢個人唔係本局參賽者");
-      if (st.eliminatedIds.includes(targetId)) throw new CmdError("W_ALREADY_STATE", "已經淘汰咗");
-      st.eliminatedIds = [...st.eliminatedIds, targetId];
-      st.eliminatedByQuestion = { ...(st.eliminatedByQuestion ?? {}), [targetId]: st.questionNo };
-      const wasUndercover = st.undercoverIds.includes(targetId);
-      const remaining = ucRemainingUndercover(st);
-      if (remaining === 0) st.result = "good";
-      push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
-      const target = store.player(targetId);
-      stageSet(ctx, {
-        mode: "message",
-        payload: {
-          title: wasUndercover ? "係臥底！" : "唔係臥底",
-          lines: [
-            `#${target?.number ?? "?"} ${target?.name ?? "?"} 出局`,
-            remaining === 0 ? "所有臥底已出局 → 好人勝（撳「結算」加分）" : `仲有 ${remaining} 個臥底未出局`,
-          ],
-          tone: wasUndercover ? "good" : "bad",
-        },
-        prevMode: resumableMode(store.state.room.stage.mode),
-      });
-      toast(ctx, `${target?.name ?? targetId}：${wasUndercover ? "係臥底" : "唔係臥底"}（仲有 ${remaining} 個）`);
-      ctx.result = { targetId, wasUndercover, remaining };
+      ctx.result = ucEliminateOne(ctx, targetId);
+      break;
+    }
+    case "uc.vote.foulTop": {
+      // v0.4.0：由 server 讀 confirmed 票自己計最高票（主持唔使自己揀人）
+      const st0 = ucMatchState(store);
+      if (st0.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+      const liveRound = st0.roundId ? store.round(st0.roundId) : undefined;
+      if (!liveRound) throw new CmdError("W_WRONG_PHASE", "本題未開投票：先撳「開始投票（10 秒）」");
+      if (liveRound.state === "open") throw new CmdError("W_WRONG_PHASE", "未收卷：先開票睇結果，再 foul");
+      if (ucQuestionDone(st0)) throw new CmdError("W_ALREADY_STATE", "呢題已經 foul 咗一個，請撳「下一題／結算」");
+      const tally = drawVoteTally(store, liveRound);
+      const totalVotes = [...tally.values()].reduce((a, b) => a + b, 0);
+      if (totalVotes === 0) throw new CmdError("W_NO_VOTES", "今題冇人投票：主持揀一個或者重開投票");
+      let topId = "";
+      let topVotes = -1;
+      let tie = false;
+      for (const [id, n] of tally) {
+        if (n > topVotes) {
+          topId = id;
+          topVotes = n;
+          tie = false;
+        } else if (n === topVotes) tie = true;
+      }
+      if (tie) throw new CmdError("W_TIE", "同票：請主持揀邊個出局");
+      const r = ucEliminateOne(ctx, topId);
+      ctx.result = { ...r, votes: topVotes, totalVotes };
       break;
     }
     case "uc.eliminate.undo": {
