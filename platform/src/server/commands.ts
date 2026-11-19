@@ -1004,6 +1004,11 @@ function ucApplyTopic(ctx: Ctx, card: Card): { cardId: string; questionNo: numbe
   st.usedTopicIds = [...new Set([...(st.usedTopicIds ?? []), card.id])];
   st.promptRevealed = false; // 換題要重新公佈（大mon 唔會殘留上一對嘅好人題）
   push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
+  // v0.4.2（CHECK-DRAW P1）：大mon 如果仲掛住上一對「好人題目」message，換題要即刻收走，
+  // 否則主持換完題，大mon 仍然大字顯示舊題（觀眾會以為係新題）。
+  if (store.state.room.stage.mode === "message") {
+    setStageIfUnlocked(ctx, { mode: "blackout", payload: {}, prevMode: resumableMode(store.state.room.stage.prevMode) });
+  }
   toast(ctx, `第 ${st.questionNo + 1} 題用咗：${card.prompt}`);
   return { cardId: card.id, questionNo: st.questionNo + 1, prompt: card.prompt, undercoverPrompt: card.undercoverPrompt };
 }

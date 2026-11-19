@@ -3441,3 +3441,16 @@ test("v042-7：host.ts 畫畫 group 換成一條 flow（冇 draw-wall／draw-foc
     assert.ok(src.includes(`"${k}"`), `唔准刪 ${k}`);
   }
 });
+
+test("v042-8：換題目之後大mon 唔可以殘留上一對好人題目（要收走 message）", () => {
+  const { store } = ucSetup("v042-topic-stage-clear", 6);
+  run(store, "uc.match.start", { undercoverCount: 2 });
+  run(store, "uc.prompt.reveal");
+  assert.equal(store.state.room.stage.mode, "message", "公佈之後大mon 應該係 message");
+  const other = loadUndercoverSeed(APP_ROOT).map((t) => `uc_${t.id}`).find((id) => id !== store.state.room.gameState.undercover.promptCardId);
+  const res = run(store, "uc.topic.pick", {}, other);
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(store.state.room.stage.mode, "blackout", "換題要收走舊題目畫面（唔好殘留）");
+  const stageText = JSON.stringify(store.state.room.stage.payload ?? {});
+  assert.ok(!stageText.includes("好人題目"), "stage payload 唔可以再留住好人題目");
+});
