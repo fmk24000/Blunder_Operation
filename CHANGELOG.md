@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.3.2 — 2026-11-19
+
+### Fixed — 手機入場後殘留「player token 過期」
+玩家掃 QR → 改名入場之後，畫面會顯示紅色「W_TOKEN_EXPIRED：player token 無效或過期」，
+就算主持批咗佢入都唔會消失，要 refresh 先正常。
+
+**成因**：手機 localStorage 留住上一節（舊房／舊 session）嘅 token，開頁時先用舊 token 連 WS；
+server 拒絕時會回一條 `error` 訊息 → 前端寫入 `submitError` 顯示紅色字。之後就算成功入場，
+`submitError` 從來冇被清，所以會一直留喺度。
+
+**修正**：
+- 開頁時如果 QR 帶嘅房碼同舊 token 個房碼唔同 → **直接丟舊 token**，唔會連上去等 server 拒。
+- `onAuthFail`（token 失效／房碼唔啱）→ 清 `submitError`＋`joinError`，靜靜返入場頁。
+- 入場成功、每次開新 WS 連線、收到 `hello.ok` → 一律清 `submitError`。
+- `onError` 唔再將 `W_TOKEN_EXPIRED`／`W_ROOM_LOCKED`／`W_FORBIDDEN_ROLE` 當玩家錯誤顯示
+  （呢啲一定會跟住斷線＋自動返入場頁）。
+- 資產版本 `?v=20261119p7`。
+
+### Tests
+- 113 → **114**（加「舊 session 唔會留低紅色技術錯誤」test）。
+
+
 ## v0.3.1 — 2026-11-19
 
 ### Fixed — 通知（toast）

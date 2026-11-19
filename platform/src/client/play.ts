@@ -91,16 +91,22 @@ async function doJoin(): Promise<void> {
   token = res.playerToken;
   lsSet("hbd.playerToken", { token: res.playerToken, playerId: res.playerId, name, roomCode });
   joinError = "";
+  submitError = ""; // v0.3.2：新入場一定要清走上一節 session 留低嘅錯誤字
   startLive();
 }
 
 function startLive(): void {
   if (!token) return;
   if (live) live.close();
+  submitError = ""; // v0.3.2：每次開新連線都清（唔好帶住上一條 socket 嘅錯）
   live = new Live({
     role: "player",
     code: roomCode,
     token,
+    onHello: () => {
+      // 真正連上（token 已驗證）：之前嘅技術錯誤已經冇意義
+      submitError = "";
+    },
     onView: (v: any) => {
       handleView(v);
     },
@@ -111,9 +117,15 @@ function startLive(): void {
     onAuthFail: () => {
       lsDel("hbd.playerToken");
       token = null;
+      // v0.3.2：token 失效時唔可以留低紅色技術字（以前會留到入完場都仲喺度）
+      submitError = "";
+      joinError = "";
       renderJoin();
     },
     onError: (code, msg) => {
+      // 呢幾個係「身份／房間唔對」嘅協議內部錯誤，一定會跟住斷線（4001／1008）＋自動返入場頁。
+      // 唔好當成玩家要處理嘅錯誤顯示，否則會永遠留喺畫面（要 refresh 先清）。
+      if (code === "W_TOKEN_EXPIRED" || code === "W_ROOM_LOCKED" || code === "W_FORBIDDEN_ROLE") return;
       submitError = `${code}：${msg}`;
       render();
     },
@@ -470,7 +482,13 @@ async function boot(): Promise<void> {
       /* ignore */
     }
   }
-  if (saved?.token) {
+  // v0.3.2：QR 帶咗房碼，但 localStorage 嗰個 token 係另一間房（例如房碼重置過／換房）
+  // → 直接丟，唔好連上去等 server 回 W_TOKEN_EXPIRED／W_ROOM_LOCKED
+  const qrCode = params.get("code");
+  if (saved?.token && qrCode && saved.roomCode !== qrCode) {
+    lsDel("hbd.playerToken");
+    submitError = "";
+  } else if (saved?.token) {
     token = saved.token;
     startLive();
     return;

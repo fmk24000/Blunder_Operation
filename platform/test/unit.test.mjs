@@ -660,6 +660,23 @@ test("stage.ts：100ms tick 唔會每次重設 toast timer（同一條 activity 
   assert.match(src, /showToast\(t, 2600\)/, "大mon toast 要有 timeout（2.6 秒自動收）");
 });
 
+test("play.ts：舊 session／token 失效唔會留低紅色技術錯誤（要 refresh 先清嘅 bug）", () => {
+  const src = clientSrc("play.ts");
+  // onAuthFail 一定要清走兩個錯誤字
+  const auth = src.slice(src.indexOf("onAuthFail: () => {"));
+  const authBody = auth.slice(0, auth.indexOf("},"));
+  assert.match(authBody, /submitError = ""/, "onAuthFail 要清 submitError");
+  assert.match(authBody, /joinError = ""/, "onAuthFail 要清 joinError");
+  // 協議內部錯誤唔可以當成玩家錯誤顯示
+  assert.match(src, /code === "W_TOKEN_EXPIRED"/, "onError 要特別處理 W_TOKEN_EXPIRED");
+  assert.match(src, /code === "W_ROOM_LOCKED"/, "onError 要特別處理 W_ROOM_LOCKED");
+  // 每次新連線／新入場都要清
+  assert.match(src, /function startLive\(\): void \{[\s\S]{0,400}?submitError = "";/, "startLive 要清 submitError");
+  assert.match(src, /joinError = "";\s*\n\s*submitError = "";/, "入場成功要清 submitError");
+  // 換房（QR 房碼唔同）唔可以重用舊 token
+  assert.match(src, /saved\.roomCode !== qrCode/, "boot 要對比 QR 房碼同舊 token 房碼");
+});
+
 test("play.ts：手機版唔顯示 toast（唔會遮住底部分數條）", () => {
   const src = clientSrc("play.ts");
   assert.ok(!/showToast\(view\?\.toast\)/.test(src), "手機唔應該再 render server toast");
