@@ -1327,7 +1327,7 @@ test("A 邊界：揀中嘅頁 disabled／archived → 照舊 fallback currentIte
 });
 
 
-test("undercover.start：建卡＋round＋大mon 轉 undercover，exclude 只影響候選名單", () => {
+test("undercover.start：建卡＋round＋大mon 轉 undercover，exclude 唔止影響候選（亦唔可以投）", () => {
   const { store } = makeStore("uc-start");
   const players = addPlayers(store, 3);
   run(store, "room.start");
@@ -1339,7 +1339,8 @@ test("undercover.start：建卡＋round＋大mon 轉 undercover，exclude 只影
   assert.equal(card.voteMode, "players");
   assert.equal(card.gameId, "draw");
   assert.deepEqual(card.options, [players[0].id, players[1].id], "被 exclude 嘅唔可以做候選");
-  assert.equal(round.eligiblePlayerIds.length, 3, "被 exclude 嘅仍然可以投票");
+  // v0.4.0 fix：選民＝候選（舊版用晒全部 approved，被剔走嘅人都投得）
+  assert.deepEqual(round.eligiblePlayerIds, [players[0].id, players[1].id], "被 exclude 嘅唔可以投票");
   assert.equal(store.state.room.stage.mode, "undercover");
 });
 
@@ -1361,9 +1362,9 @@ test("undercover：tickUndercover 到時自動開票，票數同 ballots 正確"
   const res = run(store, "undercover.start", { excludePlayerIds: [players[2].id], durationSeconds: 10 });
   const roundId = res.result.roundId;
   const cardId = store.round(roundId).cardId;
+  // v0.4.0：被 exclude 嘅人唔喺選民名單（唔可以投），所以只有兩個選民投票
   vote(store, { roundId, cardId, voterId: players[0].id, targetId: players[1].id });
   vote(store, { roundId, cardId, voterId: players[1].id, targetId: players[0].id });
-  vote(store, { roundId, cardId, voterId: players[2].id, targetId: players[1].id });
   store.commit([{ t: "round.update", d: { roundId, patch: { endsAt: Date.now() - 1 } } }]);
   assert.equal(tickUndercover(store), true);
   assert.equal(store.round(roundId).state, "revealed");
@@ -1371,11 +1372,12 @@ test("undercover：tickUndercover 到時自動開票，票數同 ballots 正確"
   assert.equal(view.undercover.phase, "result");
   const counts = Object.fromEntries(view.undercover.candidates.map((c) => [c.id, c.count]));
   assert.equal(counts[players[0].id], 1);
-  assert.equal(counts[players[1].id], 2);
-  assert.equal(view.undercover.ballots.length, 3);
+  assert.equal(counts[players[1].id], 1);
+  assert.equal(view.undercover.ballots.length, 2, "票軌只列選民（被剔走者唔喺名單）");
   const byVoter = Object.fromEntries(view.undercover.ballots.map((b) => [b.voterId, b.targetName]));
   assert.equal(byVoter[players[0].id], players[1].name);
-  assert.equal(byVoter[players[2].id], players[1].name);
+  assert.equal(byVoter[players[1].id], players[0].name);
+  assert.equal(byVoter[players[2].id], undefined);
 });
 
 test("undercover.reveal：提早開票", () => {
@@ -1756,6 +1758,110 @@ test("uc.match.reset：清走本局，再開一局 matchNo+1", () => {
   run(store, "uc.match.start");
   assert.equal(store.state.room.gameState.undercover.matchNo, 2);
   assert.equal(store.state.room.gameState.undercover.settled, false);
+});
+
+/* ───────── v0.4.0 Team B：一條投票 path ＋ foul 最高票（B5 六條） ───────── */
+
+test("B5-1：uc.vote.start 嘅 eligiblePlayerIds 唔包已出局者（選民＝候選）", () => {
+  const { store } = ucSetup("b5-vote-eligible", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  const st0 = store.state.room.gameState.undercover;
+  const victim = st0.participantIds.find((id) => !st0.undercoverIds.includes(id));
+  ucFoul(store, victim);
+  const res = run(store, "uc.vote.start");
+  const round = store.round(res.result.roundId);
+  const card = store.card(round.cardId);
+  assert.equal(round.eligiblePlayerIds.includes(victim), false, "已出局者唔可以投票");
+  const expected = st0.participantIds.filter((id) => id !== victim).sort();
+  assert.deepEqual([...round.eligiblePlayerIds].sort(), expected, "選民＝未出局參賽者");
+  assert.deepEqual([...card.options].sort(), expected, "候選＝未出局參賽者");
+  assert.deepEqual([...round.eligiblePlayerIds].sort(), [...card.options].sort(), "選民同候選係同一批人");
+});
+
+test("B5-2：undercover.start 嘅 eligiblePlayerIds 唔包 excludePlayerIds（舊 bug：全部 approved 都投得）", () => {
+  const { store } = makeStore("b5-start-exclude");
+  const players = addPlayers(store, 4);
+  run(store, "room.start");
+  const res = run(store, "undercover.start", { excludePlayerIds: [players[1].id, players[3].id], durationSeconds: 10 });
+  const round = store.round(res.result.roundId);
+  const card = store.card(round.cardId);
+  assert.deepEqual([...round.eligiblePlayerIds].sort(), [players[0].id, players[2].id].sort());
+  assert.deepEqual([...card.options].sort(), [players[0].id, players[2].id].sort());
+  assert.equal(round.eligiblePlayerIds.length, 2, "4 個 approved 剔走 2 個 → 2 個選民");
+  assert.equal(new Set(round.eligiblePlayerIds).size, 2, "選民唔可以重複");
+});
+
+test("B5-3：uc.vote.foulTop 最高票唯一 → foul 佢、記錄題號、大mon 出係／唔係臥底", () => {
+  const { store } = ucSetup("b5-foultop-ok", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  const st0 = store.state.room.gameState.undercover;
+  const victim = st0.undercoverIds[0];
+  const res0 = run(store, "uc.vote.start");
+  const round = store.round(res0.result.roundId);
+  const card = store.card(round.cardId);
+  const voters = st0.participantIds.filter((id) => id !== victim);
+  vote(store, { roundId: round.id, cardId: card.id, voterId: voters[0], targetId: victim });
+  vote(store, { roundId: round.id, cardId: card.id, voterId: voters[1], targetId: victim });
+  run(store, "card.close");
+  const res = run(store, "uc.vote.foulTop");
+  assert.equal(res.result.targetId, victim, "最高票唯一 → foul 佢");
+  assert.equal(res.result.votes, 2);
+  assert.equal(res.result.totalVotes, 2);
+  assert.equal(res.result.wasUndercover, true);
+  assert.equal(res.result.remaining, 1);
+  const st = store.state.room.gameState.undercover;
+  assert.deepEqual(st.eliminatedIds, [victim]);
+  assert.equal(st.eliminatedByQuestion?.[victim], st.questionNo, "淘汰要記低題號");
+  const sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "message", "大mon 要出 message（係／唔係臥底）");
+  assert.equal(sv.message.title, "係臥底！");
+  assert.equal(sv.message.tone, "good");
+});
+
+test("B5-4：uc.vote.foulTop 同票 → W_TIE，eliminatedIds 不變", () => {
+  const { store } = ucSetup("b5-foultop-tie", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  const st0 = store.state.room.gameState.undercover;
+  const goods = st0.participantIds.filter((id) => !st0.undercoverIds.includes(id));
+  const [a, b] = goods;
+  const res0 = run(store, "uc.vote.start");
+  const round = store.round(res0.result.roundId);
+  const card = store.card(round.cardId);
+  vote(store, { roundId: round.id, cardId: card.id, voterId: st0.undercoverIds[0], targetId: a });
+  vote(store, { roundId: round.id, cardId: card.id, voterId: st0.undercoverIds[1], targetId: b });
+  run(store, "card.close");
+  assert.throws(() => run(store, "uc.vote.foulTop"), isCmdError("W_TIE", /同票/));
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [], "同票唔可以自己揀");
+});
+
+test("B5-5：uc.vote.foulTop 0 票 → W_NO_VOTES", () => {
+  const { store } = ucSetup("b5-foultop-none", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  run(store, "uc.vote.start");
+  run(store, "card.close");
+  assert.throws(() => run(store, "uc.vote.foulTop"), isCmdError("W_NO_VOTES", /冇人投票/));
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, []);
+});
+
+test("B5-6：已出局者唔可以再被 foul（uc.eliminate → W_ALREADY_STATE）", () => {
+  const { store } = ucSetup("b5-refoul", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const victim = st0.participantIds.find((id) => !st0.undercoverIds.includes(id));
+  ucFoul(store, victim);
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [victim]);
+  run(store, "uc.match.next");
+  const res0 = run(store, "uc.vote.start");
+  run(store, "card.close");
+  const round = store.round(res0.result.roundId);
+  assert.equal(round.eligiblePlayerIds.includes(victim), false, "已出局者唔可以再投");
+  assert.equal(store.card(round.cardId).options.includes(victim), false, "已出局者唔可以再被投");
+  assert.throws(() => run(store, "uc.eliminate", { playerId: victim }), isCmdError("W_ALREADY_STATE", /已經淘汰/));
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [victim], "唔會重複淘汰");
 });
 
 

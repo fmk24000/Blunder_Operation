@@ -278,13 +278,20 @@ function undercoverHtml(v: any): string {
     </div>`;
   }
   const max = Math.max(1, ...u.candidates.map((c: any) => c.count));
+  const topCount = Math.max(0, ...u.candidates.map((c: any) => c.count));
+  const topN = u.candidates.filter((c: any) => topCount > 0 && c.count === topCount).length;
   return `<div class="stage-main">
     <div class="stage-mode-title">投票結果</div>
     ${matchLine}
     <div class="uc-cands">${u.candidates
       .map(
-        (c: any) => `<div class="uc-cand"><span class="uc-name">#${c.number} ${esc(c.name)}</span>
-          <span class="uc-bar"><i style="width:${Math.round((c.count / max) * 100)}%"></i></span><b class="uc-count">${c.count}</b></div>`,
+        (c: any) => {
+          const top = topCount > 0 && c.count === topCount;
+          return `<div class="uc-cand"><span class="uc-name">#${c.number} ${esc(c.name)}${
+            top ? ` <span class="badge hot">👑 最高票${topN > 1 ? "（同票）" : ""}</span>` : ""
+          }</span>
+          <span class="uc-bar"><i style="width:${Math.round((c.count / max) * 100)}%"></i></span><b class="uc-count">${c.count}</b></div>`;
+        },
       )
       .join("")}</div>
     <div class="uc-ballots">${u.ballots

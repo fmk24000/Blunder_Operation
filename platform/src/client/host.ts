@@ -29,9 +29,6 @@ let live: Live | null = null;
 let view: any = null;
 let status: ConnStatus = "connecting";
 let token: string | null = null;
-/** 臥底投票：結果面板撳「再開一輪」後要返去設定表單 */
-let ucConfiguring = false;
-let ucConfiguringRound = "";
 let hostName = "";
 let hostId = "";
 let roomCode = "";
@@ -643,7 +640,6 @@ function controlSection(v: any): string {
     ${undercoverMatchPanel(v)}
     ${killerPanel(v)}
     ${bidPanel(v)}
-    <details class="ctrl-settings"><summary>舊：臥底投票（單輪投票，唔用一圖多人流程）</summary>${undercoverPanel(v)}</details>
   </section>`;
 }
 
@@ -722,7 +718,9 @@ function killerPanel(v: any): string {
     <div class="hint">輸贏由主持加分（gameId=killer，會計入「分項結算」個笨蛋殺手欄）。</div></div>`;
 }
 
-/** v0.3.0 一圖多人（畫畫臥底）：主持逐步撳，每一步都顯示當前狀態（第幾局／第幾題／仲有幾個臥底／邊個出局） */
+/** v0.4.0 一圖多人（畫畫臥底）：唯一投票入口。
+ *  主持逐步撳：開局 → 公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票 → 下一題／結算。
+ *  票數／票軌／已投人數一律讀 host view 嘅 v.undercover（buildUndercover 已經計好），主持台唔自己再算。 */
 function undercoverMatchPanel(v: any): string {
   const st = v.undercoverMatch;
   const approved: any[] = (v.players ?? []).filter((p: any) => p.status === "approved");
@@ -733,7 +731,7 @@ function undercoverMatchPanel(v: any): string {
   };
   if (!st || (st.participantIds ?? []).length === 0) {
     return `<div class="card-box" style="margin-top:10px"><h4>一圖多人（畫畫臥底）${st ? `・下一局係第 ${st.matchNo} 局` : ""}</h4>
-      <div class="hint">開局＝由 approved 玩家隨機抽 2 個臥底＋抽 3 對題目。每題流程：公佈好人題目 → 開投票（10 秒）→ 淘汰一個 → 下一題；最多 3 題。</div>
+      <div class="hint">開局＝由 approved 玩家隨機抽 2 個臥底＋抽 3 對題目。每題流程：公佈好人題目 → 開投票（10 秒）→ 開票 → foul 最高票嗰個 → 下一題；最多 3 題。</div>
       <div class="row wrap"><label class="row">臥底數 <input id="ucm-count" type="number" min="1" max="4" value="2" style="width:70px"></label>
       <button class="primary" data-act="ucm.start">開新一局</button></div></div>`;
   }
@@ -742,16 +740,25 @@ function undercoverMatchPanel(v: any): string {
     (id: string) => `<span class="pill ${st.undercoverIds.includes(id) ? "hot" : "gray"}">${label(id)}${st.undercoverIds.includes(id) ? "（臥底）" : ""}</span>`,
   );
   const undercoverList = (st.undercoverIds ?? []).map((id: string) => `<span class="pill hot">${label(id)}</span>`).join("") || "—";
+  // 候選＝未出局參賽者（已出局唔可以再被投）
   const candidates = (st.participantIds ?? []).filter((id: string) => !st.eliminatedIds.includes(id));
-  const voting = Boolean(st.roundId) && v.currentRound?.state === "open" && v.currentRound?.id === st.roundId;
   // FIX-8：勝負未定唔准結算（同 server 前置檢查一致）
   const canSettle = remaining === 0 || st.result === "good" || st.questionNo >= 2;
+  // 票數／票軌／進度：全部嚟自 host view（唔自己計）
+  const u = v.undercover;
+  const voting = !st.settled && u?.phase === "voting";
+  const revealed = !st.settled && u?.phase === "result";
+  const questionDone = Object.values(st.eliminatedByQuestion ?? {}).some((q: any) => q === st.questionNo);
+  const counts: any[] = revealed ? [...(u.candidates ?? [])].sort((a: any, b: any) => b.count - a.count) : [];
+  const topCount = counts.length ? Math.max(...counts.map((c: any) => c.count)) : 0;
+  const topCandidates = topCount > 0 ? counts.filter((c: any) => c.count === topCount) : [];
+  const topLabel = topCandidates.length === 1 ? label(topCandidates[0].id) : "";
   const status = [
     `第 ${st.matchNo} 局`,
     `第 ${st.questionNo + 1}／3 題`,
     `仲有 ${remaining} 個臥底未出局`,
     st.promptRevealed ? "已公佈好人題目" : "未公佈題目",
-    voting ? "投票中" : "冇投票進行",
+    voting ? `投票中（已投 ${u.answeredCount}／${u.eligibleCount}）` : revealed ? "已開票" : "冇投票進行",
     st.settled ? `已結算：${st.result === "good" ? "好人勝" : st.result === "undercover" ? "臥底勝" : "?"}` : "未結算",
   ]
     .map((x) => `<span class="pill">${esc(x)}</span>`)
@@ -768,53 +775,66 @@ function undercoverMatchPanel(v: any): string {
         <span class="pill hot">臥底題（關鍵詞）：${esc(c?.undercoverPrompt ?? "?")}</span></div>`;
     })
     .join("");
+  const tallyRows = counts
+    .map((c: any) => {
+      const top = topCount > 0 && c.count === topCount;
+      return `<div class="ledger-row" ${top ? 'style="background:var(--bg-soft);font-weight:700"' : ""}>
+        <span class="pill ${top ? "hot" : "gray"}">${top ? "👑 最高票" : "　"}</span>
+        <span class="grow">#${c.number} ${esc(c.name)}</span><b>${c.count} 票</b></div>`;
+    })
+    .join("");
+  const ballotLine = revealed
+    ? (u.ballots ?? [])
+        .map((b: any) => `#${b.voterNumber} ${esc(b.voterName)} → ${esc(b.targetName)}`)
+        .join("｜")
+    : "";
+  // 投票步驟：一時只會出一個 phase 嘅控制（唔會再有重複掣）
+  const voteStep = st.settled
+    ? `<div class="row wrap"><span class="muted">本局已結算，唔再投票。</span></div>`
+    : voting
+      ? `<div class="row wrap"><span class="pill on">已投 ${u.answeredCount}／${u.eligibleCount}</span>
+          <button class="primary" data-act="ucm.revealRound">立即開票</button></div>
+        <div class="hint">大mon 顯示「請投出你心目中嘅臥底」＋${u.durationSeconds} 秒倒數；時到自動開票。</div>`
+      : revealed
+        ? `<div class="row wrap"><span class="pill on">票數</span>${
+            topCandidates.length > 1 ? `<span class="pill hot">同票（${topCandidates.map((c: any) => esc(c.name)).join("、")}）：請主持揀</span>` : ""
+          }</div>
+        ${tallyRows || '<div class="muted">（呢題冇票）</div>'}
+        ${ballotLine ? `<div class="hint">票軌：${ballotLine}</div>` : ""}
+        <div class="row wrap">
+          <button class="primary" data-act="ucm.foultop" ${questionDone || topCandidates.length !== 1 ? "disabled" : ""} title="${
+            questionDone ? "本題已經 foul 咗一個" : topCandidates.length === 1 ? "由 server 計最高票再 foul" : "同票／冇票：請用下面 dropdown 揀人"
+          }">Foul 最高票${topLabel ? `：${topLabel}` : ""}（一人出局）</button>
+        </div>`
+        : `<div class="row wrap"><span class="muted">${
+            st.promptRevealed ? "題目已公佈，可以開投票。" : "先公佈好人題目，再開投票（跟 FLOW 次序）。"
+          }</span></div>
+          <div class="row wrap"><button class="primary" data-act="ucm.vote" ${st.promptRevealed ? "" : "disabled"}>開始投票（10 秒）</button></div>`;
   return `<div class="card-box" style="margin-top:10px"><h4>一圖多人（畫畫臥底）</h4>
     <div class="row wrap">${status}</div>
     <div class="row wrap"><span class="pill hot">臥底（主持專用）</span>${undercoverList}</div>
     <div style="margin-top:6px"><div class="muted">本局題目（派卡用：好人題＋臥底題各一張；現時嗰對高亮）</div>${topicRows || '<div class="muted">（未抽題）</div>'}</div>
     <div class="row wrap"><span class="muted">已出局：</span>${eliminated.join("") || '<span class="muted">（未有）</span>'}</div>
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+      <div class="row wrap"><span class="pill">本題投票</span></div>
+      ${voteStep}
+    </div>
     <div class="btn-row">
       <button data-act="ucm.redraw">重抽臥底</button>
-      <button class="${st.promptRevealed ? "" : "primary"}" data-act="ucm.reveal">公佈好人題目</button>
-      <button class="primary" data-act="ucm.vote" ${st.settled ? "disabled" : ""}>開投票（10 秒）</button>
-      <button data-act="ucm.undo">取消上一個淘汰</button>
+      <button class="${st.promptRevealed ? "" : "primary"}" data-act="ucm.reveal" ${st.settled ? "disabled" : ""}>公佈好人題目</button>
+      <button data-act="ucm.undo" ${st.eliminatedIds.length ? "" : "disabled"}>取消上一個淘汰</button>
       <button class="primary" data-act="ucm.next">下一題／結算</button>
       <button data-act="ucm.settle" ${canSettle ? "" : "disabled"} title="${canSettle ? "判勝負＋加分" : "仲未夠 3 題／仲有臥底未出局（請撳「下一題／結算」）"}">分數結算</button>
       <button data-act="ucm.reset">清走本局（再開一局）</button>
     </div>
     <div class="row wrap">
-      <span class="muted">淘汰邊個：</span>
+      <span class="muted">手動揀人 foul（同票／主持想改；已出局者唔會出現）：</span>
       <select id="ucm-target">${candidates.map((id: string) => `<option value="${esc(id)}">${label(id)}</option>`).join("")}</select>
-      <button class="danger" data-act="ucm.eliminate">淘汰佢</button>
+      <button class="danger" data-act="ucm.eliminate" ${candidates.length ? "" : "disabled"}>淘汰佢</button>
       <span class="muted">（大mon 會即刻講中／唔中）</span>
     </div>
-    <div class="hint">計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
+    <div class="hint">每題流程：公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票嗰個（同票就要主持揀）→ 下一題。最多 3 題；兩個臥底都出局＝好人勝。計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
   </div>`;
-}
-
-function undercoverPanel(v: any): string {
-  const u = v.undercover;
-  const players = (v.players ?? []).filter((p: any) => p.status === "approved");
-  if (u && u.phase === "voting") {
-    return `<div class="card-box" style="margin-top:10px"><h4>臥底投票（進行中）</h4>
-      <div class="row wrap"><span class="pill">已投 ${u.answeredCount}／${u.eligibleCount}</span>
-      <button class="primary" data-act="uc.reveal">立即開票</button></div>
-      <div class="hint">大mon 顯示「請投出你心目中嘅臥底」＋${u.durationSeconds} 秒倒數；時到自動開票。</div></div>`;
-  }
-  if (u && u.phase === "result" && !(ucConfiguring && ucConfiguringRound === String(v.currentRound?.id ?? ""))) {
-    return `<div class="card-box" style="margin-top:10px"><h4>臥底投票結果</h4>
-      ${u.candidates.map((c: any) => `<div class="ledger-row"><span class="grow">#${c.number} ${esc(c.name)}</span><b>${c.count} 票</b></div>`).join("")}
-      <div class="hint">${u.ballots.map((b: any) => `${esc(b.voterName)}→${esc(b.targetName)}`).join("｜")}</div>
-      <div class="btn-row"><button class="primary" data-act="uc.new">再開一輪</button><button data-act="stage.qr">大mon 返 QR</button></div></div>`;
-  }
-  const rows = players
-    .map((p: any) => `<label class="row" style="gap:6px"><input type="checkbox" data-uc-p="${p.id}" checked>#${p.number} ${esc(p.name)}</label>`)
-    .join("");
-  return `<div class="card-box" style="margin-top:10px"><h4>臥底投票（畫畫關・紙本出題）</h4>
-    <div class="hint">剔走已 foul／唔玩嘅人：佢哋唔會出現喺候選名單（仍然可以投票）。</div>
-    <div class="row wrap">${rows || `<span class="muted">未有已批准玩家</span>`}</div>
-    <div class="btn-row"><label class="row">秒數 <input id="uc-seconds" type="number" min="5" max="60" value="10" style="width:80px"></label>
-    <button class="primary" data-act="uc.start">開始臥底投票</button></div></div>`;
 }
 
 function playersSection(v: any): string {
@@ -1627,25 +1647,20 @@ async function handleAct(act: string): Promise<void> {
       } else if (sub === "redraw") await cmd("uc.match.redraw");
       else if (sub === "reveal") await cmd("uc.prompt.reveal");
       else if (sub === "vote") await cmd("uc.vote.start");
-      else if (sub === "eliminate") await cmd("uc.eliminate", undefined, { playerId: val("#ucm-target") });
-      else if (sub === "undo") await cmd("uc.eliminate.undo");
+      // v0.4.0：投票中「立即開票」（同一個 finalizeUndercover，唔再另開一套 code path）
+      else if (sub === "revealRound") await cmd("undercover.reveal");
+      // v0.4.0：由 server 計最高票再 foul（同票／冇票會 throw W_TIE／W_NO_VOTES 顯示喺 toast）
+      else if (sub === "foultop") await cmd("uc.vote.foulTop");
+      else if (sub === "eliminate") {
+        if (!val("#ucm-target")) {
+          failAct("冇人可以揀（全部出局？）");
+          return;
+        }
+        await cmd("uc.eliminate", undefined, { playerId: val("#ucm-target") });
+      } else if (sub === "undo") await cmd("uc.eliminate.undo");
       else if (sub === "next") await cmd("uc.match.next");
       else if (sub === "settle") await cmd("uc.match.settle");
       else if (sub === "reset") await cmd("uc.match.reset");
-      break;
-    case "uc":
-      if (sub === "start") {
-        ucConfiguring = false;
-        const secs = Number(val("#uc-seconds")) || 10;
-        const approved = (view?.players ?? []).filter((p: any) => p.status === "approved");
-        const exclude = approved.filter((p: any) => !checked(`[data-uc-p="${p.id}"]`)).map((p: any) => p.id);
-        await cmd("undercover.start", undefined, { excludePlayerIds: exclude, durationSeconds: secs });
-      } else if (sub === "reveal") await cmd("undercover.reveal");
-      else if (sub === "new") {
-        ucConfiguring = true;
-        ucConfiguringRound = String(view?.currentRound?.id ?? "");
-        render();
-      }
       break;
     case "room":
       if (sub === "start") await cmd("room.start");
