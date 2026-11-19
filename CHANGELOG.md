@@ -18,6 +18,10 @@
 ### Fixed（codex audit 揪出）
 - host 收唔到 undercover 更新（HOST_SECTIONS 漏咗）、「再開一輪」無效、手動選 undercover mode 被拒、被踢玩家仍可投票、搗蛋鬼淘汰名單誤套用落臥底投票、generic 收卷／切分佈會令投票卡死、開始新投票會棄掉未完成回合、轉關殘留上一關結果、票數名單用今日 roster、deadline 後仍收票、重排後標題關數錯。
 
+### Fixed（獨立 checker 覆核 nit）
+- 每輪臥底投票卡而家會登記入當前 rundown item 嘅 cardIds（唔會再累積 orphan 卡）。
+- rundown.reorder 會驗證 ids 必須完整、冇重複、冇未知 id（漏／重複一律 W_BAD_SCHEMA）。
+
 ### Known Issues
 - 主持台規則頁頁碼 pill 喺預覽頁被 disable／delete 之後會顯示舊頁數（cosmetic）。
 - `stage.rules{pageIndex}` API 一律由第 0 頁開始（UI 用 `stage.page` 翻頁）。
