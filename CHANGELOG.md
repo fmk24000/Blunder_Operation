@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.3.1 — 2026-11-19
+
+### Fixed — 通知（toast）
+- **手機 `/play` 唔再顯示 toast**：以前 server 每次投影都帶住最新一條 activity，手機每 100ms
+  重繪時就重設 3.2 秒計時器，所以黑色通知（例如「踢走咗 XXX」）會**永遠唔消失**，仲遮住
+  底部分數條。而家手機完全唔顯示 toast；玩家需要知嘅錯誤仍然喺表單內顯示。
+- **大mon toast 有 timeout**：改用 activity `id` 去重（唔再靠文字），同一條通知唔會重彈；
+  並明確設定 **2.6 秒自動收**，唔會長遮畫面。連撳兩次同一個掣（新 activity）仍然會彈。
+- 前端資產版本 `?v=20261119p6`（強制手機／大mon 重新下載新 JS，唔會用 cache 舊版）。
+
+### Tests
+- 112 → **113**（加「手機唔用 showToast」test；改寫大mon dedup test 驗 `toastId`）。
+
+
 ## v0.3.0 — 2026-11-19
 
 > 對齊壽星 Excel 完整流程（`design/26party.xlsx`，第 8–72 行）。四個遊戲由

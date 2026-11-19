@@ -345,7 +345,8 @@ export function connBanner(status, lastView) {
     return `<div class="conn-banner">連線中…（最後更新 ${lastView ? new Date().toLocaleTimeString("zh-HK") : "未有資料"}）</div>`;
 }
 let toastTimer = null;
-export function showToast(text) {
+/** v0.3.1：可以指定顯示時間（大mon 用短啲，唔好遮住分數條／畫面）。預設 3.2 秒。 */
+export function showToast(text, ms = 3200) {
     const box = el("#toast");
     if (!box || !text)
         return;
@@ -353,5 +354,5 @@ export function showToast(text) {
     box.classList.add("show");
     if (toastTimer)
         window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => box.classList.remove("show"), 3200);
+    toastTimer = window.setTimeout(() => box.classList.remove("show"), Math.max(600, ms));
 }

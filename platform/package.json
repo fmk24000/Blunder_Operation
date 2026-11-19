@@ -1,6 +1,6 @@
 {
   "name": "hbd-game-platform",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "2026 HBD 派對遊戲平台 — 4 關（一圖多人／拍賣估歌／笨蛋殺手／問答）・手機投票／問答・大mon＋主持台（v0.3.0）",
   "type": "module",

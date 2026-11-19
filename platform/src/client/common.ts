@@ -357,11 +357,12 @@ export function connBanner(status: ConnStatus, lastView: any): string {
 }
 
 let toastTimer: number | null = null;
-export function showToast(text: string | null | undefined): void {
+/** v0.3.1：可以指定顯示時間（大mon 用短啲，唔好遮住分數條／畫面）。預設 3.2 秒。 */
+export function showToast(text: string | null | undefined, ms = 3200): void {
   const box = el<HTMLDivElement>("#toast");
   if (!box || !text) return;
   box.textContent = text;
   box.classList.add("show");
   if (toastTimer) window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => box.classList.remove("show"), 3200);
+  toastTimer = window.setTimeout(() => box.classList.remove("show"), Math.max(600, ms));
 }

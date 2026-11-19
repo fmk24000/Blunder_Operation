@@ -557,16 +557,22 @@ function paintTimers(): void {
     const tot = q?.eligibleCount ?? t?.eligibleCount;
     if (n !== undefined) answeredNode.textContent = `已答 ${n}/${tot}`;
   }
-  paintToast(view.toast);
+  paintToast(view.toast, view.toastId);
 }
 
-/** 100ms tick 都會行到：同一個 toast 唔可以每次都重設 3.2s timer，否則永遠唔會收（codex 第五輪 #3） */
-let lastToastText = "";
-function paintToast(text: string | null | undefined): void {
+/**
+ * 100ms tick 都會行到：同一個 toast 唔可以每次都重設 timer，否則永遠唔會收（codex 第五輪 #3）。
+ * v0.3.1：改用 activity id 去重——文字一樣但係新事件（例如連撳兩次同一個掣）都要彈；
+ * 文字唔同但係同一條 activity 就唔應該重彈。
+ */
+let lastToastId = "";
+function paintToast(text: string | null | undefined, id?: string | null): void {
   const t = (text ?? "").trim();
-  if (t === lastToastText) return;
-  lastToastText = t;
-  if (t) showToast(t);
+  const key = id ?? t;
+  if (!t) return;
+  if (key === lastToastId) return;
+  lastToastId = key;
+  showToast(t, 2600); // 大mon：2.6 秒自動收，唔會長遮分數條
 }
 
 function setStatus(s: ConnStatus): void {

@@ -648,15 +648,22 @@ test("host.ts：render() 換 innerHTML 前後會保住主持打緊嘅表單值",
   assert.match(src, /root\.addEventListener\("change", markDirty\)/, "select 改動都要記低");
 });
 
-test("stage.ts：100ms tick 唔會每次重設 toast timer（只有文字變更才 showToast）", () => {
+test("stage.ts：100ms tick 唔會每次重設 toast timer（同一條 activity 只彈一次）", () => {
   const src = clientSrc("stage.ts");
   const start = src.indexOf("function paintTimers(): void {");
   const end = src.indexOf("function setStatus(");
   assert.ok(start >= 0 && end > start);
   const body = src.slice(start, end);
-  assert.match(body, /paintToast\(view\.toast\);/, "paintTimers 要經 dedup 入口");
+  assert.match(body, /paintToast\(view\.toast, view\.toastId\)/, "paintTimers 要經 dedup 入口（帶 activity id）");
   assert.ok(!/showToast\(view\.toast\)/.test(body), "paintTimers 唔可以直接 showToast");
-  assert.match(src, /if \(t === lastToastText\) return;/, "同一段文字唔可以重設 timer");
+  assert.match(src, /if \(key === lastToastId\) return;/, "同一條 activity 唔可以重設 timer");
+  assert.match(src, /showToast\(t, 2600\)/, "大mon toast 要有 timeout（2.6 秒自動收）");
+});
+
+test("play.ts：手機版唔顯示 toast（唔會遮住底部分數條）", () => {
+  const src = clientSrc("play.ts");
+  assert.ok(!/showToast\(view\?\.toast\)/.test(src), "手機唔應該再 render server toast");
+  assert.ok(!/\bshowToast\b/.test(src), "手機 client 唔應該再 import 或用 showToast");
 });
 
 /* client 行為測試：由 src/client/*.ts 抽出 // <client-block>x … // </client-block> 嘅純邏輯，

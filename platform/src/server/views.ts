@@ -574,6 +574,7 @@ export function buildStageView(store: Store): StageView {
     saboteurInfo,
     finale,
     toast: toast ? toast.text : null,
+    toastId: toast ? toast.id : null,
   };
 }
 
@@ -742,6 +743,7 @@ export function buildPlayerView(store: Store, playerId: string): PlayerSelfView 
     undercoverMatch: playerUndercoverMatch(store, playerId),
     finale,
     toast: toast ? toast.text : null,
+    toastId: toast ? toast.id : null,
   };
 }
 

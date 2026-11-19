@@ -1,5 +1,5 @@
 /** 手機 /play（單向提交；PLAN-v3.1 §8.3／§9.4.1 D28） */
-import { Live, api, esc, avatarHtml, connBanner, showToast, fmtClock, el, lsGet, lsSet, lsDel, type ConnStatus } from "./common.js";
+import { Live, api, esc, avatarHtml, connBanner, fmtClock, el, lsGet, lsSet, lsDel, type ConnStatus } from "./common.js";
 
 const EMOJIS = ["😀", "😎", "🤩", "🥳", "😺", "🐶", "🐱", "🦊", "🐼", "🐨", "🦁", "🐯", "🐸", "🐵", "🦄", "🐮", "🐷", "🐔", "🐧", "🐦", "🦉", "🦋", "🐝", "🐢", "🐙", "🦀", "🐬", "🐳", "🦖", "🦕", "🌞", "🌙", "⭐", "🌈", "🍕", "🍔", "🍟", "🍣", "🍜", "🍩", "🍰", "🍦", "🍎", "🍉", "⚽", "🏀", "🎮", "🎸"];
 const COLORS = ["#ef4444", "#f97316", "#f59e0b", "#22c55e", "#14b8a6", "#3b82f6", "#a855f7", "#ec4899"];
@@ -166,7 +166,8 @@ function updateClock(): void {
     bidBtn.textContent = `競投（${secs} 秒）`;
     bidBtn.disabled = secs <= 0 || submitting;
   }
-  showToast(view?.toast);
+  // v0.3.1：手機版唔顯示 toast（主持台／server 嘅通知對玩家冇意義，仲會遮住底部分數條）。
+  // 玩家需要知嘅錯誤已經喺表單內以 submitError 顯示。
 }
 
 function confirmButton(label: string, enabled: boolean): string {

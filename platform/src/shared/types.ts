@@ -505,6 +505,8 @@ export type StageView = {
     awards: { id: string; revealed: boolean; name: string | null; score: number | null; reason: string | null }[];
   } | null;
   toast: string | null;
+  /** 最新一條 activity 嘅 id：大mon 用嚟判斷「係唔係新通知」，重複 projection 唔會重新彈 */
+  toastId?: string | null;
 };
 
 /** v0.3.0 一圖多人：大mon／主持共用嘅公開投影（永遠冇 undercoverIds） */
@@ -605,6 +607,7 @@ export type PlayerSelfView = {
   undercoverMatch?: { matchNo: number; questionNo: number; eliminated: boolean; result: "good" | "undercover" | null } | null;
   finale: StageView["finale"];
   toast: string | null;
+  toastId?: string | null;
 };
 
 export type HostView = {
