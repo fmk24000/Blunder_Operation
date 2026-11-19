@@ -37,11 +37,11 @@ function renderJoin() {
       <div class="play-card">
         <div class="play-q">你叫咩名？</div>
         <input id="join-name" maxlength="12" placeholder="名（最多 12 字）" autocomplete="off">
-        <div class="play-q" style="font-size:20px">揀個頭像</div>
-        <div id="emoji-grid" style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px">${EMOJIS.map((e) => `<button class="emoji-btn ${e === avatarSel.emoji ? "primary" : ""}" data-emoji="${esc(e)}" style="font-size:24px;padding:8px 0">${e}</button>`).join("")}</div>
-        <div id="color-grid" style="display:flex;gap:8px">${COLORS.map((c) => `<button data-color="${c}" style="width:34px;height:34px;border-radius:50%;background:${c};${c === avatarSel.color ? "outline:3px solid #111" : ""}"></button>`).join("")}</div>
+        <div class="field-label">揀個頭像</div>
+        <div id="emoji-grid">${EMOJIS.map((e) => `<button class="emoji-btn ${e === avatarSel.emoji ? "primary" : ""}" data-emoji="${esc(e)}">${e}</button>`).join("")}</div>
+        <div id="color-grid">${COLORS.map((c) => `<button data-color="${c}" style="background:${c};${c === avatarSel.color ? "outline:2px solid #16150f;outline-offset:2px" : ""}"></button>`).join("")}</div>
         ${joinError ? `<div class="error-box">${esc(joinError)}</div>` : ""}
-        <button class="primary" id="join-btn" style="font-size:22px;padding:16px">入場</button>
+        <button class="primary" id="join-btn">入場</button>
       </div>
       <div class="helptext">入場後等主持批准，大mon 會見到你個頭像。</div>
     </div>`;
@@ -155,7 +155,7 @@ function updateClock() {
     showToast(view?.toast);
 }
 function confirmButton(label, enabled) {
-    return `<button class="primary" id="confirm-btn" ${enabled && !submitting ? "" : "disabled"} style="font-size:22px;padding:16px">${submitting ? "送出中…" : label}</button>`;
+    return `<button class="primary" id="confirm-btn" ${enabled && !submitting ? "" : "disabled"}>${submitting ? "送出中…" : label}</button>`;
 }
 function renderTask(v) {
     const task = v.task;
@@ -174,7 +174,7 @@ function renderTask(v) {
         return `<div class="play-card">
       <div class="play-q">${esc(task.prompt)}</div>${clock}
       <div class="play-options">${opts
-            .map((o, i) => `<button class="play-option ${selected.choice === i ? "selected" : ""}" data-choice="${i}" style="font-size:20px"><span class="letter">${String.fromCharCode(65 + i)}</span><span>${esc(o)}</span></button>`)
+            .map((o, i) => `<button class="play-option ${selected.choice === i ? "selected" : ""}" data-choice="${i}"><span class="letter">${String.fromCharCode(65 + i)}</span><span>${esc(o)}</span></button>`)
             .join("")}</div>
       ${submitError ? `<div class="error-box">${esc(submitError)}</div>` : ""}
       ${confirmButton(selected.choice === undefined ? "揀一個" : "確認送出", selected.choice !== undefined)}
@@ -276,6 +276,7 @@ function render() {
         body = `<div class="play-card"><div class="play-q">${v.phase === "lobby" ? "等主持開始" : "等主持指示"}</div><div class="waiting">大mon 會有畫面</div></div>`;
     }
     root.innerHTML = `
+    <div class="play-wrap">
     ${body}
     ${submitError ? `<div class="error-box">${esc(submitError)}</div>` : ""}
     ${connBanner(status, v)}
@@ -286,7 +287,8 @@ function render() {
         <span class="myscore">${me.score} 分</span>
       </div>
     </div>
-    <div id="toast"></div>`;
+    <div id="toast"></div>
+    </div>`;
     bindTask(v);
 }
 function bindTask(v) {

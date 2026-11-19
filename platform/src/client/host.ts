@@ -415,9 +415,18 @@ function startDeckTimer(): void {
   scheduleLeasePause();
 }
 
+const PHASE_LABEL: Record<string, string> = {
+  lobby: "大堂", playing: "進行中", finished: "完場", setup: "設定",
+};
+const PLAYER_STATUS: Record<string, string> = {
+  approved: "已批准", pending: "待批准", kicked: "已踢", left: "已離開",
+};
+const RD_STATE: Record<string, string> = {
+  done: "已完成", running: "進行中", skipped: "跳過", pending: "未開始", todo: "未開始",
+};
 const MODE_LABEL: Record<string, string> = {
   undercover: "臥底投票",
-  idle: "Idle", rules: "規則頁", scoreboard: "分數板", question: "問題", tally: "分佈", reveal: "揭曉",
+  idle: "待機", rules: "規則頁", scoreboard: "分數板", question: "問題", tally: "分佈", reveal: "揭曉",
   "draw-wall": "作品牆", "draw-focus": "作品放大", bid: "競投", vote: "投票", "role-reveal": "身份揭曉",
   song: "聽歌", leaderboard: "排行榜", finale: "結算", award: "頒獎", timer: "計時", blackout: "黑屏",
 };
@@ -534,7 +543,7 @@ function controlSection(v: any): string {
     `<div class="mode-group"><div class="mg-label">${label}</div><div class="stage-mode-grid">${modes
       .map((m) => `<button data-act="stage.mode:${m}" class="${mode === m ? "active" : ""}">${esc(MODE_LABEL[m] ?? m)}</button>`)
       .join("")}${extraHtml}</div></div>`;
-  return `<section class="ctrl-rundown"><h3>Rundown（${rd.filter((i: any) => i.state === "done" || i.state === "skipped").length}/${rd.length}）</h3>
+  return `<section class="ctrl-rundown"><h3>流程（${rd.filter((i: any) => i.state === "done" || i.state === "skipped").length}/${rd.length}）</h3>
     <div class="card-box">
       <button class="ctrl-hero" data-act="rd.next">
         <span class="hero-k">下一項 ▶</span>
@@ -542,19 +551,19 @@ function controlSection(v: any): string {
       </button>
       <div class="ctrl-sub">
         <button data-act="rd.prev">◀ 上一項</button>
-        <button data-act="rd.skip">Skip 呢關</button>
+        <button data-act="rd.skip">跳過呢關</button>
         <span class="pill ${cur ? "on" : ""}">${cur ? `進行中：${esc(cur.title)}` : "未開始"}</span>
       </div>
       <div class="rd-list">${rd
         .map(
           (i: any) =>
-            `<div class="ledger-row"><span class="pill ${i.state === "running" ? "on" : i.state === "done" ? "off" : ""}">${i.state}</span><span class="grow">${esc(i.title)}</span><span class="muted">${esc(i.gameId)}</span></div>`,
+            `<div class="ledger-row"><span class="pill ${i.state === "running" ? "on" : i.state === "done" ? "off" : ""}">${esc(RD_STATE[i.state] ?? i.state)}</span><span class="grow">${esc(i.title)}</span><span class="muted">${esc(i.gameId)}</span></div>`,
         )
         .join("")}</div>
       <div class="ctrl-phase">
-        <button class="primary" data-act="room.start">開始 playing</button>
-        <button data-act="room.phase:lobby">回 Lobby</button>
-        <button data-act="room.phase:final">去 Final</button>
+        <button class="primary" data-act="room.start">開始遊戲</button>
+        <button data-act="room.phase:lobby">返大堂</button>
+        <button data-act="room.phase:final">去結算</button>
       </div>
     </div>
   </section>
@@ -659,7 +668,7 @@ function playersSection(v: any): string {
           <input type="text" placeholder="改名" value="${esc(p.name)}" data-name="${p.id}">
           <button class="btn-sm" data-act="player.rename:${p.id}">改名</button>
           ${groups.length ? `<select data-group="${p.id}"><option value="">個人戰</option>${groups.map((g: any) => `<option value="${g.id}" ${p.groupId === g.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select><button class="btn-sm" data-act="player.group:${p.id}">搬組</button>` : ""}
-          <span class="pill">${p.status}</span>
+          <span class="pill ${p.status === "pending" ? "on" : p.status === "kicked" ? "off" : ""}">${esc(PLAYER_STATUS[p.status] ?? p.status)}</span>
           ${p.status === "pending" ? `<button class="btn-sm primary" data-act="player.approve:${p.id}">批准</button>` : ""}
           ${p.status !== "kicked" ? `<button class="btn-sm danger" data-act="player.kick:${p.id}">踢</button>` : `<button class="btn-sm" data-act="player.approve:${p.id}">恢復</button>`}
           <span class="pscore">${p.score}</span>
@@ -668,7 +677,7 @@ function playersSection(v: any): string {
           <button class="btn-sm" data-act="score.add:${p.id}:5">+5</button>
           <button class="btn-sm" data-act="score.add:${p.id}:-1">-1</button>
         </div>`;
-  return `<section><h3>玩家（approved ${v.caps?.approved}/${v.caps?.maxApproved}・pending ${v.caps?.pending}/${v.caps?.maxPending}）</h3>
+  return `<section><h3>玩家（已批准 ${v.caps?.approved}/${v.caps?.maxApproved}・待批准 ${v.caps?.pending}/${v.caps?.maxPending}）</h3>
     <div class="card-box">${active.map(row).join("")}</div>
     ${kicked.length ? `<details class="kicked-box"><summary>已踢 ${kicked.length}（撳開睇／還原）</summary><div class="card-box">${kicked.map(row).join("")}</div></details>` : ""}
   </section>`;
@@ -1078,9 +1087,9 @@ function render(): void {
     <div class="host-top">
       <b>主持台</b>
       <span class="pill">房碼 ${esc(v.roomCode)}</span>
-      <span class="pill">phase ${esc(v.phase)}</span>
-      <span class="pill">mode ${esc(v.stage?.mode)}</span>
-      <span class="pill">rev ${v.revision}</span>
+      <span class="pill">階段 ${esc(PHASE_LABEL[v.phase] ?? v.phase)}</span>
+      <span class="pill">畫面 ${esc(MODE_LABEL[v.stage?.mode] ?? v.stage?.mode ?? "—")}</span>
+      <span class="pill">版本 ${v.revision}</span>
       <span class="pill">${esc(hostName)}</span>
       <span class="grow"></span>
       <button class="btn-sm ghost" data-act="logout">登出</button>

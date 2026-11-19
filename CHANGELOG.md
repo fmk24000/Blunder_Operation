@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.2.0 — 2026-11-19
+
+### Changed — 視覺大改（Doubao 淺色 ＋ 大字體）
+- **全站配色改跟 Doubao 淺色版**：冷調淺底 `#f7f9fc`、白卡、`#e7eaef` hairline、單一 primary 藍 `#0065fd`；取消彩色漸變／grain／大部分陰影，改用 border 分層；圓角 12/18/24。
+- **掣改 pill**；主持台 tabbar 選中＝黑 pill 白字；mode tiles 用淺藍 active（唔再成版實心藍）；列表動作降噪（`開`/`批准` 藍、`踢`/`刪` 白底紅字）。
+- **大mon**：房碼＋QR 收埋一張紙卡（房碼黑卡白字）、頭像 squircle、分數板獎牌名次、分數條可換行、短畫面垂直置中（`safe center`）、規則頁字階收一級（1080p 一頁放得落）＋底部淡出 mask。
+- **主持台**：卡片 flat（白底＋hairline、無陰影）；`階段／畫面／版本／流程／已批准／待批准／已完成／進行中` 全部中文；`Skip 呢關`→`跳過呢關`、`開始 playing`→`開始遊戲`、`回 Lobby`→`返大堂`、`去 Final`→`去結算`。
+- **手機**：修正「入場後卡片冇左右 padding 貼邊」；頭像 8 欄（≤420px 7 欄）、色板 8 格圓角方塊、`.helptext` 26px→14px、disabled 主掣改淺底灰字。
+- **Landing** 改成 hero＋四張入口卡。
+
+### Added — 大mon 專用字體（思緒重生體）
+- `public/fonts/reborn.woff2`（由購買版 `MMF-RebornFont-V1.2-Normal` OTF 轉 WOFF2，1.9MB→1.43MB），`font-display: swap`、只有 `/stage` preload。
+- **只限大mon**：`body.stage` 用 `--font-reborn`；主持台／手機／landing 用系統字（之後再揀）。
+- 字型 0–9 係哥德體（`0` 似方格），用 `unicode-range` 排除數字、fallback 系統字；大mon 數字用 tabular-nums。
+
+### Fixed
+- 大mon 倒數最後 5 秒：原本紅字藍底（睇唔到）→ 整粒紅色 pill 白字。
+- Rundown `todo` 狀態顯示英文 → 未開始。
+- `Rundown`／`approved`／`pending` 等殘留英文文案。
+
+### Tests
+- 57/57 pass。前端資產版本 `?v=20261119p3`。
+
+
 ## v0.1.6 — 2026-11-18
 
 ### Added — 畫畫關：臥底投票（紙本出題，手機投票）

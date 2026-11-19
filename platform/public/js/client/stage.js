@@ -438,7 +438,9 @@ function paintTimers() {
     const left = live?.msLeft(endsAt) ?? null;
     for (const node of document.querySelectorAll("[data-countdown]")) {
         node.textContent = left === null ? "—" : fmtClock(left);
-        node.style.color = left !== null && left <= 5000 ? "var(--red)" : "";
+        // 最後 5 秒：用 class 轉紅色 pill（白字），唔好喺藍底上用紅字
+        node.classList.toggle("is-urgent", left !== null && left <= 5000);
+        node.style.color = "";
     }
     const answeredNode = document.querySelector("[data-answered]");
     if (answeredNode) {
