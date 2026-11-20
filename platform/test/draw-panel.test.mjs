@@ -109,3 +109,20 @@ test("v043-i2：分數結算 enabled 條件同 server 對齊（唔再靠 stale r
   assert.match(panel, /const canSettle = remaining === 0 \|\| \(st\.questionNo >= 2 && questionDone\)/);
   assert.ok(!/canSettle[^;]*st\.result === "good"/.test(src), "唔可以再用 result===\"good\" 開結算掣");
 });
+
+/* v0.4.3 第二輪 audit P2（N1／N2） */
+
+test("v043-n1：進階面板「重抽臥底」要跟 server 未開始窗口（唔好撳完必然 W_ALREADY_STATE）", () => {
+  const start = src.indexOf("function undercoverMatchPanel(");
+  const panel = src.slice(start, src.indexOf("\nfunction ", start + 10));
+  assert.match(panel, /const canRedraw =/, "要有 canRedraw 條件");
+  assert.match(panel, /!st\.settled && st\.questionNo === 0 && !st\.promptRevealed && !st\.roundId/, "條件要同 server uc.match.redraw 一致");
+  assert.match(panel, /data-act="ucm\.redraw" \$\{canRedraw \? "" : "disabled"\}/, "重抽掣要跟 canRedraw");
+});
+
+test("v043-n2：進階面板「公佈好人題目」投票中要 disabled（同 server open-round gate 一致）", () => {
+  const start = src.indexOf("function undercoverMatchPanel(");
+  const panel = src.slice(start, src.indexOf("\nfunction ", start + 10));
+  assert.match(panel, /data-act="ucm\.reveal" \$\{st\.settled \|\| voting \? "disabled" : ""\}/, "公佈掣要計 voting");
+  assert.match(panel, /投票進行中：等開票先再公佈/, "title 要講原因");
+});

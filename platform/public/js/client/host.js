@@ -800,6 +800,8 @@ function undercoverMatchPanel(v) {
     // 唔好令主持撳咗必然失敗（未開票／已 foul／已結算／換咗題都唔應該撳得）。
     const lastElimId = st.eliminatedIds[st.eliminatedIds.length - 1] ?? "";
     const canUndo = !!lastElimId && !st.settled && (st.eliminatedByQuestion?.[lastElimId] ?? st.questionNo) === st.questionNo;
+    // v0.4.3（AUDIT-CODEX N1）：重抽身份只准未開始（同 server uc.match.redraw 一致）
+    const canRedraw = !st.settled && st.questionNo === 0 && !st.promptRevealed && !st.roundId && (st.eliminatedIds ?? []).length === 0;
     const canManualFoul = revealed && !questionDone && !st.settled && candidates.length > 0;
     const status = [
         `第 ${st.matchNo} 局`,
@@ -884,8 +886,8 @@ function undercoverMatchPanel(v) {
       ${voteStep}
     </div>
     <div class="btn-row">
-      <button data-act="ucm.redraw">重抽臥底</button>
-      <button class="${st.promptRevealed ? "" : "primary"}" data-act="ucm.reveal" ${st.settled ? "disabled" : ""}>公佈好人題目</button>
+      <button data-act="ucm.redraw" ${canRedraw ? "" : "disabled"} title="${canRedraw ? "未公佈／未投票前可以重抽身份" : "已經開始咗（公佈／投票／淘汰過）：要換身份請開新一局"}">重抽臥底</button>
+      <button class="${st.promptRevealed || voting ? "" : "primary"}" data-act="ucm.reveal" ${st.settled || voting ? "disabled" : ""} title="${voting ? "投票進行中：等開票先再公佈" : st.settled ? "本局已結算" : "只推好人題目上大mon（臥底題唔會出）"}">公佈好人題目</button>
       <button data-act="ucm.undo" ${canUndo ? "" : "disabled"} title="${canUndo ? "取消本題嘅淘汰" : "冇可取消嘅淘汰（或者已經換咗題／已結算）"}">取消上一個淘汰</button>
       <button class="primary" data-act="ucm.next">下一題／結算</button>
       <button data-act="ucm.settle" ${canSettle ? "" : "disabled"} title="${canSettle ? "判勝負＋加分" : "仲未夠 3 題／仲有臥底未出局（請撳「下一題／結算」）"}">分數結算</button>
