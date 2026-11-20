@@ -844,8 +844,17 @@ function undercoverMatchPanel(v: any): string {
   const lastElimId: string = st.eliminatedIds[st.eliminatedIds.length - 1] ?? "";
   const canUndo = !!lastElimId && !st.settled && (st.eliminatedByQuestion?.[lastElimId] ?? st.questionNo) === st.questionNo;
   // v0.4.3（AUDIT-CODEX N1）：重抽身份只准未開始（同 server uc.match.redraw 一致）
+  const aliveParticipants = (st.participantIds ?? []).filter(
+    (id: string) => approved.some((p: any) => p.id === id) && !(st.eliminatedIds ?? []).includes(id),
+  );
   const canRedraw =
-    !st.settled && st.questionNo === 0 && !st.promptRevealed && !st.roundId && (st.eliminatedIds ?? []).length === 0;
+    !st.settled &&
+    st.questionNo === 0 &&
+    !st.promptRevealed &&
+    !st.roundId &&
+    (st.eliminatedIds ?? []).length === 0 &&
+    (st.result ?? null) === null &&
+    aliveParticipants.length >= (st.undercoverIds ?? []).length + 2;
   const canManualFoul = revealed && !questionDone && !st.settled && candidates.length > 0;
   const status = [
     `第 ${st.matchNo} 局`,
@@ -1015,8 +1024,19 @@ function drawFlowBlock(v: any): string {
       }<span class="muted">派實體題目卡用（唔會出手機／大mon）</span></div>`
     : "";
   // 重抽臥底：只准「未公佈、未開投票、冇淘汰」嘅窗口（同 R1 收緊後嘅 server 規則一致）
+  // v0.4.3（AUDIT-CODEX N1）：同 server uc.match.redraw 完全對齊（result 必須 null＋人數夠）
+  const aliveParticipants = active
+    ? st.participantIds.filter((id: string) => approved.some((p: any) => p.id === id) && !(st.eliminatedIds ?? []).includes(id))
+    : [];
   const redrawReady =
-    active && !st.settled && st.questionNo === 0 && !st.promptRevealed && !st.roundId && (st.eliminatedIds ?? []).length === 0;
+    active &&
+    !st.settled &&
+    st.questionNo === 0 &&
+    !st.promptRevealed &&
+    !st.roundId &&
+    (st.eliminatedIds ?? []).length === 0 &&
+    (st.result ?? null) === null &&
+    aliveParticipants.length >= (st.undercoverIds ?? []).length + 2;
   const redrawTitle = !active
     ? "未開局：先撳「開新一局」抽 2 個臥底"
     : st.settled

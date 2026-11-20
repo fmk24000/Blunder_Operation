@@ -116,7 +116,10 @@ test("v043-n1：進階面板「重抽臥底」要跟 server 未開始窗口（�
   const start = src.indexOf("function undercoverMatchPanel(");
   const panel = src.slice(start, src.indexOf("\nfunction ", start + 10));
   assert.match(panel, /const canRedraw =/, "要有 canRedraw 條件");
-  assert.match(panel, /!st\.settled && st\.questionNo === 0 && !st\.promptRevealed && !st\.roundId/, "條件要同 server uc.match.redraw 一致");
+  const canRedrawBlock = panel.slice(panel.indexOf("const canRedraw ="), panel.indexOf("\n", panel.indexOf("const canRedraw =")) + 400);
+  for (const cond of ["!st.settled", "st.questionNo === 0", "!st.promptRevealed", "!st.roundId", "(st.eliminatedIds ?? []).length === 0"]) {
+    assert.ok(canRedrawBlock.includes(cond), `canRedraw 要包含 ${cond}`);
+  }
   assert.match(panel, /data-act="ucm\.redraw" \$\{canRedraw \? "" : "disabled"\}/, "重抽掣要跟 canRedraw");
 });
 
@@ -125,4 +128,15 @@ test("v043-n2：進階面板「公佈好人題目」投票中要 disabled（同 
   const panel = src.slice(start, src.indexOf("\nfunction ", start + 10));
   assert.match(panel, /data-act="ucm\.reveal" \$\{st\.settled \|\| voting \? "disabled" : ""\}/, "公佈掣要計 voting");
   assert.match(panel, /投票進行中：等開票先再公佈/, "title 要講原因");
+});
+
+test("v043-n1b：兩邊重抽掣都要計 result===null 同人數 gate（同 server 完全一致）", () => {
+  assert.match(src, /\(st\.result \?\? null\) === null/, "要計 result 必須 null");
+  assert.match(src, /aliveParticipants\.length >= \(st\.undercoverIds \?\? \[\]\)\.length \+ 2/, "要計人數夠唔夠");
+  const mainStart = src.indexOf("function drawFlowBlock(");
+  const main = src.slice(mainStart, src.indexOf("\nfunction ", mainStart + 10));
+  assert.match(main, /data-act="ucm\.redraw" \$\{redrawReady \? "" : "disabled"\}/, "主頁重抽掣要跟 redrawReady");
+  const pStart = src.indexOf("function undercoverMatchPanel(");
+  const panel = src.slice(pStart, src.indexOf("\nfunction ", pStart + 10));
+  assert.match(panel, /data-act="ucm\.redraw" \$\{canRedraw \? "" : "disabled"\}/, "進階重抽掣要跟 canRedraw");
 });
