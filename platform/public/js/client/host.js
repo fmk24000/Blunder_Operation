@@ -646,7 +646,7 @@ function controlSection(v) {
       <div class="mode-groups">
         ${group("流程／畫面", ["idle", "rules", "scoreboard", "leaderboard"])}
         ${group("只換畫面（唔會收卷／評分）・冇 round 會出提示", ["question", "tally", "reveal"])}
-        ${group("估歌", ["bid", "song"], `<button data-act="media.reveal" class="${mode === "reveal" && v.stage?.payload?.songTitle ? "active" : ""}">開估（揭曉歌名）</button>`)}
+        ${bidFlowBlock(v)}
         ${drawFlowBlock(v)}
         ${group("搗蛋鬼／其他", ["role-reveal", "timer", "blackout"])}
         ${group("結算／頒獎", ["finale", "award", "game-scores"])}
@@ -694,6 +694,27 @@ function controlSection(v) {
     ${killerPanel(v)}
     ${bidPanel(v)}
   </section>`;
+}
+/** v0.4.3（用戶拍板）：估歌組只留兩粒真掣——「競投」開下一首拍賣卡（大mon＋手機 10 秒倒數）、
+ *  「競投結果」將全部人投到嘅秒數推上大mon。聽歌／開估由主持自己另一部機做，唔經系統，
+ *  所以唔再出「聽歌」「開估（揭曉歌名）」兩粒掣。 */
+function bidFlowBlock(v) {
+    const round = v.currentRound;
+    const card = round ? (v.cards ?? []).find((c) => c.id === round.cardId) : null;
+    const isBid = card?.type === "bid";
+    const subs = isBid
+        ? (v.submissions ?? []).filter((x) => x.roundId === round.id && x.confirmed && typeof x.amount === "number" && x.amount >= 1)
+        : [];
+    const published = Boolean(round?.auction?.ranking?.length);
+    const live = isBid && !published && (round.state === "open" || round.state === "closed" || round.state === "tally");
+    const canPublish = isBid && round.state !== "revealed" && round.state !== "void" && (subs.length > 0 || published);
+    return `<div class="mode-group"><div class="mg-label">估歌</div>
+    <div class="stage-mode-grid" style="grid-template-columns:repeat(2,1fr)">
+      <button class="primary" data-act="bid.start">競投${live ? "（進行中）" : ""}</button>
+      <button data-act="bid.publish" ${canPublish ? "" : "disabled"}>競投結果${published ? "（已公佈）" : subs.length ? `（${subs.length} 人）` : ""}</button>
+    </div>
+    <div class="hint">「競投」＝開下一首拍賣卡，大mon＋手機一齊倒數；所有人撳落去嗰刻剩幾秒＝佢聽幾多秒（唔限人數）。「競投結果」＝大mon 列出全部人嘅秒數，最少秒數先聽。播歌／開估喺你自己部機做，唔經系統。</div>
+  </div>`;
 }
 /** FIX-3b：拍賣時間估歌控制（由「進階→歌單」搬上控制頁；舊歌單 tab 嘅 code 仍然保留） */
 function bidPanel(v) {
@@ -1587,8 +1608,7 @@ function render() {
       <button class="btn-sm ghost" data-act="logout">登出</button>
     </div>
     <div class="host-tabs"><div class="tabbar">${TABS.map(([id, label]) => `<button class="${tab === id ? "active" : ""}" data-act="tab:${id}">${label}</button>`).join("")}<details class="tab-more" ${ADVANCED_TABS.some(([id]) => id === tab) ? "open" : ""}><summary class="${ADVANCED_TABS.some(([id]) => id === tab) ? "active" : ""}">進階</summary><div class="tabbar">${ADVANCED_TABS.map(([id, label]) => `<button class="${tab === id ? "active" : ""}" data-act="tab:${id}">${label}</button>`).join("")}</div></details></div></div>
-    <div class="host-wrap">${body}</div>
-    <div id="toast"></div>`;
+    <div class="host-wrap">${body}</div>`;
     restoreForm(formSnap);
     bindDelegates();
     syncDeck();
@@ -1861,12 +1881,14 @@ async function uploadFile(kind, fields, inputSel) {
 async function refreshExport(format) {
     if (!token)
         return;
-    const res = await api(`/api/host/export?format=${format}`, { token });
-    if (!res?.ok) {
-        showToast("export 失敗");
+    // v0.4.4（codex audit B9）：server 嘅 export 係 raw CSV／raw JSON（唔係 {ok:...}），
+    // 以前用 api() 去 json() 一定拋 → 次次都「export 失敗」。呢度直接攞 text。
+    const res = await fetch(`/api/host/export?format=${format}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+        showToast(`export 失敗（HTTP ${res.status}）`);
         return;
     }
-    const text = format === "csv" ? `${res.playersCsv}\n\n${res.ledgerCsv}` : JSON.stringify(res.room ?? res, null, 2);
+    const text = await res.text();
     const blob = new Blob([text], { type: format === "csv" ? "text/csv" : "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -2344,7 +2366,39 @@ async function handleAct(act) {
         }
     }
     else if (key === "bid") {
-        if (sub === "card") {
+        if (sub === "start") {
+            // v0.4.3：一粒掣＝開下一首拍賣卡。規則：
+            // ・而家已經開緊嘅就係拍賣 round（未公佈）→ 只係將大mon 轉返競投畫面
+            // ・上一首已公佈排名／已完結 → 先 bid.finish 收成終態，再開下一張 draft 卡（主持加完分就撳呢粒）
+            // ・仲有第二啲 round 未收 → 擋住，提示先結算（避免又出現「問答題目扮競投」）
+            const round = view?.currentRound;
+            const card = round ? (view?.cards ?? []).find((c) => c.id === round.cardId) : null;
+            const isBid = card?.type === "bid";
+            const busy = round && (round.state === "open" || round.state === "closed" || round.state === "tally");
+            const published = Boolean(round?.auction?.ranking?.length);
+            const subs = isBid
+                ? (view?.submissions ?? []).filter((x) => x.roundId === round.id && x.confirmed && typeof x.amount === "number" && x.amount >= 1)
+                : [];
+            if (round && isBid && busy && !published) {
+                // 仲 open（倒數緊）或者有人投：留喺競投畫面等主持撳「競投結果」
+                if (round.state === "open" || subs.length > 0) {
+                    await cmd("stage.set", undefined, { mode: "bid" });
+                    return;
+                }
+                // 零人競投＋已收卷：唔可以卡死（「競投結果」disabled、card.open 被擋）——收成終態再開下一首
+                showToast("呢首冇人競投，跳去下一首");
+            }
+            if (round && busy) {
+                if (!isBid) {
+                    failAct("而家仲有回合未完成（先公佈答案／結算），開唔到新嘅競投");
+                    return;
+                }
+                await cmd("bid.finish", undefined, { roundId: round.id });
+            }
+            // v0.4.4：唔限首數——由 server 揀 draft 卡，冇就自動建「第 N 首」
+            await cmd("bid.next");
+        }
+        else if (sub === "card") {
             await cmd("card.create", undefined, {
                 card: {
                     type: "bid",

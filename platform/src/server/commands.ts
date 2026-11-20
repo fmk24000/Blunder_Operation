@@ -233,6 +233,11 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: RundownMove): void 
   const store = ctx.store;
   const room = store.state.room;
   if (room.rundown.length === 0) throw new CmdError("W_ALREADY_STATE", "rundown 係空");
+  // v0.4.4（codex audit B7）：已經去咗結算（final）再撳「下一項／跳過」唔可以靜靜復活第一關
+  if (room.phase === "final" && (mode === "next" || mode === "skip") && !room.currentItemId) {
+    toast(ctx, "流程已經完結（撳「開始遊戲」或「重設流程」可以再玩）");
+    return;
+  }
   const cur = store.currentItem();
   const curIndex = cur ? cur.index : -1;
   // 舊 item 狀態
@@ -250,6 +255,21 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: RundownMove): void 
   if (mode === "start") nextIndex = 0;
   else if (mode === "prev") nextIndex = Math.max(0, curIndex - 1);
   else nextIndex = Math.min(rundown.length - 1, curIndex + 1);
+  // v0.4.4（codex audit B8）：尾關撳「下一項」以前會將同一項再設 running，allDone 永遠唔會 true。
+  // 而家行到尾就收成 final＋計頒獎，主持唔使再猜。
+  const reachedEnd = mode !== "start" && mode !== "prev" && curIndex + 1 >= rundown.length;
+  if (reachedEnd) {
+    const round = store.currentRound();
+    if (round && (round.state === "open" || round.state === "closed" || round.state === "tally"))
+      push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "void" } } });
+    if (room.currentRoundId) push(ctx, { t: "round.current", d: { currentRoundId: null } });
+    push(ctx, { t: "rundown.set", d: { rundown, currentItemId: null, phase: "final" } });
+    const awards = store.computeAwards();
+    push(ctx, { t: "award.set", d: { awards } });
+    setStageIfUnlocked(ctx, { mode: "finale", payload: {}, prevMode: "idle" });
+    toast(ctx, "全部關卡完成 → 去結算");
+    return;
+  }
   const next = rundown.find((i) => i.index === nextIndex);
   if (!next) throw new CmdError("W_ALREADY_STATE", "冇下一項");
   next.state = "running";
@@ -473,7 +493,14 @@ function closeRoundMutations(ctx: Ctx, round: Round, card: Card | undefined, aut
   }
   push(ctx, { t: "round.update", d: { roundId: round.id, patch } });
   if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "closed" } } });
-  setStageIfUnlocked(ctx, { mode: "tally", payload: { roundId: round.id, cardId: card?.id ?? null } });
+  // v0.4.3：拍賣收卷要留喺競投畫面（0.0 倒數＋「競投已完，等主持公佈排名」）。
+  // 以前一律轉 tally，10 秒一過大mon 就會跳去一個冇選項嘅「分佈」畫面。
+  setStageIfUnlocked(
+    ctx,
+    card?.type === "bid"
+      ? { mode: "bid", payload: { roundId: round.id, cardId: card.id } }
+      : { mode: "tally", payload: { roundId: round.id, cardId: card?.id ?? null } },
+  );
   // v0.3.3：收卷只係封卷＋出分佈；所有自動評分（MC／容差／最接近）一律留到 card.reveal，
   // 主持「開正確答案」嗰一刻先派分（以前收卷就加分，主持未講答案大mon 已經見分）。
   // 搗蛋鬼投票卡：generic 收卷／auto-close 都要即刻計票結算，唔可以留低一個等 command 但 state 已撞死嘅 round
@@ -533,7 +560,8 @@ export function roundExpired(endsAt: number | null, nowMs: number): boolean {
 /** P1-f：競投秒數唔可以多過剩餘秒數（明確規則：容許 +1 秒網絡誤差） */
 export function bidSecondsAllowed(amount: number, endsAt: number | null, nowMs: number): boolean {
   if (endsAt === null) return true;
-  const remaining = Math.ceil(Math.max(0, endsAt - nowMs) / 1000);
+  // v0.4.4：同手機一致用 floor（5.6 秒＝5 秒），只保留 +1 秒網絡容差（以前 ceil＋1 等於容許多 2 秒）
+  const remaining = Math.floor(Math.max(0, endsAt - nowMs) / 1000);
   return amount <= remaining + 1;
 }
 
@@ -777,7 +805,10 @@ export function tickAutoClose(store: Store): boolean {
   // §3.1：auto-close 關咗就只可以主持手動收（時間到都唔自動收）
   const timeUp = store.state.settings.autoClose && round.endsAt !== null && nowMs >= round.endsAt;
   const stats = store.answerStats(round);
-  const allAnswered = store.state.settings.autoClose && stats.eligible > 0 && stats.answered >= stats.eligible;
+  // v0.4.3：拍賣唔可以「全員交咗」就提早收卷——競投係鬥時間嘅 10 秒倒數，
+  // 而且 eligible 係開 round 一刻嘅 snapshot（遲 approved 嘅人唔計），提早收會令佢哋投唔到。
+  const allAnswered =
+    card.type !== "bid" && store.state.settings.autoClose && stats.eligible > 0 && stats.answered >= stats.eligible;
   if (!timeUp && !allAnswered) return false;
   // 同一時間只有一個 tick 會執行（single-thread sync）
   const muts: Mutation[] = [];
@@ -1393,6 +1424,11 @@ export function executeCommand(
       const id = cmd.targetId ?? optStr(p, "id");
       if (!id) throw new CmdError("W_BAD_SCHEMA", "要題目 id");
       if (!store.quizCards().some((c) => c.id === id)) throw new CmdError("W_BAD_SCHEMA", "冇呢題");
+      // v0.4.4（codex audit B1）：同 card.delete 一樣，唔准刪開緊嘅題（否則收卷／揭曉會搵唔返張卡）
+      const curQuiz = store.currentRound();
+      if (curQuiz && curQuiz.cardId === id && (curQuiz.state === "open" || curQuiz.state === "closed" || curQuiz.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "呢題仲開緊（回合未完），先收卷／作廢先刪");
+      if (curQuiz && curQuiz.cardId === id) push(ctx, { t: "round.current", d: { currentRoundId: null } });
       const keep = store.quizCards().filter((c) => c.id !== id);
       push(ctx, { t: "quiz.set", d: { cards: keep } });
       push(ctx, { t: "card.remove", d: { cardId: id } });
@@ -1792,6 +1828,10 @@ export function executeCommand(
         room.gameState && (room.gameState.undercover || room.gameState.killer || room.gameState.saboteur),
       );
       if (hadGameState) push(ctx, { t: "game.set", d: { gameState: { undercover: null, killer: null, saboteur: null } } });
+      // v0.4.4（codex audit B2）：secretRole 唔可以留低——否則重設之後玩問答會向舊搗蛋鬼漏答案
+      for (const p of room.players) {
+        if (p.secretRole) push(ctx, { t: "player.setRole", d: { playerId: p.id, role: null } });
+      }
       push(ctx, { t: "rundown.set", d: { rundown, currentItemId: null, phase: "playing" } });
       const first = rundown[0];
       if (first) {
@@ -2274,6 +2314,10 @@ export function executeCommand(
       if (card.gameId === "saboteur")
         throw new CmdError("W_BAD_SCHEMA", "搗蛋鬼卡唔准 generic reopen；未裁決請用 saboteur.decide { decision: 'retry' }，已結算請用 saboteur.openRound");
       if (card.state !== "revealed") throw new CmdError("W_STALE_COMMAND", "reopen 前置係 card.state=revealed（§6 狀態表）");
+      // v0.4.4（codex audit B4）：唔准喺另一個 round 未完時 reopen，否則舊 round 會唔再係 current
+      const liveRound = store.currentRound();
+      if (liveRound && (liveRound.state === "open" || liveRound.state === "closed" || liveRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先收卷／結算先可以重開");
       const prevRound = [...room.rounds].reverse().find((r) => r.cardId === cardId && r.state !== "void");
       if (!prevRound) throw new CmdError("W_STALE_COMMAND", "呢張卡未開過");
       const openCount = room.rounds.filter((r) => r.cardId === cardId).length + 1;
@@ -2307,6 +2351,11 @@ export function executeCommand(
     case "card.delete": {
       const cardId = cmd.targetId ?? reqStr(p, "cardId");
       if (!store.card(cardId)) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
+      // v0.4.4（codex audit B5）：刪一張開緊（回合未完）嘅卡會令 round 卡死（reveal／下一張都失敗）
+      const curRound = store.currentRound();
+      if (curRound && (curRound.state === "open" || curRound.state === "closed" || curRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "呢張卡仲開緊（回合未完），先收卷／作廢先刪");
+      if (curRound && curRound.cardId === cardId) push(ctx, { t: "round.current", d: { currentRoundId: null } });
       push(ctx, { t: "card.remove", d: { cardId } });
       const rundown = room.rundown.map((i) => ({ ...i, cardIds: i.cardIds.filter((x) => x !== cardId) }));
       push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
@@ -2726,6 +2775,38 @@ export function executeCommand(
     }
 
     /* ── v0.3.0：拍賣時間估歌（最少秒數贏）── */
+    /* v0.4.4：拍賣唔限首數——有 draft 就用，冇就自動建下一張「第 N 首」 */
+    case "bid.next": {
+      ensurePlaying(store);
+      const openRound = store.currentRound();
+      if (openRound && (openRound.state === "open" || openRound.state === "closed" || openRound.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "仲有回合未完成，先結算／收卷");
+      const auctionCards = store.state.cards.filter((x) => x.gameId === "auction" && x.type === "bid");
+      let card = auctionCards.find((x) => x.state === "draft");
+      if (!card) {
+        card = {
+          id: newId("bid"),
+          type: "bid",
+          gameId: "auction",
+          prompt: `第 ${auctionCards.length + 1} 首・聽幾秒估歌名`,
+          maxBid: store.state.settings.maxBid,
+          seconds: 10,
+          points: 1,
+          version: 1,
+          state: "draft",
+        } as Card;
+        push(ctx, { t: "card.put", d: { card } });
+        // 新卡要登記入目前 rundown item（唔係流程欄／匯出見唔到第 7 首之後嘅卡）
+        const item = store.currentItem();
+        if (item && !item.cardIds.includes(card.id)) {
+          const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: [...i.cardIds, card!.id] } : { ...i }));
+          push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+        }
+      }
+      openCardRound(ctx, card);
+      ctx.result = { cardId: card.id };
+      break;
+    }
     case "bid.publish": {
       const roundId = optStr(p, "roundId") ?? room.currentRoundId;
       if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
@@ -2765,6 +2846,9 @@ export function executeCommand(
       if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
       const card = store.card(round.cardId);
       if (!card || card.type !== "bid") throw new CmdError("W_BAD_SCHEMA", "唔係 bid 卡");
+      // v0.4.3：void 咗嘅 round 唔可以再判分（以前 void 之後 judge 仍然 +1 仲會拉返 revealed）；
+      // 已 revealed／finished 就維持原本「重複判分唔會再加」嘅 idempotent 行為。
+      if (round.state === "void") throw new CmdError("W_ALREADY_STATE", "呢首已經作廢，唔可以再判分");
       const auction = round.auction;
       if (!auction || !auction.ranking.length) throw new CmdError("W_ALREADY_STATE", "先 bid.publish 出排名");
       if (auction.finished) {
@@ -2783,8 +2867,9 @@ export function executeCommand(
       const correct = p.correct === true;
       const target = store.player(targetId);
       if (correct) {
+        // v0.4.4（codex audit B2）：同一個人同一首只可以派一次——唔靠 reason（舊 bid.settle 用另一個 reason）
         const dup = store.state.ledger.some(
-          (e) => !e.voided && e.roundId === roundId && e.gameId === "auction" && e.target.id === targetId && e.reason === "估歌・聽歌",
+          (e) => !e.voided && e.roundId === roundId && e.gameId === "auction" && e.target.id === targetId,
         );
         if (!dup && card.points !== 0) {
           push(ctx, {
@@ -2859,6 +2944,8 @@ export function executeCommand(
       const round = store.round(roundId);
       if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
       const card = store.card(round.cardId);
+      if (!card || card.type !== "bid") throw new CmdError("W_BAD_SCHEMA", "唔係 bid 卡");
+      if (round.state === "void") throw new CmdError("W_ALREADY_STATE", "呢首已經作廢，唔可以完結");
       const auction = round.auction;
       if (auction?.finished) {
         toast(ctx, "本首已經完結");
@@ -2873,8 +2960,9 @@ export function executeCommand(
           patch: { state: "revealed", closedAt: round.closedAt ?? Date.now(), ...(auction ? { auction: { ...auction, finished: true } } : {}) },
         },
       });
-      if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
-      stageSet(ctx, {
+      push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
+      // v0.4.4：尊重「大mon 鎖定」（以前 stageSet 直接改，鎖住都照轉畫面）
+      setStageIfUnlocked(ctx, {
         mode: "message",
         payload: { title: "本首完結", lines: ["主持會播下一首"], tone: "normal" },
         prevMode: "bid",

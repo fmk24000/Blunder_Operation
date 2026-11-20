@@ -2598,9 +2598,9 @@ test("P1-f：到期一律拒提交＋競投秒數唔可以大過剩餘秒數（+
   assert.equal(bidSecondsAllowed(5, t0 + 5000, t0), true);
   assert.equal(bidSecondsAllowed(6, t0 + 5000, t0), true);
   assert.equal(bidSecondsAllowed(7, t0 + 5000, t0), false, "唔可以偷多幾秒");
-  // 剩 0.4 秒：remaining=1 → 最多准 2
-  assert.equal(bidSecondsAllowed(2, t0 + 400, t0), true);
-  assert.equal(bidSecondsAllowed(3, t0 + 400, t0), false);
+  // v0.4.4：同手機一致用 floor —— 剩 0.4 秒＝0 秒，只准 0+1 網絡容差
+  assert.equal(bidSecondsAllowed(1, t0 + 400, t0), true);
+  assert.equal(bidSecondsAllowed(2, t0 + 400, t0), false);
   // ws 真係用呢兩個 helper（source-level 保證）
   const wsSrc = fs.readFileSync(path.join(APP_ROOT, "src/server/ws.ts"), "utf8");
   assert.match(wsSrc, /roundExpired\(round\.endsAt, Date\.now\(\)\)/, "到期要一律拒（唔再淨係 draw 卡）");
@@ -3659,4 +3659,337 @@ test("v043-G1-6：st.roundId 指向一個 void 咗嘅 round → uc.eliminate 當
   assert.throws(() => run(store, "uc.eliminate", { playerId: victim }), isCmdError("W_WRONG_PHASE", /未收卷/));
   assert.throws(() => run(store, "uc.vote.foulTop"), isCmdError("W_WRONG_PHASE", /未開投票|未收卷/));
   assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, before, "void 票唔可以淘汰任何人");
+});
+
+/* ───────── v0.4.3（用戶第二輪投訴）：估歌競投 ───────── */
+
+test("v043-B1：stage.mode=bid ＋ 非 bid 卡 → 唔會砌假拍賣畫面（唔會再出論語題扮競投）", () => {
+  const { store } = makeStore("v043-b1");
+  const ps = addPlayers(store, 2);
+  run(store, "room.start");
+  run(store, "card.create", { card: { type: "choice", gameId: "quiz", prompt: "論語題", options: ["A", "B", "C", "D"], correct: 1, seconds: 30 } });
+  const quiz = store.state.cards.find((c) => c.gameId === "quiz");
+  run(store, "card.open", {}, quiz.id);
+  const round = store.currentRound();
+  // 模擬倒數完／主持收咗卷：round 仍然係 currentRound，但已經 closed
+  store.commit([{ t: "round.update", d: { roundId: round.id, patch: { state: "closed", closedAt: Date.now() } } }]);
+  run(store, "stage.set", { mode: "bid" });
+  const sv = buildStageView(store);
+  assert.equal(sv.bid, null, "非 bid 卡唔可以出競投 DTO（否則大mon 出假題目＋0.0 倒數）");
+  assert.equal(JSON.stringify(sv).includes("論語題"), false, "大mon 唔可以漏問答題目落競投畫面");
+  assert.equal(buildPlayerView(store, ps[0].id).task, null, "手機唔應該有任何競投 task");
+});
+
+test("v043-B1b：真 bid 卡照舊砌到競投畫面（防止 guard 改過龍）", () => {
+  const { store } = makeStore("v043-b1b");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  run(store, "card.create", { card: { type: "bid", gameId: "auction", prompt: "第 1 首・聽幾秒估歌名", maxBid: 10, seconds: 10, points: 1 } });
+  const card = store.state.cards.find((c) => c.type === "bid");
+  run(store, "card.open", {}, card.id);
+  const sv = buildStageView(store);
+  assert.equal(sv.bid?.prompt, "第 1 首・聽幾秒估歌名");
+  assert.equal(sv.bid?.maxBid, 10);
+  assert.equal(sv.bid?.closed, false);
+});
+
+test("v043-B2：競投唔限人數——開卡之後先 approve 嘅玩家都投到，大mon 分母跟現況", () => {
+  const { store } = makeStore("v043-b2");
+  addPlayers(store, 1);
+  run(store, "room.start");
+  run(store, "card.create", { card: { type: "bid", gameId: "auction", prompt: "第 1 首", maxBid: 10, seconds: 10, points: 1 } });
+  const card = store.state.cards.find((c) => c.type === "bid");
+  run(store, "card.open", {}, card.id);
+  const late = {
+    id: "p_late", name: "遲到", number: 2, groupId: null, status: "approved", connected: true,
+    lastSeen: Date.now(), avatar: { kind: "emoji", emoji: "🙂", color: "#3b82f6" }, joinedAt: Date.now(),
+  };
+  store.commit([{ t: "player.add", d: { player: late } }]);
+  assert.equal(buildPlayerView(store, late.id).task?.kind, "bid", "開卡後先 approve 都要有競投 task");
+  assert.equal(buildStageView(store).bid.eligibleCount, 2, "分母要 = 現時 approved 人數，唔係開卡一刻 snapshot");
+});
+
+test("v043-B3：主持台「估歌」只剩「競投」「競投結果」兩粒真掣；問答流程掣有留白", () => {
+  const src = clientSrc("host.ts");
+  const flow = src.slice(src.indexOf("function bidFlowBlock"), src.indexOf("function bidPanel"));
+  assert.match(flow, /data-act="bid\.start"/, "要有「競投」掣");
+  assert.match(flow, /data-act="bid\.publish"/, "要有「競投結果」掣");
+  assert.equal(/data-act="stage\.mode:(bid|song)"/.test(flow), false, "唔准再出純換畫面嘅 bid／song 掣");
+  assert.equal(/media\.reveal/.test(flow), false, "「開估（揭曉歌名）」掣要拎走（主持自己部機做）");
+  assert.match(src, /function bidFlowBlock/, "估歌組要用真 flow block");
+  assert.match(src, /\$\{bidFlowBlock\(v\)\}/, "controlSection 要真係用 bidFlowBlock");
+  // 「競投」＝開下一張 draft 拍賣卡（真 command），唔止 stage.set
+  const start = src.slice(src.indexOf('if (sub === "start")'), src.indexOf('} else if (sub === "card")'));
+  assert.match(start, /card\.open/, "競投掣要真開拍賣卡");
+  assert.match(start, /bid\.finish/, "上一首已公佈時要先收成終態，先開得下一張");
+  assert.match(start, /零人競投/, "零人競投＋已收卷要自動收成終態再開下一首（唔可以卡死）");
+  // 問答流程掣行距
+  const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
+  assert.match(css, /\.ctrl-quiz \.btn-row \+ \.btn-row \{ margin-top:/, "問答流程第二行掣要隔開");
+});
+
+test("v043-B4：入場打咗名再揀 emoji／顏色，輸入框唔會清空", () => {
+  const src = clientSrc("play.ts");
+  assert.match(src, /let joinName = "";/, "要有 joinName state");
+  assert.match(src, /value="\$\{esc\(joinName\)\}"/, "input 要綁返 joinName，re-render 之後名仲喺度");
+  assert.match(src, /const keepName = \(\): void =>/, "揀頭像之前要保存 input 值");
+  const grid = src.slice(src.indexOf('"[data-emoji]"'), src.indexOf('"#join-btn"'));
+  assert.match(grid, /keepName\(\);\s*\n\s*avatarSel\.emoji/, "揀 emoji 之前要 keepName()");
+  assert.match(grid, /keepName\(\);\s*\n\s*avatarSel\.color/, "揀顏色之前要 keepName()");
+  assert.match(src, /const name = \(nameInput\?\.value \?\? joinName\)\.trim\(\)/, "doJoin 要讀 input／state");
+});
+
+test("v043-B5：拍賣倒數完（auto-close）大mon 留喺競投畫面，唔會跳去「分佈」", () => {
+  const { store, players, card, round } = bidSetup("v043-b5", 2);
+  bidSub(store, round, card, players[0].id, 4, 1000);
+  store.commit([{ t: "round.update", d: { roundId: round.id, patch: { endsAt: Date.now() - 1000 } } }]);
+  assert.equal(tickAutoClose(store), true, "時間到要自動收卷");
+  const sv = buildStageView(store);
+  assert.equal(sv.stage.mode, "bid", "收卷後大mon 要仍然係競投畫面（等主持撳「競投結果」）");
+  assert.equal(sv.bid?.closed, true);
+  assert.equal(sv.bid?.bidCount, 1);
+});
+
+test("v043-B6：競投唔會因為「全部人交咗」而提早收卷（10 秒倒數要行完）", () => {
+  const { store, players, card, round } = bidSetup("v043-b6", 1);
+  // 開卡之後先 approve 第 2 個人（eligible snapshot 仲係 1）
+  const late = { id: "p_late6", name: "遲到", number: 2, groupId: null, status: "approved", connected: true, lastSeen: Date.now(), avatar: { kind: "emoji", emoji: "🙂", color: "#3b82f6" }, joinedAt: Date.now() };
+  store.commit([{ t: "player.add", d: { player: late } }]);
+  bidSub(store, round, card, players[0].id, 4, 1000);
+  assert.equal(tickAutoClose(store), false, "1/1 snapshot 交咗都唔可以提早收卷");
+  assert.equal(store.currentRound().state, "open", "倒數要行完 10 秒");
+});
+
+test("v043-B7：void 咗嘅拍賣 round 唔可以再 bid.judge（唔會派分／唔會翻生）", () => {
+  const { store, players, card, round } = bidSetup("v043-b7", 2);
+  bidSub(store, round, card, players[0].id, 4, 1000);
+  run(store, "bid.publish");
+  const before = store.playerScore(players[0].id);
+  store.commit([{ t: "round.update", d: { roundId: round.id, patch: { state: "void" } } }]);
+  assert.throws(() => run(store, "bid.judge", { correct: true }), isCmdError("W_ALREADY_STATE", /作廢/));
+  assert.equal(store.playerScore(players[0].id), before, "void 之後唔准派分");
+  assert.equal(store.round(round.id).state, "void", "round 唔會變 revealed");
+});
+
+/* ───────── v0.4.4：競投結果字體／floor／唔限首數＋古怪 code ───────── */
+
+test("v044-1：競投秒數 round down（5.6 秒 → 5 秒）＋結果畫面大字＋單位", () => {
+  const play = clientSrc("play.ts");
+  assert.match(play, /Math\.floor\(left \/ 1000\)/, "bidSeconds 要用 floor（ceil 會將 5.6 變 6 秒）");
+  assert.equal(/Math\.ceil\(left \/ 1000\)/.test(play), false, "唔准再用 ceil");
+  const stage = clientSrc("stage.ts");
+  assert.match(stage, /bid-result/, "競投結果要有自己嘅大版樣式");
+  assert.match(stage, /bid-unit/, "秒數要有單位");
+  const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
+  assert.match(css, /\.bid-row \.uc-count \{ font-size: 52px/, "秒數要大字");
+});
+
+test("v044-2：分佈畫面唔會將拍賣卡畫成答案分佈", () => {
+  const { store } = makeStore("v044-2");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  const opened = run(store, "bid.next");
+  assert.equal(opened.ok, true);
+  run(store, "stage.set", { mode: "tally" });
+  assert.equal(buildStageView(store).tally, null, "tally 唔可以出拍賣卡");
+  run(store, "stage.set", { mode: "bid" });
+  assert.ok(buildStageView(store).bid, "bid 畫面照舊");
+});
+
+test("v044-3：bid.next 唔限首數——開到第 7、8 首都會自動建卡", () => {
+  const { store } = makeStore("v044-3");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  for (let i = 1; i <= 8; i++) {
+    const res = run(store, "bid.next");
+    assert.equal(res.ok, true, `第 ${i} 首要開到`);
+    assert.equal(store.currentRound().state, "open");
+    run(store, "bid.finish");
+  }
+  const cards = store.state.cards.filter((c) => c.gameId === "auction" && c.type === "bid");
+  assert.equal(cards.length, 8);
+  assert.match(cards[7].prompt, /第 8 首/);
+});
+
+test("v044-4（B2）：rundown.reset 清走 secretRole，重設後唔會漏參考答案", () => {
+  const { store } = makeStore("v044-4");
+  const players = addPlayers(store, 4);
+  run(store, "room.start");
+  run(store, "saboteur.assign", { saboteurIndex: 0 });
+  const sab = players[0].id;
+  assert.equal(store.player(sab).secretRole, "saboteur");
+  run(store, "rundown.reset");
+  assert.equal(store.player(sab).secretRole, undefined, "重設要清 secretRole");
+  const pv = buildPlayerView(store, sab);
+  assert.equal(pv.me.secretRole, undefined);
+  assert.equal(pv.me.saboteurAnswer, undefined);
+  assert.equal(pv.roleInfo, null);
+});
+
+test("v044-5（B4）：另一個 round 未完時 card.reopen 要拒", () => {
+  const { store } = makeStore("v044-5");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  putCard(store, { id: "c_old", type: "choice", gameId: "quiz", prompt: "舊題", options: ["A", "B"], correct: 0, state: "revealed" });
+  putCard(store, { id: "c_live", type: "choice", gameId: "quiz", prompt: "開緊", options: ["A", "B"], correct: 0, state: "open" });
+  putRound(store, { id: "r_live", cardId: "c_live", state: "open", endsAt: Date.now() + 30000 });
+  assert.throws(() => run(store, "card.reopen", {}, "c_old"), isCmdError("W_ALREADY_STATE", /未完/));
+  assert.equal(store.currentRound().id, "r_live", "原本個 round 唔可以被搶");
+});
+
+test("v044-6（B5）：刪開緊嘅卡要拒；刪已經揭曉嘅 current 卡要清 round pointer", () => {
+  const { store } = makeStore("v044-6");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  putCard(store, { id: "c_live2", type: "choice", gameId: "quiz", prompt: "開緊", options: ["A", "B"], correct: 0, state: "open" });
+  putRound(store, { id: "r_live2", cardId: "c_live2", state: "open", endsAt: Date.now() + 30000 });
+  assert.throws(() => run(store, "card.delete", {}, "c_live2"), isCmdError("W_ALREADY_STATE", /未完/));
+  store.commit([{ t: "round.update", d: { roundId: "r_live2", patch: { state: "revealed" } } }]);
+  run(store, "card.delete", {}, "c_live2");
+  assert.equal(store.card("c_live2"), undefined);
+  assert.equal(store.state.room.currentRoundId, null, "刪 current 卡要清 pointer");
+});
+
+test("v044-7（B7）：搗蛋鬼投票未開，大mon DTO 唔准漏 top 票數", () => {
+  const { store } = makeStore("v044-7");
+  const players = addPlayers(store, 5);
+  run(store, "room.start");
+  run(store, "saboteur.assign", { saboteurIndex: 0 });
+  const opened = run(store, "saboteur.openRound");
+  const roundId = opened.result.roundId;
+  const cardId = store.round(roundId).cardId;
+  vote(store, { roundId, cardId, voterId: players[1].id, targetId: players[2].id });
+  const openView = buildStageView(store);
+  assert.deepEqual(openView.saboteurInfo.top, [], "開票前唔准有 top");
+  assert.equal(openView.saboteurInfo.validVotes, 0);
+  assert.equal(JSON.stringify(openView).includes(`"count":1`), false, "票數唔可以漏");
+  run(store, "card.close");
+  const closedView = buildStageView(store);
+  assert.ok(closedView.saboteurInfo.top.length >= 1, "收卷後（已開票）先准出 top");
+});
+
+test("v044-8（B8）：尾關撳 rundown.next 會收成 final＋計頒獎，唔會卡喺 running", () => {
+  const { store } = makeStore("v044-8");
+  addPlayers(store, 3);
+  store.commit([{ t: "rundown.set", d: { rundown: [
+    { id: "rd_a", index: 0, gameId: "quiz", title: "第 1 關・問答", state: "done", cardIds: [] },
+    { id: "rd_b", index: 1, gameId: "quiz", title: "第 2 關・問答", state: "running", cardIds: [] },
+  ], currentItemId: "rd_b", phase: "playing" } }]);
+  run(store, "rundown.next");
+  assert.equal(store.state.room.phase, "final", "尾關之後要轉 final");
+  assert.equal(store.state.room.currentItemId, null);
+  assert.equal(store.state.room.rundown.every((i) => i.state === "done" || i.state === "skipped"), true);
+  assert.ok(store.state.room.awards.length > 0, "要計好頒獎");
+});
+
+test("v044-9（B9／B11）：匯出用 raw text；client 唔再 render 第二個 #toast", () => {
+  const host = clientSrc("host.ts");
+  assert.match(host, /await res\.text\(\)/, "export 要讀 raw text（server 回 CSV／JSON，唔係 {ok}）");
+  assert.equal(/id="toast"/.test(host), false, "host 唔准再 render #toast（HTML 已有常駐嗰個）");
+  const play = clientSrc("play.ts");
+  assert.equal(/id="toast"/.test(play), false, "play 唔准再 render #toast");
+});
+
+test("v044-10（B10）：數字鍵盤用 string 草稿，打得到小數", () => {
+  const play = clientSrc("play.ts");
+  assert.match(play, /selected\.numText/, "要有 numText string 草稿");
+  assert.match(play, /\\d\*\(\\\.\\d\?\)\?/, "只准一位小數");
+  assert.match(play, /Number\(raw\)/, "確認送出先轉 Number");
+});
+
+/* ───────── v0.4.4 第二輪：codex audit 剩餘 P1／P2 ───────── */
+
+test("v044-11：quiz.delete 唔准刪開緊嘅題；刪已完結嘅 current 題要清 pointer", () => {
+  const { store } = makeStore("v044-11");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  run(store, "quiz.upsert", { question: { type: "choice", prompt: "測試題", options: ["A", "B", "C", "D"], correct: 0 } });
+  const card = store.state.cards.find((c) => c.gameId === "quiz");
+  assert.ok(card);
+  run(store, "card.open", {}, card.id);
+  assert.throws(() => run(store, "quiz.delete", {}, card.id), isCmdError("W_ALREADY_STATE", /未完/));
+  store.commit([{ t: "round.update", d: { roundId: store.currentRound().id, patch: { state: "revealed" } } }]);
+  run(store, "quiz.delete", {}, card.id);
+  assert.equal(store.state.room.currentRoundId, null, "刪 current 題要清 pointer");
+});
+
+test("v044-12（B2）：bid.settle 之後再 bid.judge 唔會雙派分", () => {
+  const { store, players, card, round } = bidSetup("v044-12", 2);
+  bidSub(store, round, card, players[0].id, 4, 1000);
+  run(store, "bid.settle", { correct: true });
+  assert.equal(store.playerScore(players[0].id), 1, "舊入口派 1 分");
+  run(store, "bid.publish");
+  run(store, "bid.judge", { correct: true });
+  assert.equal(store.playerScore(players[0].id), 1, "新入口唔可以再派（同一首同一人只派一次）");
+});
+
+test("v044-13（B3）：臥底投票未開票，候選票數一定係 0", () => {
+  const { store } = makeStore("v044-13");
+  const players = addPlayers(store, 4);
+  run(store, "room.start");
+  const started = run(store, "undercover.start", { durationSeconds: 60 });
+  const roundId = started.result.roundId;
+  const cardId = store.round(roundId).cardId;
+  vote(store, { roundId, cardId, voterId: players[1].id, targetId: players[2].id });
+  const hv = buildHostView(store, "host_test", "主持", { hosts: 1, stages: 0, players: 0, total: 1 });
+  const cand = hv.undercover.candidates.find((x) => x.id === players[2].id);
+  assert.equal(cand.count, 0, "未開票唔准漏即時票數");
+  run(store, "card.close");
+  const hv2 = buildHostView(store, "host_test", "主持", { hosts: 1, stages: 0, players: 0, total: 1 });
+  assert.ok(hv2.undercover.candidates.find((x) => x.id === players[2].id).count >= 1, "開票後先出真數");
+});
+
+test("v044-14（B4）：未揭曉嘅獎項唔會漏得主名／分", () => {
+  const { store } = makeStore("v044-14");
+  const p1 = addPlayers(store, 3)[0];
+  addScore(store, "player", p1.id, 9);
+  store.commit([{ t: "award.set", d: { awards: [{ id: "grand", targetId: p1.id, revealed: false }] } }]);
+  run(store, "stage.set", { mode: "finale" });
+  assert.equal(buildStageView(store).finale.awards.find((a) => a.id === "grand").name, null, "未揭曉唔准漏名");
+  assert.equal(buildPlayerView(store, p1.id).finale.awards.find((a) => a.id === "grand").name, null);
+  store.commit([{ t: "award.set", d: { awards: [{ id: "grand", targetId: p1.id, revealed: true }] } }]);
+  assert.equal(buildStageView(store).finale.awards.find((a) => a.id === "grand").name, p1.name);
+});
+
+test("v044-15（B7）：尾關完結後再撳 rundown.next／skip 唔會復活流程", () => {
+  const { store } = makeStore("v044-15");
+  addPlayers(store, 2);
+  store.commit([{ t: "rundown.set", d: { rundown: [
+    { id: "rd_x", index: 0, gameId: "quiz", title: "第 1 關・問答", state: "running", cardIds: [] },
+  ], currentItemId: "rd_x", phase: "playing" } }]);
+  run(store, "rundown.next");
+  assert.equal(store.state.room.phase, "final");
+  run(store, "rundown.next");
+  assert.equal(store.state.room.phase, "final", "final 之後再 next 要維持 final");
+  assert.equal(store.state.room.currentItemId, null);
+});
+
+test("v044-16（B8）：bid.finish 只准 bid 卡、void 一律拒；唔會繞過大mon 鎖", () => {
+  const { store } = makeStore("v044-16");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  putCard(store, { id: "c_quiz_f", type: "choice", gameId: "quiz", prompt: "問答", options: ["A", "B"], correct: 0, state: "revealed" });
+  putRound(store, { id: "r_quiz_f", cardId: "c_quiz_f", state: "revealed" });
+  assert.throws(() => run(store, "bid.finish", {}, "r_quiz_f"), isCmdError("W_BAD_SCHEMA", /bid/));
+  const opened = run(store, "bid.next");
+  const roundId = store.currentRound().id;
+  store.commit([{ t: "round.update", d: { roundId, patch: { state: "void" } } }]);
+  assert.throws(() => run(store, "bid.finish"), isCmdError("W_ALREADY_STATE", /作廢/));
+  void opened;
+});
+
+test("v044-17：bid.next 自動建嘅卡要登記入 rundown cardIds", () => {
+  const { store } = makeStore("v044-17");
+  addPlayers(store, 2);
+  store.commit([{ t: "rundown.set", d: { rundown: [
+    { id: "rd_auction_t", index: 0, gameId: "auction", title: "第 1 關・估歌", state: "running", cardIds: [] },
+  ], currentItemId: "rd_auction_t", phase: "playing" } }]);
+  run(store, "bid.next");
+  run(store, "bid.finish");
+  run(store, "bid.next");
+  run(store, "bid.finish");
+  const item = store.state.room.rundown.find((i) => i.gameId === "auction");
+  const bidCards = store.state.cards.filter((c) => c.gameId === "auction" && c.type === "bid");
+  assert.equal(bidCards.length, 2);
+  for (const c of bidCards) assert.ok(item.cardIds.includes(c.id), `${c.id} 要入 rundown cardIds`);
 });

@@ -238,13 +238,15 @@ export function registerWs(app: FastifyInstance, store: Store, hub: Hub, env: En
         hub.send(conn, { type: "submit.result", roundId: msg.roundId, submissionId: msg.submissionId, status: "rejected", code: "W_ROUND_CLOSED", message: "回合已收" });
         return;
       }
-      if (!round.eligiblePlayerIds.includes(playerId)) {
-        err(conn, hub, "W_FORBIDDEN_ROLE", "你唔喺呢一輪名單");
-        return;
-      }
       const card = store.card(round.cardId);
       if (!card) {
         err(conn, hub, "W_BAD_SCHEMA", "冇呢張卡");
+        return;
+      }
+      // v0.4.3：拍賣唔限人數——唔用開 round 一刻嘅 eligible snapshot（下面 approved 檢查已經夠）；
+      // 其他卡類（投票／搗蛋鬼）照舊守 eligible，保住「出局／被剔走唔准投」。
+      if (card.type !== "bid" && !round.eligiblePlayerIds.includes(playerId)) {
+        err(conn, hub, "W_FORBIDDEN_ROLE", "你唔喺呢一輪名單");
         return;
       }
       const meNow = store.player(playerId);

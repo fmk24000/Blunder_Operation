@@ -1,5 +1,69 @@
 # Changelog
 
+## v0.4.4 — 2026-11-20
+
+### Fixed — 估歌競投（用戶第三輪投訴）
+- **大mon 唔會再將非拍賣卡畫成「競投」**：`buildStageView()` 只喺 `card.type === "bid"` 先砌 bid DTO。
+  以前主持撳「競投」（純 `stage.set`）會將啱啱收咗卷嘅問答卡畫成假拍賣：假題目＋0.0 倒數＋
+  「已競投 0/N 人」，而手機根本冇競投掣（task 跟住張問答卡），永遠 0 人投。
+- **主持台「估歌」組只剩兩粒真掣**：`競投`（開下一首拍賣卡＝大mon＋手機 10 秒倒數）、
+  `競投結果`（推全部人投到嘅秒數上大mon，最少秒數先聽）。`聽歌`／`開估（揭曉歌名）` 拎走
+  —— 播歌同開估由主持自己另一部機做，唔經系統。
+- **加完分即刻可以再開**：「競投」遇到上一首已公佈排名會先 `bid.finish` 收成終態，再開下一張
+  draft 拍賣卡；如果仲有問答 round 未收就擋住＋提示（唔會再開錯）。
+- **競投唔限人數**：`eligiblePlayerIds` 唔再當「開 round 一刻 snapshot」用——ws 改為即場檢查
+  `approved`（其他卡類照舊守 eligible），手機 task 同大mon 分母都跟現時 approved 人數，
+  開卡之後先批准嘅玩家都投到。
+- **倒數完停喺競投畫面**：拍賣 round auto-close 唔再轉 `tally`，大mon 會顯示
+  「競投已完，等主持公佈排名」，等主持撳「競投結果」。
+- **零人競投唔會卡死**：10 秒內冇人撳，「競投結果」disabled、`card.open` 又會被擋——
+  而家再撳「競投」會自動 `bid.finish` 收成終態再開下一首（toast：呢首冇人競投，跳去下一首）。
+- **競投唔會提早收卷**：`tickAutoClose` 唔再用「全員交咗」收 bid round（1 人交卷＋遲批准玩家
+  會令 10 秒倒數提早結束）；拍賣只按 `endsAt`／主持收卷。
+- **void 咗嘅拍賣唔准再判分**：`bid.judge` 加 void guard（以前 void 之後仍然 +1 仲會拉返 revealed）。
+
+### Fixed — 手機入場
+- 打咗名之後再揀 emoji／顏色，個名唔會再被 re-render 清空（新增 `joinName` state＋`keepName()`）。
+
+### Fixed — 主持台
+- 「問答真流程」兩三行掣加行距（`.ctrl-quiz .btn-row + .btn-row`）。
+- `.stage-mode-grid` 入面嘅 primary 掣（例如「競投」）唔會再被 `.stage-mode-grid button` 嘅白底
+  蓋走藍底、變成一格空白（specificity 修正）。
+
+### 其他
+- 資產版本 `?v=20261120e`。
+- Tests **184 → 209**（bid guard／遲 approve／auto-close 畫面／主持掣契約／入場名／floor／唔限首數／B1–B11 古怪 code）。
+
+### Changed — 競投結果畫面（用戶第四輪）
+- 結果畫面大字：題目 56px、玩家名 38px、秒數 **52px**，而且一定有「秒」單位（以前細字得個數字）。
+- 競投秒數改 **round down**（5.6 秒當 5 秒；以前 `ceil` 會變 6 秒）。
+- **唔再限 6 首**：新 command `bid.next`——有 draft 卡就用，冇就自動建「第 N 首」，開幾多首都得。
+- 主持台版面：流程欄收窄（5fr）、大mon 控制加闊（7fr）。
+
+### Fixed — 系統古怪 code（codex CLI audit，v0.4.4）
+- **B2**：`rundown.reset` 清 `Player.secretRole`；`buildPlayerView` 亦要「有進行中搗蛋鬼局＋張卡係
+  搗蛋鬼卡」先送 `secretRole`／`saboteurAnswer`（以前重設後玩問答會向舊搗蛋鬼漏參考答案）。
+- **B4**：`card.reopen` 唔准喺另一個 round 未完時重開（以前會搶走 currentRound）。
+- **B5**：`card.delete` 唔准刪開緊嘅卡；刪 current 卡會清 `currentRoundId`（以前刪完 round 卡死）。
+- **B7**：搗蛋鬼投票未開（open）時 `saboteurInfo.top`／`validVotes` 一律空的（以前大mon DTO 漏個人票）。
+- **B8**：尾關撳「下一項」會收成 `final`＋計頒獎（以前永遠唔會 `allDone`，卡喺最後一關 running）。
+- **B9**：匯出改讀 raw text（server 回 CSV／JSON，唔係 `{ok}`；以前兩個下載都彈「export 失敗」）。
+- **B10**：數字鍵盤用 string 草稿，打得到「1.5」（以前 1 → . → 5 會變 15）。
+- **B11**：移除 client render 入面重複嘅 `#toast`（HTML 已有一個常駐）。
+- 分佈畫面唔再畫拍賣卡（以前主持撳「分佈」會見到「答案分佈＋玩家名＋秒數」嘅怪畫面）。
+
+### Fixed — codex audit v0.4.4 第二輪（P1／P2）
+- `quiz.delete` 唔准刪開緊嘅題（同 `card.delete` 同一 guard）；刪已完結 current 題會清 `currentRoundId`。
+- `bid.judge` 嘅防重派分改為「同一首同一人只派一次」，唔再靠 `reason`——`bid.settle` 舊入口之後再
+  `bid.judge` 唔會雙派。
+- 臥底投票未開票時 `undercover.candidates[].count` 一律 0（以前 host DTO 漏即時票數）。
+- 頒獎未揭曉（`revealed=false`）唔會漏得主名／分數（大mon 同手機 DTO 都會遮）。
+- 流程完結（`final`）後再撳「下一項／跳過」唔會靜靜復活第一關。
+- `bid.finish` 加 bid 卡／void guard，改用 `setStageIfUnlocked`（大mon 鎖定時唔會硬轉畫面）。
+- `bid.next` 自動建嘅新卡會登記入 rundown `cardIds`（流程欄／匯出見得到第 7 首之後）。
+- Server `bidSecondsAllowed` 同手機一致用 floor（保留 +1 秒網絡容差，唔再隱含多一秒 ceil）。
+- 競投結果名單限高＋可滾動（多人時唔會爆版裁切）。
+
 ## v0.4.3 — 2026-11-20
 
 > Codex CLI 實測 v0.4.2 之後搵到 4 個 gap（2 個 P1、2 個 P2）。
