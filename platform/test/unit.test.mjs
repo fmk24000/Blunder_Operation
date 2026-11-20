@@ -1568,10 +1568,14 @@ function ucSetup(tag, n = 6) {
   return { store, players };
 }
 
-/** B4：依正常流程 foul 一個人（開投票 → 收卷 → 淘汰） */
+/** B4：依正常流程 foul 一個人（公佈 → 開投票 → 收卷 → 淘汰）
+ *  v0.4.3：uc.vote.start 要 promptRevealed，所以換咗題（未公佈）要先公佈。 */
 function ucFoul(store, playerId) {
   const cur = store.currentRound();
-  if (!cur || cur.state !== "open") run(store, "uc.vote.start");
+  if (!cur || cur.state !== "open") {
+    if (store.state.room.gameState.undercover.promptRevealed !== true) run(store, "uc.prompt.reveal");
+    run(store, "uc.vote.start");
+  }
   run(store, "card.close");
   return run(store, "uc.eliminate", { playerId });
 }
@@ -1857,6 +1861,7 @@ test("B5-6：已出局者唔可以再被 foul（uc.eliminate → W_ALREADY_STATE
   ucFoul(store, victim);
   assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [victim]);
   run(store, "uc.match.next");
+  run(store, "uc.prompt.reveal"); // v0.4.3：換題後要再公佈先開得投票
   const res0 = run(store, "uc.vote.start");
   run(store, "card.close");
   const round = store.round(res0.result.roundId);
@@ -2177,18 +2182,26 @@ test("FIX-8：uc.match.settle 勝負未定時拒絕（唔會偷判臥底勝／�
 });
 
 
-test("FIX-9：uc.match.redraw 唔會抽已出局者做臥底", () => {
+test("FIX-9（v0.4.3 更新）：uc.match.redraw 唔會抽已出局者做臥底；淘汰過就成個擋", () => {
   const { store } = ucSetup("fix9-redraw", 6);
   run(store, "uc.match.start");
   const st0 = store.state.room.gameState.undercover;
   const victim = st0.participantIds.find((id) => !st0.undercoverIds.includes(id));
-  ucFoul(store, victim);
+  // 未開始窗口：抽極都只會喺參賽者裡面
   for (let i = 0; i < 12; i += 1) {
     run(store, "uc.match.redraw");
     const st = store.state.room.gameState.undercover;
-    assert.equal(st.undercoverIds.includes(victim), false, "已出局者唔可以再做臥底");
     assert.equal(new Set(st.undercoverIds).size, 2);
+    for (const id of st.undercoverIds) assert.ok(st.participantIds.includes(id), "只可以抽本局參賽者");
   }
+  // v0.4.3（G2）：淘汰過就唔可以再改身份（舊版容許，會令 stale result 派錯分）
+  const st1 = store.state.room.gameState.undercover;
+  const target = st1.participantIds.find((id) => !st1.undercoverIds.includes(id));
+  ucFoul(store, target);
+  const afterFoul = [...store.state.room.gameState.undercover.undercoverIds];
+  assert.throws(() => run(store, "uc.match.redraw"), isCmdError("W_ALREADY_STATE", /已經開始咗/));
+  assert.deepEqual(store.state.room.gameState.undercover.undercoverIds, afterFoul, "淘汰過唔可以改身份");
+  assert.equal(store.state.room.gameState.undercover.undercoverIds.includes(target), false, "被 foul 嘅好人唔會變成臥底");
 });
 
 
@@ -2350,6 +2363,7 @@ test("B4：同一題唔准 foul 第二個人", () => {
 test("B4：投票仲 open（未收卷）唔准 foul", () => {
   const { store } = ucSetup("b4-voting", 6);
   run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
   run(store, "uc.vote.start");
   const st = store.state.room.gameState.undercover;
   const goods = st.participantIds.filter((id) => !st.undercoverIds.includes(id));
@@ -3453,4 +3467,196 @@ test("v042-8：換題目之後大mon 唔可以殘留上一對好人題目（要�
   assert.equal(store.state.room.stage.mode, "blackout", "換題要收走舊題目畫面（唔好殘留）");
   const stageText = JSON.stringify(store.state.room.stage.payload ?? {});
   assert.ok(!stageText.includes("好人題目"), "stage payload 唔可以再留住好人題目");
+});
+
+
+/* ───────── v0.4.3 Round 1：G1（換題 void 舊 round／公佈 gate）／G2（redraw 窗口、stale result）／G3（toast 唔准帶題目） ───────── */
+
+/** 揀一對「唔同而家、又未入 topicIds」嘅一圖多人題目（測試用） */
+function v043OtherTopic(store, excludeId) {
+  const st = store.state.room.gameState.undercover;
+  const draw = store.gameCards("draw").filter((c) => typeof c.undercoverPrompt === "string" && c.undercoverPrompt.length > 0);
+  return (
+    draw.find((c) => c.id !== excludeId && !(st.topicIds ?? []).includes(c.id)) ??
+    draw.find((c) => c.id !== excludeId)
+  );
+}
+
+/** G1 場景：完成一輪「公佈 → 投票（2 票）→ 開票」之後換題 */
+function v043VotedThenPick(tag) {
+  const { store } = ucSetup(tag, 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  const started = run(store, "uc.vote.start");
+  const round = store.round(started.result.roundId);
+  const card = store.card(round.cardId);
+  const st0 = store.state.room.gameState.undercover;
+  const victim = st0.undercoverIds[0];
+  const voters = st0.participantIds.filter((id) => id !== victim).slice(0, 2);
+  for (const voterId of voters) vote(store, { roundId: round.id, cardId: card.id, voterId, targetId: victim });
+  run(store, "card.close");
+  const other = v043OtherTopic(store, st0.promptCardId);
+  const picked = run(store, "uc.topic.pick", {}, other.id);
+  assert.equal(picked.ok, true, JSON.stringify(picked));
+  return { store, roundId: round.id, victim, other };
+}
+
+test("v043-G1-1：開票後換題 → 舊 round 變 void、roundId 清空、promptRevealed=false、大mon 收起舊題", () => {
+  const { store, roundId } = v043VotedThenPick("v043-g1-void");
+  assert.equal(store.round(roundId).state, "void", "舊 round 一定要 void（唔可以留住有效票）");
+  assert.equal(store.state.room.currentRoundId, null, "currentRoundId 要清");
+  const st = store.state.room.gameState.undercover;
+  assert.equal(st.roundId, null, "st.roundId 要清");
+  assert.equal(st.promptRevealed, false, "換題要重新公佈");
+});
+
+test("v043-G1-2：換題之後 uc.vote.foulTop 唔可以用舊票（W_WRONG_PHASE，eliminatedIds 不變）", () => {
+  const { store, roundId, victim } = v043VotedThenPick("v043-g1-foultop");
+  const before = [...store.state.room.gameState.undercover.eliminatedIds];
+  // 舊 round 確實有 2 張有效票（證明唔係「冇票」而係「票已經作廢」）
+  assert.equal(
+    store.state.submissions.filter((s) => s.roundId === roundId && s.confirmed && s.kind === "vote").length,
+    2,
+  );
+  assert.throws(() => run(store, "uc.vote.foulTop"), isCmdError("W_WRONG_PHASE", /未開投票|未收卷/));
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, before, "唔可以用舊票淘汰新題嘅人");
+  assert.equal(store.state.room.gameState.undercover.eliminatedIds.includes(victim), false);
+});
+
+test("v043-G1-3：換題之後 uc.vote.start 要先公佈（未公佈 W_WRONG_PHASE；reveal 後成功）", () => {
+  const { store } = v043VotedThenPick("v043-g1-vote-start");
+  assert.throws(() => run(store, "uc.vote.start"), isCmdError("W_WRONG_PHASE", /先公佈好人題目/));
+  run(store, "uc.prompt.reveal");
+  const res = run(store, "uc.vote.start");
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(store.round(res.result.roundId).state, "open");
+  assert.equal(store.state.room.gameState.undercover.roundId, res.result.roundId, "新一輪投票要綁新 round");
+});
+
+test("v043-G1-4：未公佈好人題目就 uc.vote.start → W_WRONG_PHASE，round 唔會開", () => {
+  const { store } = ucSetup("v043-g1-unrevealed", 6);
+  run(store, "uc.match.start");
+  const beforeRounds = store.state.room.rounds.length;
+  assert.throws(() => run(store, "uc.vote.start"), isCmdError("W_WRONG_PHASE", /先公佈好人題目/));
+  assert.equal(store.state.room.rounds.length, beforeRounds, "唔可以開一個未公佈嘅投票 round");
+  assert.equal(store.state.room.gameState.undercover.roundId, null);
+  run(store, "uc.prompt.reveal");
+  assert.equal(run(store, "uc.vote.start").ok, true, "公佈之後要開得");
+});
+
+test("v043-G1-5：投票 open 緊 uc.prompt.reveal → W_ALREADY_STATE，round 仍然 open、大mon 唔會換成題目", () => {
+  const { store } = ucSetup("v043-g1-reveal-open", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  const started = run(store, "uc.vote.start");
+  const roundId = started.result.roundId;
+  assert.equal(store.state.room.stage.mode, "undercover", "投票畫面");
+  assert.throws(() => run(store, "uc.prompt.reveal"), isCmdError("W_ALREADY_STATE", /投票進行中/));
+  assert.equal(store.round(roundId).state, "open", "round 唔可以因為 reveal 而被收／void");
+  assert.equal(store.state.room.stage.mode, "undercover", "大mon 唔可以由倒數被換成題目");
+  // 開票之後就公佈得
+  run(store, "card.close");
+  assert.equal(run(store, "uc.prompt.reveal").ok, true);
+});
+
+test("v043-G2-1：uc.match.redraw 只准未開始窗口（公佈／投票／淘汰後一律擋）", () => {
+  const { store } = ucSetup("v043-g2-window", 6);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  // 窗口內（questionNo=0、未公佈、冇 round、冇淘汰）→ ok，而且身份會變
+  let changed = false;
+  for (let i = 0; i < 12 && !changed; i += 1) {
+    const before = [...store.state.room.gameState.undercover.undercoverIds].sort();
+    assert.equal(run(store, "uc.match.redraw").ok, true, "未開始窗口要重抽得");
+    const now = [...store.state.room.gameState.undercover.undercoverIds].sort();
+    if (JSON.stringify(before) !== JSON.stringify(now)) changed = true;
+  }
+  assert.equal(changed, true, "窗口內重抽要真係換到身份");
+  assert.equal(store.state.room.gameState.undercover.result, null);
+  // 公佈之後
+  run(store, "uc.prompt.reveal");
+  assert.throws(() => run(store, "uc.match.redraw"), isCmdError("W_ALREADY_STATE", /已經開始咗/));
+  // 投票之後
+  run(store, "uc.vote.start");
+  assert.throws(() => run(store, "uc.match.redraw"), isCmdError("W_ALREADY_STATE", /已經開始咗/));
+  // 淘汰之後
+  run(store, "card.close");
+  const st = store.state.room.gameState.undercover;
+  const victim = st.participantIds.find((id) => !st.undercoverIds.includes(id));
+  run(store, "uc.eliminate", { playerId: victim });
+  assert.throws(() => run(store, "uc.match.redraw"), isCmdError("W_ALREADY_STATE", /已經開始咗/));
+  assert.equal(store.state.room.gameState.undercover.eliminatedIds.includes(victim), true, "身份唔可以改");
+  assert.equal(st0.matchNo, store.state.room.gameState.undercover.matchNo, "重抽唔會偷偷開新局");
+});
+
+test("v043-G2-2：result=good 狀態下 uc.match.redraw 失敗；reset 之後新局 result 唔會殘留", () => {
+  const { store } = ucSetup("v043-g2-redraw-good", 6);
+  run(store, "uc.match.start");
+  const st = JSON.parse(JSON.stringify(store.state.room.gameState.undercover));
+  st.result = "good"; // 人手造「好人勝但臥底仲在生」嘅矛盾狀態
+  store.commit([{ t: "game.set", d: { gameState: { undercover: st } } }]);
+  assert.throws(() => run(store, "uc.match.redraw"), isCmdError("W_ALREADY_STATE", /已經開始咗|已結算/));
+  assert.equal(store.state.room.gameState.undercover.result, "good", "失敗嘅 redraw 唔可以改到 state");
+  run(store, "uc.match.reset");
+  run(store, "uc.match.start");
+  const st2 = store.state.room.gameState.undercover;
+  assert.equal(st2.result, null, "新局唔可以殘留上一局嘅 result");
+  assert.equal(st2.settled, false);
+  assert.equal(run(store, "uc.match.redraw").ok, true, "新局窗口內重抽得");
+});
+
+test("v043-G3-1：uc.topic.pick 之後 player／stage DTO（activity／toast）唔包含題目內容", () => {
+  const { store, players } = ucSetup("v043-g3-toast", 6);
+  run(store, "uc.match.start", { undercoverCount: 2 });
+  run(store, "uc.prompt.reveal");
+  const st0 = store.state.room.gameState.undercover;
+  const other = v043OtherTopic(store, st0.promptCardId);
+  const picked = run(store, "uc.topic.pick", {}, other.id);
+  assert.equal(picked.ok, true, JSON.stringify(picked));
+  assert.equal(picked.result.prompt, other.prompt, "ctx.result（只回 host）可以照樣帶題目");
+  assert.equal(picked.result.undercoverPrompt, other.undercoverPrompt);
+  // 廣播出去嘅 DTO 唔准帶題目
+  const playerJson = JSON.stringify(buildPlayerView(store, players[0].id));
+  const stageJson = JSON.stringify(buildStageView(store));
+  assert.equal(playerJson.includes(other.prompt), false, "player DTO 唔准包含未公佈題目");
+  assert.equal(stageJson.includes(other.prompt), false, "stage DTO 唔准包含未公佈題目");
+  assert.equal(playerJson.includes(other.undercoverPrompt), false, "臥底題更加唔准");
+  const toastText = store.state.activity.at(-1)?.text ?? "";
+  assert.equal(toastText.includes(other.prompt), false, "toast 唔准帶題目");
+  assert.equal(toastText.includes(other.undercoverPrompt), false, "toast 唔准帶臥底題");
+  assert.match(toastText, /題目已換/, "toast 要用中性文字");
+  assert.equal(store.state.room.stage.mode, "blackout", "換題要收走舊題目畫面");
+});
+
+test("v043-G2-3：result=good 但仲有臥底在生 → uc.match.settle 唔可以派分（ledger 唔加）", () => {
+  const { store } = ucSetup("v043-g2-settle-stale", 6);
+  run(store, "uc.match.start");
+  const st = JSON.parse(JSON.stringify(store.state.room.gameState.undercover));
+  st.result = "good";
+  store.commit([{ t: "game.set", d: { gameState: { undercover: st } } }]);
+  const before = store.state.ledger.filter((e) => !e.voided).length;
+  assert.throws(() => run(store, "uc.match.settle"), isCmdError("W_ALREADY_STATE", /矛盾/));
+  assert.equal(store.state.ledger.filter((e) => !e.voided).length, before, "矛盾狀態唔可以派分");
+  assert.equal(store.state.room.gameState.undercover.settled, false, "唔可以標 settled");
+});
+
+test("v043-G1-6：st.roundId 指向一個 void 咗嘅 round → uc.eliminate 當「本題未收卷」擋", () => {
+  const { store } = ucSetup("v043-g1-void-defence", 6);
+  run(store, "uc.match.start");
+  run(store, "uc.prompt.reveal");
+  const started = run(store, "uc.vote.start");
+  const roundId = started.result.roundId;
+  run(store, "card.close");
+  // 人手造「st.roundId 仍然指住一個 void round」嘅防禦場景
+  const st = JSON.parse(JSON.stringify(store.state.room.gameState.undercover));
+  st.roundId = roundId;
+  store.commit([
+    { t: "round.update", d: { roundId, patch: { state: "void" } } },
+    { t: "game.set", d: { gameState: { undercover: st } } },
+  ]);
+  const victim = st.participantIds.find((id) => !st.undercoverIds.includes(id));
+  const before = [...st.eliminatedIds];
+  assert.throws(() => run(store, "uc.eliminate", { playerId: victim }), isCmdError("W_WRONG_PHASE", /未收卷/));
+  assert.throws(() => run(store, "uc.vote.foulTop"), isCmdError("W_WRONG_PHASE", /未開投票|未收卷/));
+  assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, before, "void 票唔可以淘汰任何人");
 });

@@ -956,7 +956,8 @@ function ucEliminateOne(ctx: Ctx, targetId: string): { targetId: string; wasUnde
   if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
   // B4：只准「已開投票並且已收卷」之後 foul（未投票唔可以淘汰）
   const liveRound = st.roundId ? store.round(st.roundId) : undefined;
-  if (!liveRound || liveRound.state === "open")
+  // v0.4.3（G1）：round 已經 void（換過題）＝本題根本冇有效票，同「未收卷」一樣擋
+  if (!liveRound || liveRound.state === "open" || liveRound.state === "void")
     throw new CmdError("W_WRONG_PHASE", "本題未收卷：先「開投票（10 秒）」等開票，再 foul");
   if (ucQuestionDone(st)) throw new CmdError("W_ALREADY_STATE", "呢題已經 foul 咗一個，請撳「下一題／結算」");
   if (!st.participantIds.includes(targetId)) throw new CmdError("W_BAD_SCHEMA", "呢個人唔係本局參賽者");
@@ -985,8 +986,10 @@ function ucEliminateOne(ctx: Ctx, targetId: string): { targetId: string; wasUnde
 }
 
 /** v0.4.2：畫畫關「揀題目」共用邏輯（uc.topic.pick／uc.topic.reroll 同一條路）。
- *  只改題目相關欄位：promptCardId／topicIds[questionNo]／usedTopicIds／promptRevealed；
- *  唔准掂 participants／undercoverIds／eliminatedIds／round（換題唔等於換局）。 */
+ *  只改題目相關欄位：promptCardId／topicIds[questionNo]／usedTopicIds／promptRevealed＋清 roundId；
+ *  唔准掂 participants／undercoverIds／eliminatedIds（換題唔等於換局）。
+ *  v0.4.3（G1）：換題＝真正重來——舊 round 一律 void、清 st.roundId，
+ *  否則主持可以用「上一題嘅票」foul 新題嘅人。 */
 function ucApplyTopic(ctx: Ctx, card: Card): { cardId: string; questionNo: number; prompt: string; undercoverPrompt: string } {
   const store = ctx.store;
   const st = cloneUcMatch(store);
@@ -997,6 +1000,12 @@ function ucApplyTopic(ctx: Ctx, card: Card): { cardId: string; questionNo: numbe
   const liveRound = st.roundId ? store.round(st.roundId) : undefined;
   if (liveRound && liveRound.state === "open")
     throw new CmdError("W_ALREADY_STATE", "投票進行中，唔可以換題目（等開票或者撳「立即開票」先）");
+  // G1：舊 round（closed／tally／revealed／任何非 void）一律 void，令舊票唔可以再用
+  if (liveRound && liveRound.state !== "void") {
+    push(ctx, { t: "round.update", d: { roundId: liveRound.id, patch: { state: "void" } } });
+  }
+  if (st.roundId && store.state.room.currentRoundId === st.roundId) push(ctx, { t: "round.current", d: { currentRoundId: null } });
+  st.roundId = null;
   st.promptCardId = card.id;
   const topicIds = [...(st.topicIds ?? [])];
   topicIds[st.questionNo] = card.id;
@@ -1009,7 +1018,8 @@ function ucApplyTopic(ctx: Ctx, card: Card): { cardId: string; questionNo: numbe
   if (store.state.room.stage.mode === "message") {
     setStageIfUnlocked(ctx, { mode: "blackout", payload: {}, prevMode: resumableMode(store.state.room.stage.prevMode) });
   }
-  toast(ctx, `第 ${st.questionNo + 1} 題用咗：${card.prompt}`);
+  // G3：toast 會經 player／stage DTO 廣播，未公佈前唔准帶題目內容（ctx.result 唔會廣播，可以照回）
+  toast(ctx, `第 ${st.questionNo + 1} 題題目已換（未公佈）`);
   return { cardId: card.id, questionNo: st.questionNo + 1, prompt: card.prompt, undercoverPrompt: card.undercoverPrompt };
 }
 
@@ -1943,10 +1953,15 @@ export function executeCommand(
     case "uc.match.redraw": {
       const st = cloneUcMatch(store);
       if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算，唔可以重抽");
-      // FIX-9：已出局者唔可以再抽做臥底
+      // v0.4.3（G2）：只准喺「未開始」窗口重抽。一旦公佈／投票／淘汰過，身份就定咗，
+      // 否則可以喺好人已勝之後改臥底身份、再按新身份派分。
+      if (st.questionNo !== 0 || st.promptRevealed || st.roundId || st.eliminatedIds.length > 0 || st.result !== null)
+        throw new CmdError("W_ALREADY_STATE", "已經開始咗（公佈／投票／淘汰過）：要換身份請開新一局");
+      // FIX-9：已出局者唔可以再抽做臥底（窗口內唔會有出局者，保留 pool 邏輯做防禦）
       const pool = st.participantIds.filter((id) => !st.eliminatedIds.includes(id) && store.player(id)?.status === "approved");
       if (pool.length < st.undercoverIds.length + 2) throw new CmdError("W_ALREADY_STATE", "玩家人數唔夠（已出局者唔計），重抽唔到");
       st.undercoverIds = shuffled(pool).slice(0, st.undercoverIds.length);
+      st.result = null; // 防禦：唔准上一局／矛盾狀態嘅 result 殘留
       push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
       toast(ctx, `重抽咗 ${st.undercoverIds.length} 個臥底（其他狀態不變）`);
       ctx.result = { matchNo: st.matchNo, undercoverCount: st.undercoverIds.length };
@@ -1955,6 +1970,10 @@ export function executeCommand(
     case "uc.prompt.reveal": {
       const st = cloneUcMatch(store);
       if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+      // v0.4.3（G1）：投票 open 緊唔准再公佈（大mon 由倒數被換成題目＝投票「睇唔到」但仲計時）
+      const liveRound = st.roundId ? store.round(st.roundId) : undefined;
+      if (liveRound && liveRound.state === "open")
+        throw new CmdError("W_ALREADY_STATE", "投票進行中：等開票先");
       const card = st.promptCardId ? store.card(st.promptCardId) : undefined;
       if (!card) throw new CmdError("W_ALREADY_STATE", "本局未有題目卡");
       st.promptRevealed = true;
@@ -2001,6 +2020,8 @@ export function executeCommand(
       ensurePlaying(store);
       const st = cloneUcMatch(store);
       if (st.settled) throw new CmdError("W_ALREADY_STATE", "本局已結算");
+      // v0.4.3（G1）：未公佈好人題目就開投票＝玩家投嘅係未見過嘅題，server 要擋（唔靠 UI disable）
+      if (st.promptRevealed !== true) throw new CmdError("W_WRONG_PHASE", "先公佈好人題目，再開投票");
       // v0.4.0：同 undercover.start 行同一條 path（候選＝參賽者−已出局；選民＝候選）
       const v = startDrawVote(ctx, {
         participantIds: st.participantIds,
@@ -2027,6 +2048,8 @@ export function executeCommand(
       const liveRound = st0.roundId ? store.round(st0.roundId) : undefined;
       if (!liveRound) throw new CmdError("W_WRONG_PHASE", "本題未開投票：先撳「開始投票（10 秒）」");
       if (liveRound.state === "open") throw new CmdError("W_WRONG_PHASE", "未收卷：先開票睇結果，再 foul");
+      // v0.4.3（G1）：void 咗嘅 round（換題／重開）唔算有效票
+      if (liveRound.state === "void") throw new CmdError("W_WRONG_PHASE", "本題未開投票：先撳「開始投票（10 秒）」");
       if (ucQuestionDone(st0)) throw new CmdError("W_ALREADY_STATE", "呢題已經 foul 咗一個，請撳「下一題／結算」");
       const tally = drawVoteTally(store, liveRound);
       const totalVotes = [...tally.values()].reduce((a, b) => a + b, 0);
@@ -2111,10 +2134,15 @@ export function executeCommand(
       }
       // FIX-8：勝負未定之前唔准一撳即判（只有「兩個臥底都出局」或「打完 3 題」先准）
       const remaining0 = ucRemainingUndercover(st0);
-      if (!(remaining0 === 0 || st0.result === "good" || (st0.questionNo >= 2 && ucQuestionDone(st0))))
+      // v0.4.3（G2）：stale result 防禦——result=good 但仲有臥底在生係矛盾狀態，唔可以派分。
+      // 正式流程冇可能出現（remaining 0 先會 result=good），出現即係舊 bug 留低嘅狀態。
+      if (st0.result === "good" && remaining0 > 0)
+        throw new CmdError("W_ALREADY_STATE", "本局狀態矛盾（好人勝但仲有臥底在生）：唔可以派分，請「取消淘汰」或者開新一局");
+      if (!(remaining0 === 0 || (st0.questionNo >= 2 && ucQuestionDone(st0))))
         throw new CmdError("W_WRONG_PHASE", "仲未夠 3 題／仲有臥底未出局，未可以結算（要結算請先撳「下一題／結算」）");
       const st = cloneUcMatch(store);
-      const result = st.result === "good" || ucRemainingUndercover(st) === 0 ? "good" : "undercover";
+      // 勝負一律由「仲有冇臥底在生」判定，唔可以信 stale st.result
+      const result = ucRemainingUndercover(st) === 0 ? "good" : "undercover";
       const r = settleUndercoverMatch(ctx, st, result);
       ctx.result = { settled: true, matchNo: st.matchNo, ...r };
       break;
