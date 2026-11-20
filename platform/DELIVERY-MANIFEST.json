@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-20T04:55:08.705Z",
+  "generatedAt": "2026-11-20T05:19:08.343Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -109,7 +109,7 @@
     {
       "path": "package.json",
       "bytes": 1027,
-      "sha256": "b5d052386e73595a6476670a2a1246d34ea5d4910f23858dcb3c465609e62ddd"
+      "sha256": "e7256bb25c1c8f8f79475185034d1a1c131fdc7f5ad31e647f63222461429f3a"
     },
     {
       "path": "public/app.css",
@@ -134,7 +134,7 @@
     {
       "path": "public/host.html",
       "bytes": 499,
-      "sha256": "88475284ec140c8fd4cdcda546689b2c00346044f7239116b33e9802651bf78b"
+      "sha256": "a97f8a158a8b61f1d3ecd0d11f322440def5e8b895035a822f6497acaffd4d68"
     },
     {
       "path": "public/icon.svg",
@@ -144,7 +144,7 @@
     {
       "path": "public/index.html",
       "bytes": 1445,
-      "sha256": "66712aa5459c714b3b07c818b879cffe1ab401770801071df630b458a6c0298a"
+      "sha256": "799a66994405adc0029efc62a6337d0283055eedaa29d900cb9a612c4e90325d"
     },
     {
       "path": "public/js/client/common.js",
@@ -184,7 +184,7 @@
     {
       "path": "public/play.html",
       "bytes": 680,
-      "sha256": "41e7469c3f0e9413218f286bf71f4f83cd252154dadee03b6c2da12e76bec0ac"
+      "sha256": "038dce93deedc1813bcc679604fb0f3878065764b2c1e5dfea281053bf0e2d9e"
     },
     {
       "path": "public/quiz-legacy-mc.json",
@@ -194,7 +194,7 @@
     {
       "path": "public/stage.html",
       "bytes": 602,
-      "sha256": "c5bd6e21e1470ca0d33384dd3cbbbd44719c59ab59309e2b4906b909f88e1c59"
+      "sha256": "cd113d79858e7429190a9e60037918f973dec1ffaf7047cb2269b58fcffb10ad"
     },
     {
       "path": "scripts/make-manifest.mjs",
@@ -313,8 +313,8 @@
     },
     {
       "path": "test/draw-panel.test.mjs",
-      "bytes": 8407,
-      "sha256": "80ccadb63419d41d4d33cfac058c35583da30e8ae35545761df83a45e874984c"
+      "bytes": 8618,
+      "sha256": "0ca81ab76dd5aca0df229bcc44cd46aad1475ef8b25e628f5ef1a87a0db972fa"
     },
     {
       "path": "test/unit.test.mjs",

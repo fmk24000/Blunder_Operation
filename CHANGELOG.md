@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.4.3 — 2026-11-20
+
+> Codex CLI 實測 v0.4.2 之後搵到 4 個 gap（2 個 P1、2 個 P2）。
+> 兩個 team 各做一輪（builder＝deepseek-v4.1-flash），每輪由 zai/glm-5.3 獨立覆核，最後 codex CLI 判 **SHIP**。
+
+### Fixed — G1（P1）開票後換題，舊票仍然可以 foul 人
+- `uc.topic.pick`／`uc.topic.reroll` 而家換題會 **void 舊 round**、清 `roundId`／`currentRoundId`，
+  所以換題之後唔可以用上一題嘅票 foul。舊 round 已 void 時 `uc.eliminate`／`uc.vote.foulTop` 一律當「未收卷」。
+- `uc.vote.start` 要 **已公佈好人題目**（`promptRevealed === true`）先開得，未公佈會被擋。
+- 投票進行中唔准再 `uc.prompt.reveal`（避免大mon 由 10 秒倒數被換成題目）。
+
+### Fixed — G2（P1）勝負已定仍可重抽臥底，再結算按新身份派分
+- `uc.match.redraw` 只准「未公佈、未開投票、未有淘汰」嘅窗口（＋`result` 必須 null、人數要夠）。
+- 重抽會清 `result`；`uc.match.settle` 遇到「`result=good` 但仲有臥底在生」→ **拒絕派分**，
+  勝負改由「仲有幾多臥底」判定，唔再信舊 `result`。
+
+### Fixed — G3（P2）未公佈題目經 toast 提早送玩家
+- 揀題目嘅 toast 改中性「第 N 題題目已換（未公佈）」，唔再帶好人題內容；
+  `ctx.result` 只回 host command response。
+
+### Changed — G4（P2）主持「畫畫（一圖多人）」主面板補齊
+- 主控制「大mon 控制」嘅畫畫塊而家齊：**臥底身份（主持專用）**、**重抽臥底**、
+  公佈後 **完整票數表＋票軌**、**獨立「分數結算」**；未開局有清楚提示；hint 唔再寫「呢度就係全部」。
+- 「重抽臥底」「公佈好人題目」兩個掣嘅 enabled 條件同 server 完全一致（撳得就一定成功）。
+- 進階「畫畫」tab 保留完整面板（取消淘汰／手動淘汰／清走本局）。
+
+### 其他
+- 資產版本 `?v=20261120d`。
+- Tests **163 → 184**（新增 21：G1 三條、G2 三條、G3 一條、settle／void 防禦、主面板 8 條、N1／N2 條件）。
+- 驗收：`node --test` 184/184；E2E 63/63；codex CLI 三輪（SHIP-WITH-NITS → N1/N2 修完 → **SHIP**）。
+
 ## v0.4.2 — 2026-11-20
 
 ### Fixed — 畫畫關「投票投臥底」唔見咗（用戶第二輪投訴）
