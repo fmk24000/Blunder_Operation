@@ -1,13 +1,51 @@
 {
-  "version": 1,
-  "source": "2026-11-19 用戶提供（NEW-CONTENT.md B 部分）一圖多人 7 對題目；prompt＝好人題（完整句子）、undercoverPrompt＝臥底題（關鍵詞），逐字搬。",
-  "topics": [
-    { "id": "uc1", "prompt": "同翹妹去迪士尼", "undercoverPrompt": "翹妹" },
-    { "id": "uc2", "prompt": "係麥當勞搞生日party", "undercoverPrompt": "麥當勞" },
-    { "id": "uc3", "prompt": "Hollye 食譚仔", "undercoverPrompt": "Hollye" },
-    { "id": "uc4", "prompt": "海邊賞月", "undercoverPrompt": "賞月" },
-    { "id": "uc5", "prompt": "哥斯拉同金剛係沙漠結婚", "undercoverPrompt": "哥斯拉" },
-    { "id": "uc6", "prompt": "係浴室開住花灑舉啞鈴", "undercoverPrompt": "舉啞鈴" },
-    { "id": "uc7", "prompt": "300磅肥仔被卷入黑洞", "undercoverPrompt": "黑洞" }
-  ]
+ "version": 2,
+ "source": "2026-11-20 用戶提供（題目更新）一圖多人 9 對題目；prompt＝好人題（完整句子）、undercoverPrompt＝臥底題（關鍵詞），逐字搬。",
+ "topics": [
+  {
+   "id": "uc1",
+   "prompt": "同翹妹去迪士尼",
+   "undercoverPrompt": "翹妹"
+  },
+  {
+   "id": "uc2",
+   "prompt": "係麥當勞搞生日party",
+   "undercoverPrompt": "麥當勞"
+  },
+  {
+   "id": "uc3",
+   "prompt": "Hollye 食譚仔",
+   "undercoverPrompt": "Hollye"
+  },
+  {
+   "id": "uc4",
+   "prompt": "海邊賞月",
+   "undercoverPrompt": "賞月"
+  },
+  {
+   "id": "uc5",
+   "prompt": "哥斯拉同金剛係沙漠結婚",
+   "undercoverPrompt": "哥斯拉"
+  },
+  {
+   "id": "uc6",
+   "prompt": "係浴室開住花灑舉啞鈴",
+   "undercoverPrompt": "舉啞鈴"
+  },
+  {
+   "id": "uc7",
+   "prompt": "300磅肥仔被卷入黑洞",
+   "undercoverPrompt": "黑洞"
+  },
+  {
+   "id": "uc8",
+   "prompt": "寵物小精靈係海底撈修甲",
+   "undercoverPrompt": "海底撈"
+  },
+  {
+   "id": "uc9",
+   "prompt": "動物森友會召開緊急股東大會",
+   "undercoverPrompt": "緊急股東大會"
+  }
+ ]
 }

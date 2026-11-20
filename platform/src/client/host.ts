@@ -2243,7 +2243,7 @@ async function handleAct(act: string): Promise<void> {
         },
       });
     } else if (sub === "import") {
-      if (!window.confirm("確定匯入舊 QUIZ？同名 MC 題（包括 13 題新題嘅同名 id）會被覆蓋。")) {
+      if (!window.confirm("確定匯入舊 QUIZ？同名 MC 題（包括 15 題新題嘅同名 id）會被覆蓋。")) {
         showToast("已取消匯入");
         return;
       }

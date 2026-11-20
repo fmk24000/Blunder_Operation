@@ -1,166 +1,241 @@
 {
-  "version": 3,
-  "source": "2026-11-19 用戶提供（NEW-CONTENT.md A 部分）13 題；題目／選項／答案／解釋逐字搬，唔准改。",
-  "note": "純資料 seed：換題只改呢個檔／後台編輯器，唔使改 code。Q12 有容差 ±2 尺；Q13 冇預設答案（主持即場輸入）。",
-  "questions": [
-    {
-      "id": "q1",
-      "type": "choice",
-      "category": "儒家題",
-      "prompt": "喺《論語》原文入面, \"以德報怨\"呢四個字後面嘅標點符號係乜嘢?",
-      "options": ["，", "。", "？", "、"],
-      "correct": 0,
-      "explanation": "《論語．憲問》：「或曰：『以德報怨，何如？』子曰：『何以報德？以直報怨，以德報德。』」",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q2",
-      "type": "choice",
-      "category": "歷史題",
-      "prompt": "喺老子既道德經入面, 道生一，一生二，二生三，下一句係乜野呢?",
-      "options": ["三生萬道", "三生萬物", "三生萬象", "三生萬萬"],
-      "correct": 1,
-      "explanation": "老子〔道德經〕第四十二章：「道生一，一生二，二生三，三生萬物。萬物負陰而抱陽，沖氣以為和。」",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q3",
-      "type": "choice",
-      "category": "語言題",
-      "prompt": "\"To be or not to be, that is the question.\" 係邊個寫嘅呢?",
-      "options": ["亞里士多德", "莎士比亞", "柏拉圖", "所羅門王"],
-      "correct": 1,
-      "explanation": "出自英國劇作家威廉·莎士比亞（William Shakespeare）的經典悲劇《哈姆雷特》",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q4",
-      "type": "choice",
-      "category": "音樂題",
-      "prompt": "知名意大利麵品牌 Barilla 曾經同 Spotify 合作推出過 8 個官方播放清單，呢批清單最特別嘅用途係咩？",
-      "options": [
-        "收錄意大利麵煮滾同倒醬汁嘅 ASMR 白噪音，幫人放鬆助眠",
-        "當作「煮麵計時器」，成個清單播完剛好係煮出彈牙意粉嘅時間",
-        "根據音樂節拍速度，指導食客用最優雅嘅節奏捲意粉，避免醬汁彈到周圍都係",
-        "專為意大利餐廳設計，研究指播呢批歌可以令食客嘅食慾提升 15%"
-      ],
-      "correct": 1,
-      "explanation": "部分清單對應嘅麵款同時間：\n- 9 分鐘（Spaghetti N.5 經典直麵）：例如 Mixtape Spaghetti、Top Hits Spaghetti\n- 10 分鐘（Linguine N.13 細扁麵）：例如 Simply Classics Linguine、Moody Day Linguine\n- 11 分鐘（Fusilli N.98 螺旋麵 / Penne Rigate N.73 長通粉）：例如 Timeless Emotion Fusilli、Melancholy Penne、Best Song Penne\n實際使用要注意嘅位：如果你真係想喺 Spotify 搵 Barilla 嘅清單嚟當計時器用，有兩點要留意：\n1. 必須係 Spotify Premium 用戶：免費版中間可能會突然插播廣告，會拉長播放時間，搞到啲麵煮過龍變淋。\n2. 熄咗「自動播放（Autoplay）」同「循環播放（Repeat）」：如果唔係播完最後一首歌之後繼續播落去，你就會唔知幾時應該撈麵。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q5",
-      "type": "choice",
-      "category": "語言題",
-      "prompt": "全世界最常用嘅英文詞彙「OK」，目前語言學界最公認嘅起源，其實係 1839 年美國報紙興起嘅一個「串錯字潮語」縮寫，請問佢原本係邊兩個字？",
-      "options": ["Only Known", "Order Kept", "Open Key", "Oll Korrect"],
-      "correct": 3,
-      "explanation": "1830 年代美國波士頓好興故意串錯字再攞縮寫嚟當潮語，報紙《Boston Morning Post》將「All Correct」特登寫成「Oll Korrect」，簡稱「O.K.」，後來因為美國總統競選口號借用而紅遍全球。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q6",
-      "type": "choice",
-      "category": "防彈題",
-      "prompt": "以前出神機 3310 嘅「Nokia（諾基亞）」，喺轉型做手提電話之前，其實做過好多唔同嘅產品。請問以下邊一樣係佢哋從來冇生產過嘅？",
-      "options": ["廁紙", "膠水鞋", "汽車輪胎", "微波爐"],
-      "correct": 3,
-      "explanation": "Nokia 1865 年成立嗰陣其實係一間造紙廠，真係賣過廁紙，後來佢哋同橡膠廠合併，開始大規模生產膠水鞋同汽車輪胎（佢哋嘅輪胎部門獨立出嚟之後叫 Nokian Tyres，今日仲賣緊），反而睇落最似電器公司會出嘅微波爐，佢哋從來冇出過。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q7",
-      "type": "choice",
-      "category": "感情題",
-      "prompt": "《詩經》名句「執子之手，與子偕老。」原文入面，呢句詩最初係寫畀邊個？",
-      "options": ["新婚妻子", "皇上", "準備出嫁嘅女兒", "戰場上嘅同袍戰友"],
-      "correct": 3,
-      "explanation": "出自《詩經·邶風·擊鼓》，其實佢係一首反戰詩，「死生契闊，與子成說。執子之手，與子偕老。」。在《擊鼓》全詩的背景中，這是一首征人因戰亂與同袍／戰友離散、被迫從軍遠征所唱的怨詩。這兩句最初表達的是生死與共的戰友情誼與誓約（在戰場上立下的生死之交），而非男女之間的愛情告白。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q8",
-      "type": "choice",
-      "category": "保健題",
-      "prompt": "現代人喺健身室日日跑嘅「跑步機（Treadmill）」，喺 1818 年英國剛發明出嚟嗰陣，原本嘅用途其實係咩？",
-      "options": [
-        "幫馬匹喺落雨天做室內訓練",
-        "醫生用嚟測試心臟病人體能嘅儀器",
-        "監獄用嚟懲罰囚犯嘅刑具",
-        "紡織廠用嚟代替蒸汽機嘅人力發電機"
-      ],
-      "correct": 2,
-      "explanation": "現代跑步機嘅前身叫「踏車（Treadwheel）」，係英國工程師專門為監獄設計嘅懲罰工具。當時啲囚犯每日要被逼喺上面踩 6 個鐘以上，有人仲會用嚟順便泵水同磨穀，估唔到二百年後大家竟然要畀錢入 Gym Room 自願踩。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q9",
-      "type": "choice",
-      "category": "好問題",
-      "prompt": "遊戲界巨頭「任天堂（Nintendo）」喺 1960 年代未轉型做電子遊戲之前，曾經瘋狂試過好多唔同副業。請問以下邊一項係佢哋從來冇開過嘅生意？",
-      "options": ["時鐘酒店", "的士公司", "即食飯", "拉麵店"],
-      "correct": 3,
-      "explanation": "任天堂最早係賣花札紙牌起家，去到 1960 年代生意跌，前社長山內溥四處搵出路，真係開過的士公司（Daiya）、時鐘酒店，仲出過即食飯（甚至連嬰兒車同影印機都賣過），唯獨冇開過拉麵店。結果呢堆副業幾乎全部蝕錢收場，最後轉型做玩具同電子遊戲先發大達。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q10",
-      "type": "choice",
-      "category": "減壓題",
-      "prompt": "大家拆快遞嗰陣最鍾意撳嚟減壓嘅「泡泡紙（Bubble Wrap）」，喺 1957 年由兩位工程師剛發明出嚟嗰陣，原本預計嘅用途其實係乜嘢？",
-      "options": [
-        "帶有立體質感嘅「3D 塑膠牆紙」",
-        "太空人着喺太空衣入面嘅防撞保護層",
-        "錄音室用嘅廉價隔音棉",
-        "專為焦慮症病人設計嘅減壓玩具"
-      ],
-      "correct": 0,
-      "explanation": "當年兩位工程師將兩塊浴簾熱封埋一齊，原本想發明一種前衛嘅「3D 牆紙」，點知完全賣唔出；之後佢哋試過改賣做溫室隔熱材料都係失敗，直至 1960 年代 IBM 推出新電腦需要防撞包裝，泡泡紙先正式搵到佢嘅人生意義。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q11",
-      "type": "choice",
-      "category": "諾貝爾題",
-      "prompt": "2010 年英國一班科學家透過實驗證明「受傷嗰陣講粗口，真係可以有效減輕痛楚」，結果成功贏得「搞笑諾貝爾獎」。請問大會最後頒咗邊一個類別嘅獎項畀呢個研究？",
-      "options": ["醫學獎", "心理學獎", "和平獎", "文學獎"],
-      "correct": 2,
-      "explanation": "冇錯，係「搞笑諾貝爾和平獎」！實驗搵人將隻手浸入冰水，發現狂講粗口嘅人可以頂得耐好多，痛楚感明顯下降。大會將「講粗口」同「和平」拉埋一齊，夠晒諷刺幽默。",
-      "seconds": 30,
-      "points": 1
-    },
-    {
-      "id": "q12",
-      "type": "open",
-      "openKind": "number",
-      "category": "廢話題",
-      "prompt": "廣東話「一匹布咁長」，一匹布實際有幾長？ 請用尺作答",
-      "tolerance": 2,
-      "actualAnswer": 40,
-      "explanation": "古代制度：古籍《孫子算經》寫明「四十尺為一疋（通作『匹』）」。若以香港《度量衡條例》嘅中國尺（1尺＝0.371475米）推算，40尺約 14.86米（近15米）",
-      "seconds": 30,
-      "points": 2
-    },
-    {
-      "id": "q13",
-      "type": "open",
-      "openKind": "number",
-      "category": "統計題",
-      "prompt": "作為主持人既我 iPhone 入面裝咗幾多個 app?",
-      "tolerance": 0,
-      "explanation": "即時開電話check",
-      "seconds": 30,
-      "points": 2
-    }
-  ]
+ "version": 4,
+ "source": "2026-11-20 用戶提供（題目更新）15 題；題目／選項／答案／解釋逐字搬，唔准改。Q12 網絡題 Ans A、D＝索尼谷；Q13 張家輝題；Q14 容差 ±3 尺；Q15 最近 3 人各 +1。",
+ "note": "純資料 seed：換題只改呢個檔／後台編輯器，唔使改 code。Q14 容差 ±3 尺；Q15 最近 3 人各 +1（closestCount）。",
+ "questions": [
+  {
+   "id": "q1",
+   "type": "choice",
+   "category": "儒家題",
+   "prompt": "喺《論語》原文入面, \"以德報怨\"呢四個字後面嘅標點符號係乜嘢?",
+   "options": [
+    "，",
+    "。",
+    "？",
+    "、"
+   ],
+   "correct": 0,
+   "explanation": "《論語．憲問》：「或曰：『以德報怨，何如？』子曰：『何以報德？以直報怨，以德報德。』」",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q2",
+   "type": "choice",
+   "category": "歷史題",
+   "prompt": "喺老子既道德經入面, 道生一，一生二，二生三，下一句係乜野呢?",
+   "options": [
+    "三生萬道",
+    "三生萬物",
+    "三生萬象",
+    "三生萬萬"
+   ],
+   "correct": 1,
+   "explanation": "老子〔道德經〕第四十二章：「道生一，一生二，二生三，三生萬物。萬物負陰而抱陽，沖氣以為和。」",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q3",
+   "type": "choice",
+   "category": "語言題",
+   "prompt": "\"To be or not to be, that is the question.\" 係邊個寫嘅呢?",
+   "options": [
+    "亞里士多德",
+    "莎士比亞",
+    "柏拉圖",
+    "所羅門王"
+   ],
+   "correct": 1,
+   "explanation": "出自英國劇作家威廉·莎士比亞（William Shakespeare）的經典悲劇《哈姆雷特》",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q4",
+   "type": "choice",
+   "category": "音樂題",
+   "prompt": "知名意大利麵品牌 Barilla 曾經同 Spotify 合作推出過 8 個官方播放清單，呢批清單最特別嘅用途係咩？",
+   "options": [
+    "收錄意大利麵煮滾同倒醬汁嘅 ASMR 白噪音，幫人放鬆助眠",
+    "當作「煮麵計時器」，成個清單播完剛好係煮出彈牙意粉嘅時間",
+    "根據音樂節拍速度，指導食客用最優雅嘅節奏捲意粉，避免醬汁彈到周圍都係",
+    "專為意大利餐廳設計，研究指播呢批歌可以令食客嘅食慾提升 15%"
+   ],
+   "correct": 1,
+   "explanation": "部分清單對應嘅麵款同時間：\n- 9 分鐘（Spaghetti N.5 經典直麵）：例如 Mixtape Spaghetti、Top Hits Spaghetti\n- 10 分鐘（Linguine N.13 細扁麵）：例如 Simply Classics Linguine、Moody Day Linguine\n- 11 分鐘（Fusilli N.98 螺旋麵 / Penne Rigate N.73 長通粉）：例如 Timeless Emotion Fusilli、Melancholy Penne、Best Song Penne\n實際使用要注意嘅位：如果你真係想喺 Spotify 搵 Barilla 嘅清單嚟當計時器用，有兩點要留意：\n1. 必須係 Spotify Premium 用戶：免費版中間可能會突然插播廣告，會拉長播放時間，搞到啲麵煮過龍變淋。\n2. 熄咗「自動播放（Autoplay）」同「循環播放（Repeat）」：如果唔係播完最後一首歌之後繼續播落去，你就會唔知幾時應該撈麵。",
+   "seconds": 30,
+   "points": 1,
+   "imageUrl": "/img/q4-barilla.jpg"
+  },
+  {
+   "id": "q5",
+   "type": "choice",
+   "category": "語言題",
+   "prompt": "全世界最常用嘅英文詞彙「OK」，目前語言學界最公認嘅起源，其實係 1839 年美國報紙興起嘅一個「串錯字潮語」縮寫，請問佢原本係邊兩個字？",
+   "options": [
+    "Only Known",
+    "Order Kept",
+    "Open Key",
+    "Oll Korrect"
+   ],
+   "correct": 3,
+   "explanation": "1830 年代美國波士頓好興故意串錯字再攞縮寫嚟當潮語，報紙《Boston Morning Post》將「All Correct」特登寫成「Oll Korrect」，簡稱「O.K.」，後來因為美國總統競選口號借用而紅遍全球。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q6",
+   "type": "choice",
+   "category": "防彈題",
+   "prompt": "以前出神機 3310 嘅「Nokia（諾基亞）」，喺轉型做手提電話之前，其實做過好多唔同嘅產品。請問以下邊一樣係佢哋從來冇生產過嘅？",
+   "options": [
+    "廁紙",
+    "膠水鞋",
+    "汽車輪胎",
+    "微波爐"
+   ],
+   "correct": 3,
+   "explanation": "Nokia 1865 年成立嗰陣其實係一間造紙廠，真係賣過廁紙，後來佢哋同橡膠廠合併，開始大規模生產膠水鞋同汽車輪胎（佢哋嘅輪胎部門獨立出嚟之後叫 Nokian Tyres，今日仲賣緊），反而睇落最似電器公司會出嘅微波爐，佢哋從來冇出過。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q7",
+   "type": "choice",
+   "category": "情感題",
+   "prompt": "《詩經》名句「執子之手，與子偕老。」原文入面，呢句詩最初係寫畀邊個？",
+   "options": [
+    "新婚妻子",
+    "皇上",
+    "準備出嫁嘅女兒",
+    "戰場上嘅同袍戰友"
+   ],
+   "correct": 3,
+   "explanation": "出自《詩經·邶風·擊鼓》，其實佢係一首反戰詩，「死生契闊，與子成說。執子之手，與子偕老。」。在《擊鼓》全詩的背景中，這是一首征人因戰亂與同袍／戰友離散、被迫從軍遠征所唱的怨詩。這兩句最初表達的是生死與共的戰友情誼與誓約（在戰場上立下的生死之交），而非男女之間的愛情告白。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q8",
+   "type": "choice",
+   "category": "保健題",
+   "prompt": "現代人喺健身室日日跑嘅「跑步機（Treadmill）」，喺 1818 年英國剛發明出嚟嗰陣，原本嘅用途其實係咩？",
+   "options": [
+    "幫馬匹喺落雨天做室內訓練",
+    "醫生用嚟測試心臟病人體能嘅儀器",
+    "監獄用嚟懲罰囚犯嘅刑具",
+    "紡織廠用嚟代替蒸汽機嘅人力發電機"
+   ],
+   "correct": 2,
+   "explanation": "現代跑步機嘅前身叫「踏車（Treadwheel）」，係英國工程師專門為監獄設計嘅懲罰工具。當時啲囚犯每日要被逼喺上面踩 6 個鐘以上，有人仲會用嚟順便泵水同磨穀，估唔到二百年後大家竟然要畀錢入 Gym Room 自願踩。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q9",
+   "type": "choice",
+   "category": "好問題",
+   "prompt": "遊戲界巨頭「任天堂（Nintendo）」喺 1960 年代未轉型做電子遊戲之前，曾經瘋狂試過好多唔同副業。請問以下邊一項係佢哋從來冇開過嘅生意？",
+   "options": [
+    "時鐘酒店",
+    "的士公司",
+    "即食飯",
+    "拉麵店"
+   ],
+   "correct": 3,
+   "explanation": "任天堂最早係賣花札紙牌起家，去到 1960 年代生意跌，前社長山內溥四處搵出路，真係開過的士公司（Daiya）、時鐘酒店，仲出過即食飯（甚至連嬰兒車同影印機都賣過），唯獨冇開過拉麵店。結果呢堆副業幾乎全部蝕錢收場，最後轉型做玩具同電子遊戲先發大達。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q10",
+   "type": "choice",
+   "category": "減壓題",
+   "prompt": "大家拆快遞嗰陣最鍾意撳嚟減壓嘅「泡泡紙（Bubble Wrap）」，喺 1957 年由兩位工程師剛發明出嚟嗰陣，原本預計嘅用途其實係乜嘢？",
+   "options": [
+    "帶有立體質感嘅「3D 塑膠牆紙」",
+    "太空人着喺太空衣入面嘅防撞保護層",
+    "錄音室用嘅廉價隔音棉",
+    "專為焦慮症病人設計嘅減壓玩具"
+   ],
+   "correct": 0,
+   "explanation": "當年兩位工程師將兩塊浴簾熱封埋一齊，原本想發明一種前衛嘅「3D 牆紙」，點知完全賣唔出；之後佢哋試過改賣做溫室隔熱材料都係失敗，直至 1960 年代 IBM 推出新電腦需要防撞包裝，泡泡紙先正式搵到佢嘅人生意義。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q11",
+   "type": "choice",
+   "category": "諾貝爾題",
+   "prompt": "2010 年英國一班科學家透過實驗證明「受傷嗰陣講粗口，真係可以有效減輕痛楚」，結果成功贏得「搞笑諾貝爾獎」。請問大會最後頒咗邊一個類別嘅獎項畀呢個研究？",
+   "options": [
+    "醫學獎",
+    "心理學獎",
+    "和平獎",
+    "文學獎"
+   ],
+   "correct": 2,
+   "explanation": "冇錯，係「搞笑諾貝爾和平獎」！實驗搵人將隻手浸入冰水，發現狂講粗口嘅人可以頂得耐好多，痛楚感明顯下降。大會將「講粗口」同「和平」拉埋一齊，夠晒諷刺幽默。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q12",
+   "type": "choice",
+   "category": "網絡題",
+   "prompt": "以下邊一個地方係真實存在",
+   "options": [
+    "高登島",
+    "蓮燈樓",
+    "百度山",
+    "索尼谷"
+   ],
+   "correct": 0,
+   "explanation": "答案係 A：高登島位於馬祖列島北竿島東北，面積約 1.84 平方公里，真係存在。",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q13",
+   "type": "choice",
+   "category": "張家輝題",
+   "prompt": "亞視《開心大發現》其實係改編自日本邊個經典生活智慧節目？",
+   "options": [
+    "《恐怖醫學》",
+    "《伊東家の食卓》",
+    "《生活魔法家》",
+    "《黃金傳說》"
+   ],
+   "correct": 1,
+   "explanation": "《開心大發現》係改編自日本收視冠軍節目《伊東家の食卓》",
+   "seconds": 30,
+   "points": 1
+  },
+  {
+   "id": "q14",
+   "type": "open",
+   "openKind": "number",
+   "category": "廢話題",
+   "prompt": "廣東話「一匹布咁長」，一匹布實際有幾長？ 請用尺作答, 誤差唔多過3尺都有分",
+   "tolerance": 3,
+   "actualAnswer": 40,
+   "explanation": "古代制度：古籍《孫子算經》寫明「四十尺為一疋（通作『匹』）」。若以香港《度量衡條例》嘅中國尺（1尺＝0.371475米）推算，40尺約 14.86米（近15米）",
+   "seconds": 30,
+   "points": 2
+  },
+  {
+   "id": "q15",
+   "type": "open",
+   "openKind": "number",
+   "category": "統計題",
+   "prompt": "截至20/11/2026, 作為主持人既我iPhone 入面裝咗幾多個app? 最近答案既3個人得分",
+   "actualAnswer": 355,
+   "closestCount": 3,
+   "closestPoints": 1,
+   "explanation": "截至 20/11/2026，主持 iPhone 裝咗 355 個 app；最近答案嘅 3 個人各 +1。",
+   "seconds": 30,
+   "points": 1
+  }
+ ]
 }

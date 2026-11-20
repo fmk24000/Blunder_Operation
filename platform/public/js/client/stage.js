@@ -171,7 +171,7 @@ function questionHtml(v) {
       <div class="stage-mode-title">題目（未開始作答）</div>
     </div>
     <div class="q-prompt">${esc(q.prompt ?? "")}</div>
-    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:260px;margin-top:12px;border-radius:14px">` : ""}
+    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:180px;max-width:100%;margin-top:12px;border-radius:14px">` : ""}
     ${opts.length
             ? `<div class="q-options">${opts
                 .map((o, i) => `<div class="q-option"><span class="letter">${String.fromCharCode(65 + i)}</span><span>${esc(o)}</span></div>`)
@@ -189,7 +189,7 @@ function questionHtml(v) {
       <div class="countdown" data-countdown="1">--</div>
     </div>
     <div class="q-prompt">${esc(q.prompt)}</div>
-    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:260px;margin-top:12px;border-radius:14px">` : ""}
+    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:180px;max-width:100%;margin-top:12px;border-radius:14px">` : ""}
     ${opts.length
         ? `<div class="q-options">${opts
             .map((o, i) => `<div class="q-option"><span class="letter">${String.fromCharCode(65 + i)}</span><span>${esc(o)}</span></div>`)

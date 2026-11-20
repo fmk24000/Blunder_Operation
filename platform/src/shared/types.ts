@@ -120,8 +120,11 @@ export type Card = {
   maxBid?: number;
   /** 一圖多人：臥底題（關鍵詞）。呢個欄永遠唔准出 stage／player DTO */
   undercoverPrompt?: string;
-  /** 開放題容差（Q12 ±2 尺）：|amount - actualAnswer| <= tolerance → 全體加 points */
+  /** 開放題容差（Q12 ±3 尺）：|amount - actualAnswer| <= tolerance → 全體加 points */
   tolerance?: number;
+  /** 開放數字題：最近 N 個答案各加 closestPoints（Q15 統計題 top-3） */
+  closestCount?: number;
+  closestPoints?: number;
   /** bid 卡引用歌單 */
   songId?: string;
   /** vote 卡投咩：players＝投人（搗蛋鬼）；works＝投作品（畫畫） */
@@ -372,8 +375,11 @@ export type QuizQuestion = {
   referenceAnswer?: string;
   hint?: string;
   openKind?: "text" | "number";
-  /** 容差（Q12 ±2 尺） */
+  /** 容差（Q12 ±3 尺） */
   tolerance?: number;
+  /** 最近 N 個答案各加 closestPoints（Q15 統計題 top-3） */
+  closestCount?: number;
+  closestPoints?: number;
   seconds: number;
   points: number;
   actualAnswer?: number;

@@ -1457,51 +1457,62 @@ test("rundown.reorder：ids 唔完整／重複／有未知 id 一律拒", () => 
 
 const APP_ROOT = path.resolve(import.meta.dirname, "..");
 
-test("v0.3 題庫：13 題・id q1..q13・MC 4 個選項冇 A. 前綴・30 秒", () => {
+test("v0.3 題庫：15 題・id q1..q15・MC 4 個選項冇 A. 前綴・30 秒", () => {
   const qs = loadQuizSeed(APP_ROOT);
-  assert.equal(qs.length, 13);
-  assert.deepEqual(qs.map((q) => q.id), ["q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13"]);
+  assert.equal(qs.length, 15);
+  assert.deepEqual(qs.map((q) => q.id), ["q1","q2","q3","q4","q5","q6","q7","q8","q9","q10","q11","q12","q13","q14","q15"]);
   for (const q of qs) {
     assert.equal(q.seconds, 30, `${q.id} 要 30 秒`);
     assert.ok(q.prompt.length > 0, `${q.id} 要有題目`);
   }
   const mc = qs.filter((q) => q.type === "choice");
-  assert.equal(mc.length, 11, "Q1–Q11 係 MC");
+  assert.equal(mc.length, 13, "Q1–Q13 係 MC");
   for (const q of mc) {
     assert.equal(q.options.length, 4, `${q.id} 要 4 個選項`);
     for (const o of q.options) assert.doesNotMatch(o, /^[A-D][.．、]/, `${q.id} 選項唔應該有前綴：${o}`);
     assert.ok(Number.isInteger(q.correct) && q.correct >= 0 && q.correct < 4, `${q.id} correct index`);
     assert.equal(q.points, 1);
   }
-  assert.deepEqual(qs.map((q) => q.correct), [0,1,1,1,3,3,3,2,3,0,2,undefined,undefined]);
+  assert.deepEqual(qs.map((q) => q.correct), [0,1,1,1,3,3,3,2,3,0,2,0,1,undefined,undefined]);
 });
 
-test("v0.3 題庫：Q12 容差 ±2、actualAnswer 40；Q13 冇 actualAnswer", () => {
+test("v0.3 題庫：Q12 網絡題／Q13 張家輝題／Q14 容差 ±3／Q15 最近 3 人", () => {
   const qs = loadQuizSeed(APP_ROOT);
   const q12 = qs.find((q) => q.id === "q12");
-  assert.equal(q12.type, "open");
-  assert.equal(q12.openKind, "number");
-  assert.equal(q12.tolerance, 2);
-  assert.equal(q12.actualAnswer, 40);
-  assert.equal(q12.points, 2);
+  assert.equal(q12.type, "choice");
+  assert.deepEqual(q12.options, ["高登島", "蓮燈樓", "百度山", "索尼谷"]);
+  assert.equal(q12.correct, 0, "Ans A：高登島");
   const q13 = qs.find((q) => q.id === "q13");
-  assert.equal(q13.type, "open");
-  assert.equal(q13.openKind, "number");
-  assert.equal(q13.actualAnswer, undefined);
-  assert.equal(q13.tolerance, 0, "Q13 主持即場輸入，容差 0＝完全相等");
-  assert.equal(q13.points, 2);
-  assert.equal(q13.explanation, "即時開電話check");
-  // Q4 參考圖暫時留空（原檔攞唔到）
-  assert.equal(qs.find((q) => q.id === "q4").imageUrl, undefined);
+  assert.equal(q13.type, "choice");
+  assert.equal(q13.options[1], "《伊東家の食卓》");
+  assert.equal(q13.correct, 1);
+  const q14 = qs.find((q) => q.id === "q14");
+  assert.equal(q14.type, "open");
+  assert.equal(q14.openKind, "number");
+  assert.equal(q14.tolerance, 3);
+  assert.equal(q14.actualAnswer, 40);
+  assert.equal(q14.points, 2);
+  const q15 = qs.find((q) => q.id === "q15");
+  assert.equal(q15.type, "open");
+  assert.equal(q15.openKind, "number");
+  assert.equal(q15.actualAnswer, 355);
+  assert.equal(q15.tolerance, undefined, "Q15 用 closestCount，唔行容差");
+  assert.equal(q15.closestCount, 3);
+  assert.equal(q15.closestPoints, 1);
+  assert.equal(q15.points, 1, "最近 3 名各 +1");
+  // Q4 Barilla 參考圖
+  assert.equal(qs.find((q) => q.id === "q4").imageUrl, "/img/q4-barilla.jpg");
 });
 
-test("v0.3 題庫：questionToCard 會 copy tolerance／imageUrl", () => {
-  const c = questionToCard({ id: "qx", type: "open", category: "t", prompt: "p", openKind: "number", seconds: 30, points: 2, tolerance: 2, imageUrl: "/media/x.png" });
+test("v0.3 題庫：questionToCard 會 copy tolerance／closest／imageUrl", () => {
+  const c = questionToCard({ id: "qx", type: "open", category: "t", prompt: "p", openKind: "number", seconds: 30, points: 2, tolerance: 2, closestCount: 3, closestPoints: 1, imageUrl: "/media/x.png" });
   assert.equal(c.tolerance, 2);
+  assert.equal(c.closestCount, 3);
+  assert.equal(c.closestPoints, 1);
   assert.equal(c.imageUrl, "/media/x.png");
 });
 
-test("v0.3 一圖多人：7 對題目逐字 deepEqual", () => {
+test("v0.3 一圖多人：9 對題目逐字 deepEqual", () => {
   const topics = loadUndercoverSeed(APP_ROOT);
   assert.deepEqual(topics, [
     { id: "uc1", prompt: "同翹妹去迪士尼", undercoverPrompt: "翹妹" },
@@ -1511,6 +1522,8 @@ test("v0.3 一圖多人：7 對題目逐字 deepEqual", () => {
     { id: "uc5", prompt: "哥斯拉同金剛係沙漠結婚", undercoverPrompt: "哥斯拉" },
     { id: "uc6", prompt: "係浴室開住花灑舉啞鈴", undercoverPrompt: "舉啞鈴" },
     { id: "uc7", prompt: "300磅肥仔被卷入黑洞", undercoverPrompt: "黑洞" },
+    { id: "uc8", prompt: "寵物小精靈係海底撈修甲", undercoverPrompt: "海底撈" },
+    { id: "uc9", prompt: "動物森友會召開緊急股東大會", undercoverPrompt: "緊急股東大會" },
   ]);
 });
 
@@ -1536,7 +1549,7 @@ test("v0.3 規則頁：四頁（draw／auction／killer／quiz），舊 saboteur
   }
 });
 
-test("v0.3 bootstrap：預設 4 關次序 draw→auction→killer→quiz，7 張臥底題卡入 rundown", () => {
+test("v0.3 bootstrap：預設 4 關次序 draw→auction→killer→quiz，9 張臥底題卡入 rundown", () => {
   const rundown = defaultRundown(["q1"], ["uc_uc1"]);
   assert.deepEqual(rundown.map((r) => r.gameId), ["draw", "auction", "killer", "quiz"]);
   assert.match(rundown[0].title, /^第 1 關・/);
@@ -1544,7 +1557,7 @@ test("v0.3 bootstrap：預設 4 關次序 draw→auction→killer→quiz，7 張
   const muts = bootstrapMutations(APP_ROOT, "room_x", "1234", "hash", true);
   const allPut = muts.filter((m) => m.t === "card.put");
   const put = allPut.filter((m) => m.d.card.gameId === "draw");
-  assert.equal(put.length, 7, "7 對題目 → 7 張卡");
+  assert.equal(put.length, 9, "9 對題目 → 9 張卡");
   for (const m of put) {
     assert.equal(m.d.card.gameId, "draw");
     assert.equal(m.d.card.type, "open");
@@ -2045,17 +2058,17 @@ test("killer.redraw：重抽會換人；killer.clear 清走身份", () => {
   assert.equal(hostOver(store).killerState, null);
 });
 
-test("容差評分：Q12 ±2 尺（40）→ 38/40/42 中、37/43 唔中", () => {
+test("容差評分：Q14 ±3 尺（40）→ 37/40/43 中、36/44 唔中", () => {
   const { store, players } = ucSetup("quiz-tol", 5);
-  const q12 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q12");
-  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12)] } }]);
-  run(store, "card.open", {}, "q12");
+  const q14 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q14");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q14)] } }]);
+  run(store, "card.open", {}, "q14");
   const round = store.currentRound();
-  const answers = [38, 40, 42, 37, 43];
+  const answers = [37, 40, 43, 36, 44];
   players.forEach((p, i) => {
     store.commit([{
       t: "submission.add",
-      d: { submission: { id: `s12_${i}`, roundId: round.id, cardId: "q12", playerId: p.id, ts: 1000 + i, kind: "open", amount: answers[i], confirmed: true, payloadHash: "h" } },
+      d: { submission: { id: `s14_${i}`, roundId: round.id, cardId: "q14", playerId: p.id, ts: 1000 + i, kind: "open", amount: answers[i], confirmed: true, payloadHash: "h" } },
     }]);
   });
   run(store, "card.close");
@@ -2064,40 +2077,64 @@ test("容差評分：Q12 ±2 尺（40）→ 38/40/42 中、37/43 唔中", () => 
   assert.equal(store.state.ledger.filter((e) => !e.voided && e.roundId === round.id).length, 0);
   // 揭曉（開正確答案）先派分
   run(store, "card.reveal");
-  assert.equal(store.playerScore(players[0].id), 2, "38 ＝ 40-2 邊界內");
+  assert.equal(store.playerScore(players[0].id), 2, "37 ＝ 40-3 邊界內");
   assert.equal(store.playerScore(players[1].id), 2, "40 中");
-  assert.equal(store.playerScore(players[2].id), 2, "42 ＝ 40+2 邊界內");
-  assert.equal(store.playerScore(players[3].id), 0, "37 邊界外");
-  assert.equal(store.playerScore(players[4].id), 0, "43 邊界外");
-  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "問答 Q12・容差").length, 3);
+  assert.equal(store.playerScore(players[2].id), 2, "43 ＝ 40+3 邊界內");
+  assert.equal(store.playerScore(players[3].id), 0, "36 邊界外");
+  assert.equal(store.playerScore(players[4].id), 0, "44 邊界外");
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "問答 Q14・容差").length, 3);
   // 重複揭曉：round 已經 revealed → 拒絕，唔會再加分
   assert.throws(() => run(store, "card.reveal"), isCmdError("W_WRONG_PHASE"));
   assert.equal(store.state.ledger.filter((e) => !e.voided && e.roundId === round.id).length, 3);
 });
 
-test("容差評分：Q13 主持即場輸入答案（容差 0＝完全相等）", () => {
-  const { store, players } = ucSetup("quiz-q13", 4);
-  const q13 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q13");
-  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q13)] } }]);
-  run(store, "card.open", {}, "q13");
+test("最近 3 名：Q15 統計題 355 → 350/355/360 各 +1、第 4 名唔加", () => {
+  const { store, players } = ucSetup("quiz-q15", 5);
+  const q15 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q15");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q15)] } }]);
+  run(store, "card.open", {}, "q15");
   const round = store.currentRound();
-  [100, 101, 99, 100].forEach((amount, i) => {
+  [350, 355, 360, 100, 999].forEach((amount, i) => {
     store.commit([{
       t: "submission.add",
-      d: { submission: { id: `s13_${i}`, roundId: round.id, cardId: "q13", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+      d: { submission: { id: `s15_${i}`, roundId: round.id, cardId: "q15", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
     }]);
   });
   run(store, "card.close");
   assert.equal(store.playerScore(players[0].id), 0, "未入答案之前唔會加分");
-  const res = run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 100 });
-  assert.equal(res.result.tolerance, 0);
-  assert.equal(store.playerScore(players[0].id), 2);
-  assert.equal(store.playerScore(players[1].id), 0);
-  assert.equal(store.playerScore(players[2].id), 0);
-  assert.equal(store.playerScore(players[3].id), 2);
+  const res = run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 355 });
+  assert.equal(res.result.closestCount, 3);
+  assert.equal(store.playerScore(players[0].id), 1);
+  assert.equal(store.playerScore(players[1].id), 1);
+  assert.equal(store.playerScore(players[2].id), 1);
+  assert.equal(store.playerScore(players[3].id), 0);
+  assert.equal(store.playerScore(players[4].id), 0);
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "問答 Q15・最近 3 名").length, 3);
   // 重複入答案：void 舊 auto 分再加，唔會累積
-  run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 100 });
-  assert.equal(store.playerScore(players[0].id), 2, "重複輸入唔會加兩次");
+  run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 355 });
+  assert.equal(store.playerScore(players[0].id), 1, "重複輸入唔會加兩次");
+  assert.equal(store.playerScore(players[1].id), 1);
+  assert.equal(store.playerScore(players[2].id), 1);
+  // 再按「揭曉」亦唔會 double-award
+  run(store, "card.reveal");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [1, 1, 1, 0, 0]);
+});
+
+test("最近 3 名：直接按「揭曉」（主持未手動入答案）都會用 card.actualAnswer 評分", () => {
+  const { store, players } = ucSetup("quiz-q15-reveal", 5);
+  const q15 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q15");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q15)] } }]);
+  run(store, "card.open", {}, "q15");
+  const round = store.currentRound();
+  [350, 355, 360, 100, 999].forEach((amount, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `s15r_${i}`, roundId: round.id, cardId: "q15", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  run(store, "card.reveal");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [1, 1, 1, 0, 0]);
 });
 
 test("分項結算 game-scores：由 ledger gameId 聚合（冇 gameId 算其他）", () => {
@@ -2416,25 +2453,39 @@ test("B5：大mon 排行榜／結算唔再 slice 12 人（自動分欄）", () =
   assert.match(css, /overflow-y: auto/, "分欄之後仲要可以捲");
 });
 
-test("B6：主持儲存 Q12／Q13 唔會刪走 tolerance（儲存後容差評分照 work）", () => {
+test("B6b：同一個 id 由 open 題換成 choice 題，舊 tolerance／actualAnswer／closestCount 要清走", () => {
+  const { store } = makeStore("b6b-choice");
+  addPlayers(store, 3);
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard({ id: "qx", type: "open", category: "t", prompt: "舊開放題", openKind: "number", seconds: 30, points: 2, tolerance: 2, actualAnswer: 40, closestCount: 3, closestPoints: 1 })] } }]);
+  run(store, "quiz.upsert", { question: { id: "qx", type: "choice", category: "t", prompt: "新 MC", options: ["A", "B", "C", "D"], correct: 1, seconds: 30, points: 1 } });
+  const c = store.card("qx");
+  assert.equal(c.type, "choice");
+  assert.equal(c.tolerance, undefined);
+  assert.equal(c.actualAnswer, undefined);
+  assert.equal(c.closestCount, undefined);
+  assert.equal(c.closestPoints, undefined);
+});
+
+test("B6：主持儲存 Q14／Q15 唔會刪走 tolerance／closestCount（儲存後評分照 work）", () => {
   const { store, players } = ucSetup("b6-save", 5);
   const qs = loadQuizSeed(APP_ROOT);
-  const q12 = qs.find((q) => q.id === "q12");
-  const q13 = qs.find((q) => q.id === "q13");
-  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12), questionToCard(q13)] } }]);
-  // 模擬主持台儲存題目（payload 冇帶 tolerance）
-  run(store, "quiz.upsert", { question: { id: "q12", type: "open", openKind: "number", category: q12.category, prompt: q12.prompt, explanation: q12.explanation, seconds: 30, points: 2 } });
-  run(store, "quiz.upsert", { question: { id: "q13", type: "open", openKind: "number", category: q13.category, prompt: q13.prompt, explanation: q13.explanation, seconds: 30, points: 2 } });
-  assert.equal(store.card("q12").tolerance, 2, "Q12 儲存後 tolerance 要保留");
-  assert.equal(store.card("q12").actualAnswer, 40, "Q12 actualAnswer 要保留");
-  assert.equal(store.card("q13").tolerance, 0, "Q13 tolerance 0 要保留");
-  // 儲存後再跑容差評分：38／40／42 中、37／43 唔中
-  run(store, "card.open", {}, "q12");
+  const q14 = qs.find((q) => q.id === "q14");
+  const q15 = qs.find((q) => q.id === "q15");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q14), questionToCard(q15)] } }]);
+  // 模擬主持台儲存題目（payload 冇帶 tolerance／closestCount）
+  run(store, "quiz.upsert", { question: { id: "q14", type: "open", openKind: "number", category: q14.category, prompt: q14.prompt, explanation: q14.explanation, seconds: 30, points: 2 } });
+  run(store, "quiz.upsert", { question: { id: "q15", type: "open", openKind: "number", category: q15.category, prompt: q15.prompt, explanation: q15.explanation, seconds: 30, points: 2 } });
+  assert.equal(store.card("q14").tolerance, 3, "Q14 儲存後 tolerance 要保留");
+  assert.equal(store.card("q14").actualAnswer, 40, "Q14 actualAnswer 要保留");
+  assert.equal(store.card("q15").closestCount, 3, "Q15 closestCount 要保留");
+  assert.equal(store.card("q15").closestPoints, 1, "Q15 closestPoints 要保留");
+  // 儲存後再跑容差評分：37／40／43 中、36／44 唔中
+  run(store, "card.open", {}, "q14");
   const round = store.currentRound();
-  [38, 40, 42, 37, 43].forEach((amount, i) => {
+  [37, 40, 43, 36, 44].forEach((amount, i) => {
     store.commit([{
       t: "submission.add",
-      d: { submission: { id: `b6_${i}`, roundId: round.id, cardId: "q12", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+      d: { submission: { id: `b6_${i}`, roundId: round.id, cardId: "q14", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
     }]);
   });
   run(store, "card.close");
@@ -2469,14 +2520,14 @@ test("v0.3.3：問答收卷唔派分，揭曉先派分（MC）", () => {
 
 test("v0.3.3：數字開放題收卷後大mon 見到「名＋答案」", () => {
   const { store, players } = ucSetup("v33-open", 3);
-  const q12 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q12");
-  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12)] } }]);
-  run(store, "card.open", {}, "q12");
+  const q14 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q14");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q14)] } }]);
+  run(store, "card.open", {}, "q14");
   const round = store.currentRound();
   [38, 40, 41].forEach((amount, i) => {
     store.commit([{
       t: "submission.add",
-      d: { submission: { id: `v33o_${i}`, roundId: round.id, cardId: "q12", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+      d: { submission: { id: `v33o_${i}`, roundId: round.id, cardId: "q14", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
     }]);
   });
   run(store, "card.close");
@@ -2512,20 +2563,20 @@ test("P1-d：card.create whitelist 有 undercoverPrompt／tolerance／actualAnsw
 
 test("P1-e：數字題自動容差評分後，手機顯示中／唔中（唔再係主持評分中）", () => {
   const { store, players } = ucSetup("p1e-result", 3);
-  const q12 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q12");
-  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q12)] } }]);
-  run(store, "card.open", {}, "q12");
+  const q14 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q14");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q14)] } }]);
+  run(store, "card.open", {}, "q14");
   const round = store.currentRound();
   [40, 39, 30].forEach((amount, i) => {
     store.commit([{
       t: "submission.add",
-      d: { submission: { id: `p1e_${i}`, roundId: round.id, cardId: "q12", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+      d: { submission: { id: `p1e_${i}`, roundId: round.id, cardId: "q14", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
     }]);
   });
   run(store, "card.close");
   run(store, "card.reveal");
   assert.equal(buildPlayerView(store, players[0].id).reveal.myResult, "correct", "40 中");
-  assert.equal(buildPlayerView(store, players[1].id).reveal.myResult, "correct", "39 喺 ±2 內");
+  assert.equal(buildPlayerView(store, players[1].id).reveal.myResult, "correct", "39 喺 ±3 內");
   assert.equal(buildPlayerView(store, players[2].id).reveal.myResult, "wrong", "30 唔中");
 });
 
@@ -3308,12 +3359,12 @@ test("J3：quiz.show 遇到非問答回合（競投／投票）要清楚報錯�
   assert.throws(() => run(store, "quiz.show", undefined, "q1"), isCmdError("W_ALREADY_STATE", /競投|投票/));
 });
 
-test("J4：quiz.reset 清走 Q13 類型嘅即場答案，但保留 Q12 固定參考答案／容差", () => {
+test("J4：quiz.reset 清走 Q15 類型嘅即場答案，但保留 Q14 固定參考答案／容差", () => {
   const { store } = makeStore("j4-reset-actual");
   addPlayers(store, 3);
   run(store, "room.start");
   putQuizCards(store, 2);
-  // 模擬主持入過 Q13 真實答案（動態）＋ Q12 固定 40 尺 ±2
+  // 模擬主持入過 Q15 真實答案（動態）＋ Q14 固定 40 尺 ±3
   run(store, "card.update", { patch: { actualAnswer: 37 } }, "q2");
   run(store, "card.update", { patch: { referenceAnswer: 40, tolerance: 2 } }, "q1");
   assert.equal(store.card("q2").actualAnswer, 37, "先要有動態答案");
@@ -3322,6 +3373,19 @@ test("J4：quiz.reset 清走 Q13 類型嘅即場答案，但保留 Q12 固定參
   assert.equal(store.card("q2").actualAnswer, undefined, "重設要清走即場答案（唔好攞上一局個數評分）");
   assert.equal(store.card("q1").referenceAnswer, 40, "固定參考答案要保留");
   assert.equal(store.card("q1").tolerance, 2, "容差要保留");
+});
+
+test("J4b：quiz.reset 保留 Q14／Q15 固定答案（40／355），但清走冇固定答案嘅動態題", () => {
+  const { store } = makeStore("j4b-fixed");
+  addPlayers(store, 3);
+  run(store, "room.start");
+  const qs = loadQuizSeed(APP_ROOT);
+  const q14 = questionToCard(qs.find((q) => q.id === "q14"));
+  const q15 = questionToCard(qs.find((q) => q.id === "q15"));
+  store.commit([{ t: "quiz.set", d: { cards: [q14, q15] } }]);
+  run(store, "quiz.reset");
+  assert.equal(store.card("q14").actualAnswer, 40);
+  assert.equal(store.card("q15").actualAnswer, 355);
 });
 
 test("J5：quiz.show 冇指定題目（撳「出題目」掣）而家答緊題 → 擋住，唔會誤收卷", () => {
@@ -3433,7 +3497,7 @@ test("v042-5：uc.topic.reroll 抽到另一對（未用過）＋寫入 usedTopic
   const before = st0.promptCardId;
   const res = run(store, "uc.topic.reroll");
   assert.equal(res.ok, true);
-  assert.notEqual(res.result.cardId, before, "重抽要換一對（題庫有 7 對）");
+  assert.notEqual(res.result.cardId, before, "重抽要換一對（題庫有 9 對）");
   const st = store.state.room.gameState.undercover;
   assert.equal(st.promptCardId, res.result.cardId);
   assert.ok(st.usedTopicIds.includes(res.result.cardId), "重抽到嘅題目要入 usedTopicIds");

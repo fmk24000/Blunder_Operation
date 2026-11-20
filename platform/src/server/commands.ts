@@ -413,7 +413,7 @@ function gradeClosest(ctx: Ctx, round: Round, card: Card, actual: number): void 
   if (events.length) push(ctx, { t: "ledger.append", d: { events } });
 }
 
-/** v0.3.0：開放數字題容差評分（Q12 ±2 尺）——|amount - actual| <= tolerance → 全部 +points。
+/** v0.3.0：開放數字題容差評分（Q14 ±3 尺）——|amount - actual| <= tolerance → 全部 +points。
  *  冇 tolerance 嘅題維持舊行為「最接近 +2」（gradeClosest）。 */
 function gradeToleranceRound(ctx: Ctx, round: Round, card: Card, actual: number): void {
   if (typeof card.tolerance !== "number") return;
@@ -447,6 +447,46 @@ function gradeToleranceRound(ctx: Ctx, round: Round, card: Card, actual: number)
       }),
     );
   }
+  if (events.length) push(ctx, { t: "ledger.append", d: { events } });
+}
+
+/** 最近 N 名：按距離排序（同距按提交時間先後），各加 closestPoints（Q15 統計題 top-3） */
+function gradeClosestRound(ctx: Ctx, round: Round, card: Card, actual: number): void {
+  const n = Math.max(1, Math.floor(card.closestCount ?? 1));
+  const points = card.closestPoints ?? 1;
+  // 同一筆 transaction 入面已經 void 咗嘅舊分要當唔存在（quiz.setActualAnswer 重新輸入答案）
+  const pendingVoid = new Set<string>();
+  for (const m of ctx.muts) {
+    if (m.t !== "ledger.void") continue;
+    for (const id of (m.d.eventIds as string[]) ?? []) pendingVoid.add(id);
+  }
+  const already = ctx.store.state.ledger.some(
+    (e) => e.roundId === round.id && e.by === "auto" && !e.voided && !pendingVoid.has(e.id) && e.reason.includes("最近"),
+  );
+  if (already) return;
+  const subs = ctx.store.submissionsForRound(round.id).filter((s) => s.confirmed && typeof s.amount === "number");
+  if (!subs.length) return;
+  const ranked = [...subs]
+    .sort((a, b) => {
+      const da = Math.abs((a.amount ?? 0) - actual);
+      const db = Math.abs((b.amount ?? 0) - actual);
+      if (da !== db) return da - db;
+      if (a.ts !== b.ts) return a.ts - b.ts;
+      return a.id.localeCompare(b.id);
+    })
+    .slice(0, n);
+  const events = ranked.map((s) =>
+    makeEvent({
+      target: { type: "player", id: s.playerId },
+      gameId: "quiz",
+      roundId: round.id,
+      cardId: card.id,
+      submissionId: s.id,
+      delta: points,
+      reason: `${cardReason(card)}・最近 ${n} 名`,
+      by: "auto",
+    }),
+  );
   if (events.length) push(ctx, { t: "ledger.append", d: { events } });
 }
 
@@ -1392,6 +1432,13 @@ export function executeCommand(
       if (q.type === "choice" && (!Array.isArray(q.options) || q.options.length !== 4))
         throw new CmdError("W_BAD_SCHEMA", "choice 題要 4 個選項");
       const card = questionToCard({ ...q, id: q.id || newId("q") });
+      // choice 題唔應該帶開放題欄位（舊 q12／q13 被換成 MC 時，merge 會保留舊 tolerance／actualAnswer）
+      if (card.type === "choice") {
+        delete card.tolerance;
+        delete card.actualAnswer;
+        delete card.closestCount;
+        delete card.closestPoints;
+      }
       const cards = store.quizCards().map((c) => ({ ...c }));
       const idx = cards.findIndex((c) => c.id === card.id);
       if (idx >= 0) {
@@ -1401,9 +1448,11 @@ export function executeCommand(
         card.version = old.version + 1;
         if (old.autoAnswer) card.autoAnswer = old.autoAnswer;
         if (typeof q.autoAnswer === "string" && q.autoAnswer) card.autoAnswer = "minutes-to-midnight";
-        if (old.actualAnswer !== undefined && card.actualAnswer === undefined) card.actualAnswer = old.actualAnswer;
+        if (card.type === "open" && old.actualAnswer !== undefined && card.actualAnswer === undefined) card.actualAnswer = old.actualAnswer;
         // B6：主持儲存題目時冇帶嘅欄唔准靜靜哋清走（tolerance／imageUrl 冇提供＝保留）
-        if (old.tolerance !== undefined && card.tolerance === undefined) card.tolerance = old.tolerance;
+        if (card.type === "open" && old.tolerance !== undefined && card.tolerance === undefined) card.tolerance = old.tolerance;
+        if (card.type === "open" && old.closestCount !== undefined && card.closestCount === undefined) card.closestCount = old.closestCount;
+        if (card.type === "open" && old.closestPoints !== undefined && card.closestPoints === undefined) card.closestPoints = old.closestPoints;
         if (old.imageUrl !== undefined && card.imageUrl === undefined) card.imageUrl = old.imageUrl;
         cards[idx] = card;
       } else {
@@ -1519,10 +1568,17 @@ export function executeCommand(
       const old = store.state.ledger.filter((e) => e.roundId === roundId && e.by === "auto").map((e) => e.id);
       if (old.length) push(ctx, { t: "ledger.void", d: { eventIds: old, by: "host" } });
       if (typeof card.tolerance === "number") {
-        // v0.3.0：有容差（Q12 ±2／Q13 主持即場輸入、default 0＝完全相等）→ 全部達標 +points
+        // v0.3.0：有容差（Q14 ±3 尺、default 0＝完全相等）→ 全部達標 +points
         gradeToleranceRound(ctx, round, card, actual);
         toast(ctx, `估數字答案：${actual}（容差 ±${card.tolerance}）`);
         ctx.result = { actualAnswer: actual, roundId, tolerance: card.tolerance };
+        break;
+      }
+      if (typeof card.closestCount === "number") {
+        // v0.4.7：最近 N 名各加 closestPoints（Q15 統計題「最近答案 3 個人得分」）
+        gradeClosestRound(ctx, round, card, actual);
+        toast(ctx, `估數字答案：${actual}（最近 ${card.closestCount} 名各 +${card.closestPoints ?? 1}）`);
+        ctx.result = { actualAnswer: actual, roundId, closestCount: card.closestCount };
         break;
       }
       const subs = store.submissionsForRound(roundId).filter((s) => s.confirmed && typeof s.amount === "number");
@@ -1651,7 +1707,9 @@ export function executeCommand(
       const clearDynamic = p.keepActualAnswer !== true;
       const reset = cards.map((c) => {
         const next = { ...c, state: "draft" as const, version: c.version + 1 };
-        if (clearDynamic && next.actualAnswer !== undefined) delete next.actualAnswer;
+        // q14（容差）／q15（最近 N 名）嘅答案係題目固定答案，重設要保留；冇固定答案嘅動態題才清走
+        const fixedAnswer = (typeof c.tolerance === "number" && c.tolerance > 0) || typeof c.closestCount === "number";
+        if (clearDynamic && next.actualAnswer !== undefined && !fixedAnswer) delete next.actualAnswer;
         return next;
       });
       push(ctx, { t: "quiz.set", d: { cards: reset } });
@@ -2295,6 +2353,9 @@ export function executeCommand(
         if (typeof card.tolerance === "number") {
           const actual = round.actualAnswer ?? card.actualAnswer;
           if (typeof actual === "number") gradeToleranceRound(ctx, round, card, actual);
+        } else if (typeof card.closestCount === "number") {
+          const actual = round.actualAnswer ?? card.actualAnswer;
+          if (typeof actual === "number") gradeClosestRound(ctx, round, card, actual);
         } else if (card.autoAnswer === "minutes-to-midnight") {
           const actual = round.actualAnswer ?? (round.closedAt ? minutesToMidnightHK(round.closedAt) : undefined);
           if (typeof actual === "number") gradeClosest(ctx, round, card, actual);

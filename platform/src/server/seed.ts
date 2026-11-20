@@ -39,7 +39,7 @@ export function loadQuizSeed(appRoot: string): QuizQuestion[] {
   return readSeed<QuizSeedFile>(appRoot, "quiz.seed.json").questions;
 }
 
-/** v0.3.0：一圖多人 7 對題目（好人題＋臥底關鍵詞）；換題只改呢個檔 */
+/** v0.4.7：一圖多人 9 對題目（好人題＋臥底關鍵詞）；換題只改呢個檔 */
 export function loadUndercoverSeed(appRoot: string): UndercoverTopic[] {
   return readSeed<UndercoverSeedFile>(appRoot, "undercover.seed.json").topics;
 }
@@ -91,6 +91,8 @@ export function questionToCard(q: QuizQuestion): Card {
     if (q.hint !== undefined) card.hint = q.hint;
     if (q.openKind !== undefined) card.openKind = q.openKind;
     if (q.tolerance !== undefined) card.tolerance = q.tolerance;
+    if (q.closestCount !== undefined) card.closestCount = q.closestCount;
+    if (q.closestPoints !== undefined) card.closestPoints = q.closestPoints;
     if (q.actualAnswer !== undefined) card.actualAnswer = q.actualAnswer;
     if ((q as QuizQuestion & { autoAnswer?: string }).autoAnswer) {
       card.autoAnswer = "minutes-to-midnight";

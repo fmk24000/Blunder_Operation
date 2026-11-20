@@ -183,7 +183,7 @@ function questionHtml(v: any): string {
       <div class="stage-mode-title">題目（未開始作答）</div>
     </div>
     <div class="q-prompt">${esc(q.prompt ?? "")}</div>
-    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:260px;margin-top:12px;border-radius:14px">` : ""}
+    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:180px;max-width:100%;margin-top:12px;border-radius:14px">` : ""}
     ${
       opts.length
         ? `<div class="q-options">${opts
@@ -206,7 +206,7 @@ function questionHtml(v: any): string {
       <div class="countdown" data-countdown="1">--</div>
     </div>
     <div class="q-prompt">${esc(q.prompt)}</div>
-    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:260px;margin-top:12px;border-radius:14px">` : ""}
+    ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:180px;max-width:100%;margin-top:12px;border-radius:14px">` : ""}
     ${
       opts.length
         ? `<div class="q-options">${opts
