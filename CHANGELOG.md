@@ -32,7 +32,7 @@
 
 ### 其他
 - 資產版本 `?v=20261120e`。
-- Tests **184 → 202**（bid guard／遲 approve／auto-close 畫面／主持掣契約／入場名／floor／唔限首數／B2–B11 古怪 code）。
+- Tests **184 → 209**（bid guard／遲 approve／auto-close 畫面／主持掣契約／入場名／floor／唔限首數／B1–B11 古怪 code）。
 
 ### Changed — 競投結果畫面（用戶第四輪）
 - 結果畫面大字：題目 56px、玩家名 38px、秒數 **52px**，而且一定有「秒」單位（以前細字得個數字）。
@@ -51,6 +51,18 @@
 - **B10**：數字鍵盤用 string 草稿，打得到「1.5」（以前 1 → . → 5 會變 15）。
 - **B11**：移除 client render 入面重複嘅 `#toast`（HTML 已有一個常駐）。
 - 分佈畫面唔再畫拍賣卡（以前主持撳「分佈」會見到「答案分佈＋玩家名＋秒數」嘅怪畫面）。
+
+### Fixed — codex audit v0.4.4 第二輪（P1／P2）
+- `quiz.delete` 唔准刪開緊嘅題（同 `card.delete` 同一 guard）；刪已完結 current 題會清 `currentRoundId`。
+- `bid.judge` 嘅防重派分改為「同一首同一人只派一次」，唔再靠 `reason`——`bid.settle` 舊入口之後再
+  `bid.judge` 唔會雙派。
+- 臥底投票未開票時 `undercover.candidates[].count` 一律 0（以前 host DTO 漏即時票數）。
+- 頒獎未揭曉（`revealed=false`）唔會漏得主名／分數（大mon 同手機 DTO 都會遮）。
+- 流程完結（`final`）後再撳「下一項／跳過」唔會靜靜復活第一關。
+- `bid.finish` 加 bid 卡／void guard，改用 `setStageIfUnlocked`（大mon 鎖定時唔會硬轉畫面）。
+- `bid.next` 自動建嘅新卡會登記入 rundown `cardIds`（流程欄／匯出見得到第 7 首之後）。
+- Server `bidSecondsAllowed` 同手機一致用 floor（保留 +1 秒網絡容差，唔再隱含多一秒 ceil）。
+- 競投結果名單限高＋可滾動（多人時唔會爆版裁切）。
 
 ## v0.4.3 — 2026-11-20
 

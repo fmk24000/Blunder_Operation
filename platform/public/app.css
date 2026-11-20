@@ -302,8 +302,8 @@ body.stage { overflow: hidden; height: 100vh; background: var(--bg); }
 /* v0.4.4：競投結果放大（大mon 遠距離要睇得到），秒數帶單位 */
 body.stage .bid-result-prompt { font-size: 56px; }
 body.stage .bid-now { font-size: 64px; }
-body.stage .bid-rows { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
-body.stage .bid-row { font-size: 38px; min-height: 84px; }
+body.stage .bid-rows { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; max-height: 56vh; overflow-y: auto; }
+body.stage .bid-row { font-size: 34px; min-height: 66px; }
 body.stage .bid-row .uc-name { font-size: 38px; font-weight: 700; }
 body.stage .bid-row .uc-count { font-size: 52px; font-weight: 900; letter-spacing: .01em; }
 body.stage .bid-row .bid-unit { font-size: 34px; font-weight: 800; }

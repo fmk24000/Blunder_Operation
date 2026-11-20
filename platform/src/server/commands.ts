@@ -233,6 +233,11 @@ function advanceRundown(ctx: Ctx, targetIndex: number, mode: RundownMove): void 
   const store = ctx.store;
   const room = store.state.room;
   if (room.rundown.length === 0) throw new CmdError("W_ALREADY_STATE", "rundown 係空");
+  // v0.4.4（codex audit B7）：已經去咗結算（final）再撳「下一項／跳過」唔可以靜靜復活第一關
+  if (room.phase === "final" && (mode === "next" || mode === "skip") && !room.currentItemId) {
+    toast(ctx, "流程已經完結（撳「開始遊戲」或「重設流程」可以再玩）");
+    return;
+  }
   const cur = store.currentItem();
   const curIndex = cur ? cur.index : -1;
   // 舊 item 狀態
@@ -555,7 +560,8 @@ export function roundExpired(endsAt: number | null, nowMs: number): boolean {
 /** P1-f：競投秒數唔可以多過剩餘秒數（明確規則：容許 +1 秒網絡誤差） */
 export function bidSecondsAllowed(amount: number, endsAt: number | null, nowMs: number): boolean {
   if (endsAt === null) return true;
-  const remaining = Math.ceil(Math.max(0, endsAt - nowMs) / 1000);
+  // v0.4.4：同手機一致用 floor（5.6 秒＝5 秒），只保留 +1 秒網絡容差（以前 ceil＋1 等於容許多 2 秒）
+  const remaining = Math.floor(Math.max(0, endsAt - nowMs) / 1000);
   return amount <= remaining + 1;
 }
 
@@ -1418,6 +1424,11 @@ export function executeCommand(
       const id = cmd.targetId ?? optStr(p, "id");
       if (!id) throw new CmdError("W_BAD_SCHEMA", "要題目 id");
       if (!store.quizCards().some((c) => c.id === id)) throw new CmdError("W_BAD_SCHEMA", "冇呢題");
+      // v0.4.4（codex audit B1）：同 card.delete 一樣，唔准刪開緊嘅題（否則收卷／揭曉會搵唔返張卡）
+      const curQuiz = store.currentRound();
+      if (curQuiz && curQuiz.cardId === id && (curQuiz.state === "open" || curQuiz.state === "closed" || curQuiz.state === "tally"))
+        throw new CmdError("W_ALREADY_STATE", "呢題仲開緊（回合未完），先收卷／作廢先刪");
+      if (curQuiz && curQuiz.cardId === id) push(ctx, { t: "round.current", d: { currentRoundId: null } });
       const keep = store.quizCards().filter((c) => c.id !== id);
       push(ctx, { t: "quiz.set", d: { cards: keep } });
       push(ctx, { t: "card.remove", d: { cardId: id } });
@@ -2785,6 +2796,12 @@ export function executeCommand(
           state: "draft",
         } as Card;
         push(ctx, { t: "card.put", d: { card } });
+        // 新卡要登記入目前 rundown item（唔係流程欄／匯出見唔到第 7 首之後嘅卡）
+        const item = store.currentItem();
+        if (item && !item.cardIds.includes(card.id)) {
+          const rundown = room.rundown.map((i) => (i.id === item.id ? { ...i, cardIds: [...i.cardIds, card!.id] } : { ...i }));
+          push(ctx, { t: "rundown.set", d: { rundown, currentItemId: room.currentItemId, phase: room.phase } });
+        }
       }
       openCardRound(ctx, card);
       ctx.result = { cardId: card.id };
@@ -2850,8 +2867,9 @@ export function executeCommand(
       const correct = p.correct === true;
       const target = store.player(targetId);
       if (correct) {
+        // v0.4.4（codex audit B2）：同一個人同一首只可以派一次——唔靠 reason（舊 bid.settle 用另一個 reason）
         const dup = store.state.ledger.some(
-          (e) => !e.voided && e.roundId === roundId && e.gameId === "auction" && e.target.id === targetId && e.reason === "估歌・聽歌",
+          (e) => !e.voided && e.roundId === roundId && e.gameId === "auction" && e.target.id === targetId,
         );
         if (!dup && card.points !== 0) {
           push(ctx, {
@@ -2926,6 +2944,8 @@ export function executeCommand(
       const round = store.round(roundId);
       if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
       const card = store.card(round.cardId);
+      if (!card || card.type !== "bid") throw new CmdError("W_BAD_SCHEMA", "唔係 bid 卡");
+      if (round.state === "void") throw new CmdError("W_ALREADY_STATE", "呢首已經作廢，唔可以完結");
       const auction = round.auction;
       if (auction?.finished) {
         toast(ctx, "本首已經完結");
@@ -2940,8 +2960,9 @@ export function executeCommand(
           patch: { state: "revealed", closedAt: round.closedAt ?? Date.now(), ...(auction ? { auction: { ...auction, finished: true } } : {}) },
         },
       });
-      if (card) push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
-      stageSet(ctx, {
+      push(ctx, { t: "card.update", d: { cardId: card.id, patch: { state: "revealed" } } });
+      // v0.4.4：尊重「大mon 鎖定」（以前 stageSet 直接改，鎖住都照轉畫面）
+      setStageIfUnlocked(ctx, {
         mode: "message",
         payload: { title: "本首完結", lines: ["主持會播下一首"], tone: "normal" },
         prevMode: "bid",

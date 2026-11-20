@@ -156,11 +156,12 @@ function buildUndercover(store: Store): UndercoverView | null {
     const target = x.text ?? "";
     if (target) counts.set(target, (counts.get(target) ?? 0) + 1);
   }
+  // v0.4.4（codex audit B3）：未開票唔可以送即時票數（以前只遮 ballots，count 照漏）
+  const revealed = round.state !== "open";
   const candidates = card.options
     .map((id) => store.player(id))
     .filter((x): x is Player => !!x)
-    .map((x) => ({ id: x.id, number: x.number, name: x.name, avatar: x.avatar, count: counts.get(x.id) ?? 0 }));
-  const revealed = round.state !== "open";
+    .map((x) => ({ id: x.id, number: x.number, name: x.name, avatar: x.avatar, count: revealed ? counts.get(x.id) ?? 0 : 0 }));
   const ballots = revealed
     ? round.eligiblePlayerIds
         .map((id) => store.player(id))
@@ -568,11 +569,12 @@ export function buildStageView(store: Store): StageView {
     void maps;
     const awards = room.awards.map((a) => {
       const target = a.targetId ? store.player(a.targetId) : undefined;
+      // v0.4.4（codex audit B4）：未撳「揭曉」唔可以漏得主名／分數（大mon／手機 DTO 都會收到）
       return {
         id: a.id,
         revealed: a.revealed,
-        name: target?.name ?? null,
-        score: target ? store.playerScore(target.id) : null,
+        name: a.revealed ? target?.name ?? null : null,
+        score: a.revealed && target ? store.playerScore(target.id) : null,
         reason: AWARD_REASON[a.id],
       };
     });
