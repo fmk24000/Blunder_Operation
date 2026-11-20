@@ -658,7 +658,7 @@ function controlSection(v: any): string {
         <div class="mg-label">問答真流程（會真正收卷／評分）</div>
         ${quizProgressLine(v)}
         <div class="btn-row">
-          <button class="primary" data-act="quiz.show" ${v.currentRound?.state === "open" ? "disabled" : ""} title="${v.currentRound?.state === "open" ? "而家答緊題：先公佈答案，或者用題庫 dropdown 揀題" : "只喺大mon 出題目（唔開卷）"}">出題目（只上大mon・唔倒數）</button>
+          <button class="primary" data-act="quiz.show" ${v.currentRound?.state === "open" ? "disabled" : ""} title="${v.currentRound?.state === "open" ? "而家答緊題：先公佈答案，或者用題庫 dropdown 揀題" : "大mon 出題目＋全部選項（唔倒數、唔開卷、手機唔變）"}">出題目（只上大mon・唔倒數）</button>
           <button class="primary" data-act="quiz.open">開始 30 秒作答</button>
         </div>
         <div class="btn-row">
@@ -666,7 +666,7 @@ function controlSection(v: any): string {
           <button class="primary" data-act="qa.reveal">公佈答案（先收卷＋評分）</button>
           <button data-act="quiz.reset">重設問答（可以再玩）</button>
         </div>
-        <div class="hint">「出題目」只喺大mon 出題目文字（唔出選項、唔倒數、手機唔變）；你讀完題目先撳「開始 30 秒作答」，大mon＋手機才會一齊出選項同倒數。全部出完可以撳「重設問答」再玩。</div>
+        <div class="hint">「出題目」會喺大mon 出題目文字＋全部選項（唔倒數、手機唔變），畀你同觀眾讀完成條題目同選項；撳「開始 30 秒作答」之後大mon＋手機才會一齊出選項同 30 秒倒數。全部出完可以撳「重設問答」再玩。</div>
         ${roundHint ? `<div class="hint" style="color:var(--ink)"><b>${esc(roundHint)}</b></div>` : ""}
       </div>
       <div class="mode-groups">
@@ -1355,7 +1355,7 @@ function quizMonitorHtml(v: any): string {
           return `<option value="${esc(q.id)}" ${cur && cur.cardId === q.id ? "selected" : ""}>Q${i + 1}・${esc(pill.label)}・${esc(head)}</option>`;
         })
         .join("")}</select>
-      <button data-act="quiz.jump">跳去呢題（只出題目）</button>
+      <button data-act="quiz.jump">跳去呢題（出題目＋選項）</button>
       <button data-act="quiz.open">開始 30 秒作答</button>
     </div>
     <div class="row wrap" style="margin-top:8px">
@@ -1368,7 +1368,7 @@ function quizMonitorHtml(v: any): string {
         return `<span class="pill ${pill.cls}">Q${i + 1} ${esc(pill.label)}</span>`;
       })
       .join("")}</div>
-    <div class="hint">「跳去呢題」＝只喺大mon 出題目文字（唔開卷、唔倒數），可以重新讀題／fallback 去任何一題；撳「開始 30 秒作答」才真正開 round。</div>
+    <div class="hint">「跳去呢題」＝只喺大mon 出題目文字＋全部選項（唔開卷、唔倒數、手機唔變），可以重新讀題／fallback 去任何一題；撳「開始 30 秒作答」才真正開 round 同開始 30 秒倒數。</div>
   </div>`;
 }
 
@@ -1412,7 +1412,7 @@ function quizSection(v: any): string {
         <textarea data-q-explanation="${q.id}" placeholder="解釋（reveal 後才出）">${esc(q.explanation ?? "")}</textarea>
         ${q.type === "open" ? `<input data-q-ref="${q.id}" value="${esc(q.referenceAnswer ?? "")}" placeholder="參考答案（例：206 塊）" style="width:100%;margin-top:6px">` : ""}
         <div class="row" style="margin-top:6px"><button class="primary btn-sm" data-act="quiz.save:${q.id}">儲存呢題</button>
-        <button class="btn-sm" data-act="quiz.show:${q.id}">出呢題（只上大mon）</button>
+        <button class="btn-sm" data-act="quiz.show:${q.id}">出呢題＋選項（只上大mon）</button>
         <span class="muted">state=${esc(q.state)}・version=${q.version}</span></div>
       </div>`;
       })
@@ -2267,7 +2267,7 @@ async function handleAct(act: string): Promise<void> {
         await cmd("quiz.reorder", undefined, { ids });
       }
     } else if (sub === "show") {
-      // v04-D：只出題目（唔開 round）——冇 arg 就由 server 揀下一題 draft
+      // v04-D：只出題目＋選項（唔開 round、唔倒數）——冇 arg 就由 server 揀下一題 draft
       await cmd("quiz.show", arg || undefined);
     } else if (sub === "open") {
       // v04-D：真正開 30 秒 round（冇 arg 就跟大mon 而家 show 緊嗰題）

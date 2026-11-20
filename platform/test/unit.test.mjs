@@ -2864,7 +2864,7 @@ function putLedgerEvent(store, event) {
   }]);
 }
 
-test("v04-D・quiz.show：大mon 只出題目（唔開 round、唔出選項、唔倒數）", () => {
+test("v04-D・quiz.show：大mon 出題目＋全部選項（唔開 round、唔倒數）", () => {
   const { store } = makeStore("d-quiz-show");
   addPlayers(store, 3);
   run(store, "room.start");
@@ -2873,22 +2873,56 @@ test("v04-D・quiz.show：大mon 只出題目（唔開 round、唔出選項、�
   const res = run(store, "quiz.show");
   assert.equal(res.ok, true);
   assert.equal(store.state.room.stage.mode, "question", "大mon 要轉 question mode");
-  assert.equal(store.state.room.stage.payload.showOptions, false, "payload 要標明唔出選項");
+  assert.equal(store.state.room.stage.payload.showOptions, true, "payload 要標明出選項");
+  assert.equal(store.state.room.stage.payload.preview, true, "payload 仍然係 preview（唔倒數、唔開 round）");
   assert.equal(store.state.room.currentRoundId, null, "quiz.show 唔准開 round");
 
   const v = buildStageView(store);
   assert.equal(v.question.cardId, "q1");
   assert.equal(v.question.prompt, "第 1 題題目（測試）");
   assert.equal(v.question.preview, true, "preview：未開 round");
-  assert.equal(v.question.showOptions, false);
+  assert.equal(v.question.showOptions, true);
   assert.equal(v.question.endsAt, null, "preview 冇倒數");
-  assert.equal(v.question.options, undefined, "preview 唔准帶選項");
+  assert.deepEqual(v.question.options, ["甲", "乙", "丙", "丁"], "preview 要帶齊全部選項");
   assert.equal(v.question.roundId, "", "preview 冇 roundId");
 
   // 手機乜都唔變：冇 task ＝冇選項可以答
   const pv = buildPlayerView(store, "p1");
   assert.equal(pv.task, null);
   assert.equal(pv.mode, "question");
+});
+
+test("v0.4.5・quiz.show：大mon DTO 有齊 options 但冇 endsAt／手機 task 仍然 null（讀題階段唔計時）", () => {
+  const { store } = makeStore("v045-quiz-show-options");
+  const players = addPlayers(store, 4);
+  run(store, "room.start");
+  putQuizCards(store, 3);
+
+  run(store, "quiz.show", {}, "q1");
+  const v = buildStageView(store);
+  assert.ok(v.question, "大mon 要有 question");
+  assert.deepEqual(v.question.options, ["甲", "乙", "丙", "丁"], "大mon 要一次過見到全部選項");
+  assert.equal(v.question.endsAt, null, "讀題階段唔准倒數");
+  assert.equal(v.question.preview, true);
+  assert.equal(v.question.showOptions, true);
+  assert.equal(v.question.answeredCount, 0, "未開 round 冇已答數");
+  assert.equal(store.state.room.currentRoundId, null, "讀題階段唔准開 round");
+  for (const pl of players) {
+    const pv = buildPlayerView(store, pl.id);
+    assert.equal(pv.task, null, `手機（${pl.id}）讀題階段唔准有 task`);
+  }
+
+  // 之後 quiz.open 照舊真正開 30 秒 round（大mon＋手機一齊出選項＋倒數）
+  const opened = run(store, "quiz.open", {}, "q1");
+  assert.equal(opened.ok, true);
+  const v2 = buildStageView(store);
+  assert.ok(v2.question.endsAt > Date.now(), "開卷後要有 30 秒倒數");
+  assert.equal(v2.question.preview, false);
+  assert.equal(v2.question.showOptions, true);
+  assert.deepEqual(v2.question.options, ["甲", "乙", "丙", "丁"]);
+  const pv2 = buildPlayerView(store, players[0].id);
+  assert.equal(pv2.task.roundId, store.currentRound().id);
+  assert.deepEqual(pv2.task.options, ["甲", "乙", "丙", "丁"]);
 });
 
 test("v04-D・quiz.show 跟 rundown 次序揀下一題（跳過已揭曉／已出）", () => {
@@ -2907,7 +2941,8 @@ test("v04-D・quiz.show 跟 rundown 次序揀下一題（跳過已揭曉／已�
   const jump = run(store, "quiz.show", {}, "q3");
   assert.equal(jump.ok, true);
   assert.equal(store.state.room.stage.payload.cardId, "q3", "要可以直接跳去任何一題");
-  assert.equal(store.state.room.stage.payload.showOptions, false);
+  assert.equal(store.state.room.stage.payload.showOptions, true, "跳題都要出選項");
+  assert.equal(store.state.room.stage.payload.preview, true, "跳題仍然係 preview（唔倒數）");
 });
 
 test("v04-D・quiz.show 全部出完：清楚報錯（唔會靜靜 fail）", () => {
@@ -2937,6 +2972,7 @@ test("v04-D・quiz.open：開 round、卡轉 open、30 秒倒數、大mon 出選
   assert.equal(store.card("q1").state, "open");
   assert.equal(store.state.room.stage.mode, "question");
   assert.notEqual(store.state.room.stage.payload.showOptions, false, "開卷之後要出選項");
+  assert.notEqual(store.state.room.stage.payload.preview, true, "開卷之後唔再係 preview");
   const left = round.endsAt - t0;
   assert.ok(left >= 29_000 && left <= 31_500, `endsAt 應該係 30 秒後（實際 ${left}ms）`);
 
@@ -2968,7 +3004,7 @@ test("v04-D・quiz.open 同一題已經開緊：唔會彈 W_ALREADY_STATE（亦�
   assert.equal(store.currentRound().id, first, "round 唔可以換");
   assert.equal(store.state.room.rounds.length, count, "唔可以開多個 round");
   assert.equal(again.result.alreadyOpen, true);
-  assert.notEqual(store.state.room.stage.payload.showOptions, false, "要推返答題畫面");
+  assert.equal(store.state.room.stage.payload.showOptions, true, "要推返答題畫面");
 });
 
 test("v04-D・quiz.open 已 revealed 嘅卡：清楚報錯（唔會靜靜開新 round）", () => {
@@ -3028,6 +3064,7 @@ test("v04-D・P1-1：開卷中跳去別題再撳「開始 30 秒作答」→ 舊
   assert.equal(store.currentRound().cardId, "q3", "要開大mon 而家 show 緊嗰題");
   assert.equal(store.card("q3").state, "open");
   assert.notEqual(store.state.room.stage.payload.showOptions, false, "要有選項＋倒數");
+  assert.notEqual(store.state.room.stage.payload.preview, true, "開卷之後唔再係 preview");
   // 作廢唔會派分
   assert.equal(store.state.ledger.filter((e) => e.roundId === openRoundId && !e.voided).length, 0);
 
@@ -3106,12 +3143,17 @@ test("v04-D・quiz.reset 唔清分（clearScores:false）：ledger 一筆都唔 
   assert.equal(store.playerScore("p1"), 3);
 });
 
-test("v04-D・大mon／手機 gating：只出題目階段唔會出選項、冇題目都唔會炸", () => {
+test("v04-D・大mon／手機 gating：讀題階段大mon 出選項但唔倒數、手機唔出選項、冇題目都唔會炸", () => {
   const stageSrc = fs.readFileSync(path.join(APP_ROOT, "src/client/stage.ts"), "utf8");
-  // questionHtml 要有 preview 分支（唔出選項、唔倒數）＋ null 安全 placeholder
-  assert.match(stageSrc, /q\.preview === true \|\| q\.showOptions === false/, "要有 preview／showOptions gating");
+  // questionHtml 要有 preview 分支（出題目＋選項、唔倒數）＋ null 安全 placeholder
+  assert.match(stageSrc, /if \(q\.preview === true\)/, "要有 preview gating");
   assert.match(stageSrc, /等主持開始作答…/, "preview 要寫住等主持開始");
   const fn = stageSrc.slice(stageSrc.indexOf("function questionHtml"), stageSrc.indexOf("function tallyHtml"));
+  const previewBlock = fn.slice(fn.indexOf("if (q.preview === true)"), fn.lastIndexOf("const opts = q.options"));
+  assert.match(previewBlock, /class="q-options"/, "preview 要出 A／B／C／D 選項");
+  assert.match(previewBlock, /String\.fromCharCode\(65 \+ i\)/, "選項要有字母");
+  assert.ok(!/data-countdown/.test(previewBlock), "preview 唔准出倒數");
+  assert.ok(!/data-answered/.test(previewBlock), "preview 唔准出已答 x／y");
   assert.match(fn, /if \(!q\) return placeholder\(/, "冇 v.question 唔准 throw（大mon 出佔位）");
   assert.match(fn, /等主持出題…/, "冇題目要出友善 placeholder");
 
@@ -3249,7 +3291,8 @@ test("J2：quiz.show 跳題時，場上開緊嘅 quiz round 要先收卷（手�
   assert.equal(round.state, "closed", "跳題要順手收卷（唔評分）");
   assert.equal(store.state.room.currentRoundId, roundId, "currentRound 唔變（分佈／答案仲用返呢個 round）");
   assert.equal(store.state.room.stage.mode, "question");
-  assert.equal(store.state.room.stage.payload.showOptions, false);
+  assert.equal(store.state.room.stage.payload.showOptions, true, "跳題之後大mon 要出題目＋選項");
+  assert.equal(store.state.room.stage.payload.preview, true, "跳題之後仍然唔倒數");
   // 手機唔應該再有 task
   const pv = buildPlayerView(store, players[0].id);
   assert.ok(!pv.task, `手機唔可以再見上一題選項：${JSON.stringify(pv.task)}`);

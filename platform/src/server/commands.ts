@@ -1551,7 +1551,7 @@ export function executeCommand(
 
     /* ── v04-D：問答流程 ── */
     case "quiz.show": {
-      // 只出題目：大mon 出題目文字（唔出選項、唔倒數、唔開 round）；手機維持等主持
+      // 出題目＋選項：大mon 出題目文字＋全部選項（唔倒數、唔開 round）；手機維持等主持
       // v0.4.1（codex audit INT）：如果場上仲有 quiz round 開緊，主持跳去下一題時一定要先收卷，
       // 否則手機會繼續顯示上一題嘅選項（仲答得），同「等主持開始作答」相反。
       const liveQuizRound = store.currentRound();
@@ -1580,14 +1580,14 @@ export function executeCommand(
       if (room.stage.lock) throw new CmdError("W_STAGE_LOCKED", "大mon 鎖定咗：先撳「解鎖大mon」再出題目");
       const order = quizOrder(store);
       const index = order.findIndex((c) => c.id === card.id);
-      setStageIfUnlocked(ctx, { mode: "question", payload: { cardId: card.id, showOptions: false, preview: true } });
-      toast(ctx, `大mon 出題目：Q${index + 1}（讀完先撳「開始 30 秒作答」）`);
+      setStageIfUnlocked(ctx, { mode: "question", payload: { cardId: card.id, showOptions: true, preview: true } });
+      toast(ctx, `大mon 出題目＋選項：Q${index + 1}（讀完先撳「開始 30 秒作答」）`);
       ctx.result = { cardId: card.id, index: index + 1, preview: true, total: order.length };
       break;
     }
     case "quiz.open": {
       ensurePlaying(store);
-      // 主持流程：先 quiz.show（只出題目），再 quiz.open；冇指定就跟大mon 而家 show 緊嗰題
+      // 主持流程：先 quiz.show（出題目＋選項），再 quiz.open；冇指定就跟大mon 而家 show 緊嗰題
       const stagePayload = (room.stage.payload ?? {}) as Record<string, unknown>;
       const stageCardId = typeof stagePayload.cardId === "string" ? stagePayload.cardId : undefined;
       const picked = cmd.targetId ?? optStr(p, "cardId") ?? stageCardId;
@@ -1632,7 +1632,7 @@ export function executeCommand(
         toast(ctx, "上一題未揭曉：已作廢（未派分）");
       }
       if (card.state === "revealed")
-        throw new CmdError("W_ALREADY_STATE", "呢題已經揭曉：要重玩請撳「重設問答」，或者用 dropdown 跳去任何一題只出題目");
+        throw new CmdError("W_ALREADY_STATE", "呢題已經揭曉：要重玩請撳「重設問答」，或者用 dropdown 跳去任何一題只出題目＋選項");
       const round = openCardRound(ctx, card);
       const secs = round.endsAt ? Math.max(0, Math.round((round.endsAt - Date.now()) / 1000)) : 0;
       toast(ctx, `開始作答：${secs} 秒（大mon＋手機一齊出選項）`);

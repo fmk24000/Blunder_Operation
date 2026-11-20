@@ -303,22 +303,24 @@ export function buildStageView(store: Store): StageView {
   let roleReveal: StageView["roleReveal"] = null;
   let saboteurInfo: StageView["saboteurInfo"] = null;
 
-  // v04-D：主持「出題目（只上大mon）」＝stage.payload.showOptions:false，唔開 round 都要砌到題目出大mon
-  const showOptions = payload.showOptions !== false;
-  if (stage.mode === "question" && !showOptions) {
+  // v04-D／v0.4.5：主持「出題目」＝stage.payload.preview:true，唔開 round 都要砌到題目＋全部選項出大mon
+  // （preview 只係「未開 round」嘅標記：大mon 要讀得晒題目同選項先開始計時；手機維持等主持）
+  const isPreview = stage.mode === "question" && payload.preview === true;
+  if (isPreview) {
     const previewCard = typeof payload.cardId === "string" ? store.card(payload.cardId) : undefined;
     if (previewCard && (previewCard.type === "choice" || previewCard.type === "open")) {
-      // preview 永遠唔帶 options／endsAt：大mon 只出題目文字，手機等主持開 round
+      // preview 有 options（選擇題），但永遠冇 endsAt／answeredCount：唔倒數、唔開 round
       question = {
         roundId: "",
         cardId: previewCard.id,
         prompt: previewCard.prompt,
         imageUrl: previewCard.imageUrl,
+        options: previewCard.options,
         endsAt: null,
         answeredCount: 0,
         eligibleCount: store.approvedPlayers().length,
         kind: previewCard.type,
-        showOptions: false,
+        showOptions: true,
         preview: true,
       };
     }
