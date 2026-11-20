@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.3 — 2026-11-20
+## v0.4.4 — 2026-11-20
 
 ### Fixed — 估歌競投（用戶第三輪投訴）
 - **大mon 唔會再將非拍賣卡畫成「競投」**：`buildStageView()` 只喺 `card.type === "bid"` 先砌 bid DTO。
@@ -31,8 +31,57 @@
   蓋走藍底、變成一格空白（specificity 修正）。
 
 ### 其他
+- 資產版本 `?v=20261120e`。
+- Tests **184 → 202**（bid guard／遲 approve／auto-close 畫面／主持掣契約／入場名／floor／唔限首數／B2–B11 古怪 code）。
+
+### Changed — 競投結果畫面（用戶第四輪）
+- 結果畫面大字：題目 56px、玩家名 38px、秒數 **52px**，而且一定有「秒」單位（以前細字得個數字）。
+- 競投秒數改 **round down**（5.6 秒當 5 秒；以前 `ceil` 會變 6 秒）。
+- **唔再限 6 首**：新 command `bid.next`——有 draft 卡就用，冇就自動建「第 N 首」，開幾多首都得。
+- 主持台版面：流程欄收窄（5fr）、大mon 控制加闊（7fr）。
+
+### Fixed — 系統古怪 code（codex CLI audit，v0.4.4）
+- **B2**：`rundown.reset` 清 `Player.secretRole`；`buildPlayerView` 亦要「有進行中搗蛋鬼局＋張卡係
+  搗蛋鬼卡」先送 `secretRole`／`saboteurAnswer`（以前重設後玩問答會向舊搗蛋鬼漏參考答案）。
+- **B4**：`card.reopen` 唔准喺另一個 round 未完時重開（以前會搶走 currentRound）。
+- **B5**：`card.delete` 唔准刪開緊嘅卡；刪 current 卡會清 `currentRoundId`（以前刪完 round 卡死）。
+- **B7**：搗蛋鬼投票未開（open）時 `saboteurInfo.top`／`validVotes` 一律空的（以前大mon DTO 漏個人票）。
+- **B8**：尾關撳「下一項」會收成 `final`＋計頒獎（以前永遠唔會 `allDone`，卡喺最後一關 running）。
+- **B9**：匯出改讀 raw text（server 回 CSV／JSON，唔係 `{ok}`；以前兩個下載都彈「export 失敗」）。
+- **B10**：數字鍵盤用 string 草稿，打得到「1.5」（以前 1 → . → 5 會變 15）。
+- **B11**：移除 client render 入面重複嘅 `#toast`（HTML 已有一個常駐）。
+- 分佈畫面唔再畫拍賣卡（以前主持撳「分佈」會見到「答案分佈＋玩家名＋秒數」嘅怪畫面）。
+
+## v0.4.3 — 2026-11-20
+
+> Codex CLI 實測 v0.4.2 之後搵到 4 個 gap（2 個 P1、2 個 P2）。
+> 兩個 team 各做一輪（builder＝deepseek-v4.1-flash），每輪由 zai/glm-5.3 獨立覆核，最後 codex CLI 判 **SHIP**。
+
+### Fixed — G1（P1）開票後換題，舊票仍然可以 foul 人
+- `uc.topic.pick`／`uc.topic.reroll` 而家換題會 **void 舊 round**、清 `roundId`／`currentRoundId`，
+  所以換題之後唔可以用上一題嘅票 foul。舊 round 已 void 時 `uc.eliminate`／`uc.vote.foulTop` 一律當「未收卷」。
+- `uc.vote.start` 要 **已公佈好人題目**（`promptRevealed === true`）先開得，未公佈會被擋。
+- 投票進行中唔准再 `uc.prompt.reveal`（避免大mon 由 10 秒倒數被換成題目）。
+
+### Fixed — G2（P1）勝負已定仍可重抽臥底，再結算按新身份派分
+- `uc.match.redraw` 只准「未公佈、未開投票、未有淘汰」嘅窗口（＋`result` 必須 null、人數要夠）。
+- 重抽會清 `result`；`uc.match.settle` 遇到「`result=good` 但仲有臥底在生」→ **拒絕派分**，
+  勝負改由「仲有幾多臥底」判定，唔再信舊 `result`。
+
+### Fixed — G3（P2）未公佈題目經 toast 提早送玩家
+- 揀題目嘅 toast 改中性「第 N 題題目已換（未公佈）」，唔再帶好人題內容；
+  `ctx.result` 只回 host command response。
+
+### Changed — G4（P2）主持「畫畫（一圖多人）」主面板補齊
+- 主控制「大mon 控制」嘅畫畫塊而家齊：**臥底身份（主持專用）**、**重抽臥底**、
+  公佈後 **完整票數表＋票軌**、**獨立「分數結算」**；未開局有清楚提示；hint 唔再寫「呢度就係全部」。
+- 「重抽臥底」「公佈好人題目」兩個掣嘅 enabled 條件同 server 完全一致（撳得就一定成功）。
+- 進階「畫畫」tab 保留完整面板（取消淘汰／手動淘汰／清走本局）。
+
+### 其他
 - 資產版本 `?v=20261120d`。
-- Tests **184 → 190**（bid guard／遲 approve／auto-close 畫面／主持掣契約／入場名）。
+- Tests **163 → 184**（新增 21：G1 三條、G2 三條、G3 一條、settle／void 防禦、主面板 8 條、N1／N2 條件）。
+- 驗收：`node --test` 184/184；E2E 63/63；codex CLI 三輪（SHIP-WITH-NITS → N1/N2 修完 → **SHIP**）。
 
 ## v0.4.2 — 2026-11-20
 
