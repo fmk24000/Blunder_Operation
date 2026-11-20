@@ -984,7 +984,7 @@ function undercoverMatchPanel(v: any): string {
       <button class="danger" data-act="ucm.eliminate" ${canManualFoul ? "" : "disabled"} title="${canManualFoul ? "foul 呢個人出局" : "要先開票兼未 foul 過，先可以手動淘汰"}">淘汰佢</button>
       <span class="muted">（大mon 會即刻講中／唔中）</span>
     </div>
-    <div class="hint">每題流程：公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票嗰個（同票就要主持揀）→ 下一題。最多 3 題；兩個臥底都出局＝好人勝。計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；未出局嘅人每人再 +2（疊加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
+    <div class="hint">每題流程：公佈好人題目 → 開始投票（10 秒）→ 開票睇票數 → foul 最高票嗰個（同票就要主持揀）→ 下一題。最多 3 題；兩個臥底都出局＝好人勝。計分：好人贏→全部好人 +1；臥底贏→全部臥底 +1；**仍然在生嘅臥底**再 +2（好人留到最後唔會加）。${canSettle ? "" : "仲未夠 3 題／仲有臥底未出局 → 「分數結算」未開得，請用「下一題／結算」。"}</div>
   </div>`;
 }
 
@@ -1071,7 +1071,7 @@ function drawFlowBlock(v: any): string {
     : st.settled
       ? "本局已結算（唔會重複加分）；再開請撳「清走本局」"
       : canSettle
-        ? "判勝負＋派分：好人贏→好人 +1；臥底贏→臥底 +1；未出局每個再 +2"
+        ? "判勝負＋派分：好人贏→好人 +1；臥底贏→臥底 +1；在生臥底再 +2"
         : "仲未夠 3 題／仲有臥底未出局：請先投票＋Foul 最高票，或者撳「下一題／結算」打到第 3 題";
   // 開票後完整票數表＋票軌；投票中（phase=voting）冇 counts，用 phase gate 防止泄漏
   const tallyRows = counts

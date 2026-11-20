@@ -1074,14 +1074,15 @@ function settleUndercoverMatch(ctx: Ctx, st: UcMatch, result: "good" | "undercov
   const goodIds = st.participantIds.filter((id) => !st.undercoverIds.includes(id));
   if (result === "good") for (const id of goodIds) add(id, 1, "一圖多人・好人勝");
   else for (const id of st.undercoverIds) add(id, 1, "一圖多人・臥底勝");
-  const survivors = st.participantIds.filter((id) => !st.eliminatedIds.includes(id));
-  for (const id of survivors) add(id, 2, "一圖多人・留到最後");
+  // v0.4.6（用戶）：「留到最後 +2」只係臥底留到最後嘅 benefit；好人留到最後唔應該多 2 分
+  const survivors = st.undercoverIds.filter((id) => !st.eliminatedIds.includes(id));
+  for (const id of survivors) add(id, 2, "一圖多人・留到最後（臥底）");
   if (events.length) push(ctx, { t: "ledger.append", d: { events } });
   push(ctx, { t: "game.set", d: { gameState: { undercover: st } } });
   const nameOf = (id: string): string => store.player(id)?.name ?? "?";
   const lines = [
     result === "good" ? "好人勝：全部好人 +1" : "臥底勝：全部臥底 +1",
-    `留到最後 +2：${survivors.map(nameOf).join("、") || "（冇人）"}`,
+    `臥底留到最後 +2：${survivors.map(nameOf).join("、") || "（冇）"}`,
   ];
   stageSet(ctx, {
     mode: "message",

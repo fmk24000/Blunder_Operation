@@ -466,7 +466,9 @@ body.host textarea { min-height: 96px; }
 .ctrl-sub { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .rd-list { display: flex; flex-direction: column; }
 .rd-list .ledger-row { min-height: 56px; font-size: 17px; }
-.ctrl-phase { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 10px; }
+.ctrl-phase { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+/* v0.4.6（用戶）：4 粒掣排 2×2、統一高度（以前 3+1 兼且重設掣要斷行） */
+.ctrl-phase button { min-height: 68px; }
 .ctrl-phase .primary { min-height: 68px; }
 .ctrl-quick { margin-bottom: 14px; }
 .ctrl-quick button { width: 100%; min-height: 72px; font-size: 20px; font-weight: 750; letter-spacing: .02em; }
@@ -510,8 +512,8 @@ body.host textarea { min-height: 96px; }
   .ctrl-hero .hero-v { font-size: 26px; }
   .ctrl-sub button { min-height: 60px; }
   .rd-list .ledger-row { min-height: 60px; font-size: 18px; }
-  .ctrl-phase .primary { min-height: 76px; font-size: 19px; }
-  .ctrl-phase button { min-height: 60px; }
+  /* v0.4.6：2×2 之後 primary 同其他掣要同一高度（以前 76 vs 60 兩行唔齊） */
+  .ctrl-phase button, .ctrl-phase .primary { min-height: 76px; font-size: 18px; }
   .mode-group .stage-mode-grid button { min-height: 72px; font-size: 17px; }
   .ctrl-emergency button { min-height: 66px; }
   .ctrl-emergency .danger { min-height: 84px; font-size: 22px; }
