@@ -4036,3 +4036,17 @@ test("v044-17：bid.next 自動建嘅卡要登記入 rundown cardIds", () => {
   assert.equal(bidCards.length, 2);
   for (const c of bidCards) assert.ok(item.cardIds.includes(c.id), `${c.id} 要入 rundown cardIds`);
 });
+
+test("v045-B1：舊 payload（showOptions:false、冇 preview）都要照樣出題目＋選項", () => {
+  const { store } = makeStore("v045-b1");
+  addPlayers(store, 2);
+  run(store, "room.start");
+  run(store, "quiz.upsert", { question: { type: "choice", prompt: "舊 payload 題", options: ["A", "B", "C", "D"], correct: 0 } });
+  const card = store.state.cards.find((c) => c.gameId === "quiz");
+  store.commit([{ t: "stage.set", d: { stage: { mode: "question", payload: { cardId: card.id, showOptions: false } } } }]);
+  const v = buildStageView(store);
+  assert.ok(v.question, "舊 payload 唔可以變等待佔位");
+  assert.equal(v.question.preview, true);
+  assert.deepEqual(v.question.options, ["A", "B", "C", "D"], "舊 payload 都要帶選項");
+  assert.equal(v.question.endsAt, null);
+});

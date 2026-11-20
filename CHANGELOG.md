@@ -10,7 +10,8 @@
 - 開放題（open）冇選項，照舊只出題目文字。
 - 主持台文案（出題目掣 title、hint、跳題、題庫「出呢題」）同步更新，唔再寫「唔出選項」。
 - 資產版本 `?v=20261120f`。
-- Tests **209 → 210**（quiz.show：DTO 有 options、`endsAt === null`、`preview === true`、手機 task 仍然 null）。
+- 兼容舊 journal：舊 payload 用 `showOptions:false`（冇 `preview`）都會照出新版預覽。
+- Tests **209 → 211**（quiz.show：DTO 有 options、`endsAt === null`、`preview === true`、手機 task 仍然 null；legacy payload）。
 
 ## v0.4.4 — 2026-11-20
 

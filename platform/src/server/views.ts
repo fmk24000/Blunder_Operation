@@ -305,7 +305,8 @@ export function buildStageView(store: Store): StageView {
 
   // v04-D／v0.4.5：主持「出題目」＝stage.payload.preview:true，唔開 round 都要砌到題目＋全部選項出大mon
   // （preview 只係「未開 round」嘅標記：大mon 要讀得晒題目同選項先開始計時；手機維持等主持）
-  const isPreview = stage.mode === "question" && payload.preview === true;
+  // 兼容舊 journal／舊 payload：v0.4.5 之前用 showOptions:false 做「只出題目」標記
+  const isPreview = stage.mode === "question" && (payload.preview === true || payload.showOptions === false);
   if (isPreview) {
     const previewCard = typeof payload.cardId === "string" ? store.card(payload.cardId) : undefined;
     if (previewCard && (previewCard.type === "choice" || previewCard.type === "open")) {
