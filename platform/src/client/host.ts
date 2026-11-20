@@ -994,6 +994,65 @@ function drawFlowBlock(v: any): string {
     .filter(Boolean)
     .map((x) => `<span class="pill">${esc(x)}</span>`)
     .join("");
+  // v0.4.3（Round 2／G4）：主控制要係完整主持 panel——身份（主持專用）、重抽臥底、
+  // 開票後完整票數／票軌、獨立「分數結算」。規則同 server 一致，唔會撳完必然 W_WRONG_PHASE。
+  const undercoverPills = active
+    ? (st.undercoverIds ?? [])
+        .map((id: string) => `<span class="pill hot">${nameOf(id)}${st.eliminatedIds.includes(id) ? "（已出局）" : ""}</span>`)
+        .join("")
+    : "";
+  // 未開局／已清局（participantIds 清空）就唔出身份行
+  const undercoverRow = active
+    ? `<div class="row wrap" style="margin-top:6px"><span class="pill hot">臥底（主持專用）</span>${
+        undercoverPills || '<span class="muted">（未抽）</span>'
+      }<span class="muted">派實體題目卡用（唔會出手機／大mon）</span></div>`
+    : "";
+  // 重抽臥底：只准「未公佈、未開投票、冇淘汰」嘅窗口（同 R1 收緊後嘅 server 規則一致）
+  const redrawReady =
+    active && !st.settled && st.questionNo === 0 && !st.promptRevealed && !st.roundId && (st.eliminatedIds ?? []).length === 0;
+  const redrawTitle = !active
+    ? "未開局：先撳「開新一局」抽 2 個臥底"
+    : st.settled
+      ? "本局已結算：要換身份請撳「清走本局」再開一局"
+      : redrawReady
+        ? "只換身份，其他狀態不變（未公佈題目、未開始投票先准）"
+        : "已經公佈／開始投票：要換身份請開新一局";
+  // 分數結算：同 undercoverMatchPanel／server（commands.ts 嘅 uc.match.settle）同一條規則
+  const canSettle = active && !settled && (remaining === 0 || st.result === "good" || (st.questionNo >= 2 && questionDone));
+  const settleTitle = !active
+    ? "未開局：未有嘢可以結算"
+    : st.settled
+      ? "本局已結算（唔會重複加分）；再開請撳「清走本局」"
+      : canSettle
+        ? "判勝負＋派分：好人贏→好人 +1；臥底贏→臥底 +1；未出局每個再 +2"
+        : "仲未夠 3 題／仲有臥底未出局：請先投票＋Foul 最高票，或者撳「下一題／結算」打到第 3 題";
+  // 開票後完整票數表＋票軌；投票中（phase=voting）冇 counts，用 phase gate 防止泄漏
+  const tallyRows = counts
+    .map((c: any) => {
+      const top = topCount > 0 && c.count === topCount;
+      return `<div class="ledger-row" ${top ? 'style="background:var(--bg-soft);font-weight:700"' : ""}>
+        <span class="pill ${top ? "hot" : "gray"}">${top ? "👑 最高票" : "　"}</span>
+        <span class="grow">#${c.number} ${esc(c.name)} — <b>${c.count} 票</b></span></div>`;
+    })
+    .join("");
+  const ballotRows = revealed
+    ? (u.ballots ?? [])
+        .map((b: any) => `<div class="ledger-row"><span class="grow">#${b.voterNumber} ${esc(b.voterName)} → ${esc(b.targetName)}</span></div>`)
+        .join("")
+    : "";
+  const tallyBlock = revealed
+    ? `<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--line)">
+        <div class="row wrap"><span class="pill on">票數（已開票）</span>${
+          tops.length === 1 ? `<span class="pill hot">最高票：${nameOf(tops[0].id)}</span>` : ""
+        }<span class="muted">最高票行 highlight；同票／0 票就用下面 dropdown 揀人</span></div>
+        ${tallyRows || '<div class="muted">（呢題冇票）</div>'}
+        ${
+          ballotRows
+            ? `<details class="ctrl-settings"><summary>票軌（已投 ${u.answeredCount}／${u.eligibleCount}：投票人 → 目標）</summary><div class="ctrl-settings-body">${ballotRows}</div></details>`
+            : '<div class="muted">（呢題未有人投票）</div>'
+        }
+      </div>`
+    : "";
   const topicOptions = topics
     .map((c: any) => {
       const cur = active && c.id === st.promptCardId;
@@ -1047,6 +1106,7 @@ function drawFlowBlock(v: any): string {
   return `<div class="mode-group">
     <div class="mg-label">畫畫（一圖多人）・一條 flow：① 揀題目 → ② 公佈好人題目 → ③ 投票投臥底</div>
     <div class="row wrap">${status}</div>
+    ${undercoverRow}
     <div class="row wrap" style="margin-top:8px">
       <span class="pill hot">① 揀題目</span>
       <select id="uc-topic" style="flex:1 1 320px">${topicOptions || `<option value="">（題庫冇一圖多人題目）</option>`}</select>
@@ -1059,6 +1119,11 @@ function drawFlowBlock(v: any): string {
       } title="${esc(revealTitle)}">② 公佈好人題目（大mon）</button>
       ${voteBtn}
     </div>
+    ${tallyBlock}
+    <div class="row wrap" style="margin-top:8px">
+      <button data-act="ucm.redraw" ${redrawReady ? "" : "disabled"} title="${esc(redrawTitle)}">重抽臥底</button>
+      <button class="primary" data-act="ucm.settle" ${canSettle ? "" : "disabled"} title="${esc(settleTitle)}">分數結算</button>
+    </div>
     <div class="row wrap" style="margin-top:8px">
       ${
         active
@@ -1068,7 +1133,12 @@ function drawFlowBlock(v: any): string {
              <button class="primary" data-act="ucm.start">開新一局</button>`
       }
     </div>
-    <div class="hint">主持檯呢度就係全部：① 揀邊對題目 → ② 好人題目推上大mon（手機見唔到）→ ③ 開 10 秒投票 → 立即開票睇票數 → Foul 最高票嗰個。臥底身份／票軌／取消淘汰／分數結算喺「進階 → 畫畫」tab（唔喺呢度重複出）。</div>
+    ${
+      active
+        ? ""
+        : `<div class="hint">未開局：撳「開新一局」＝由 approved 玩家隨機抽 2 個臥底＋3 對題目（臥底數可以改）；之後 ① 揀題目 → ② 公佈好人題目 → ③ 投票投臥底。開局後呢度會出埋臥底身份（派卡用）、重抽臥底、開票後完整票數同獨立「分數結算」。</div>`
+    }
+    <div class="hint">主頁呢度有：① 揀題目 → ② 公佈好人題目（推上大mon）→ ③ 開 10 秒投票 → 立即開票 → 完整票數／票軌 → Foul 最高票；另有臥底身份（主持專用）、重抽臥底、獨立「分數結算」同「清走本局」。「進階 → 畫畫」仲有：取消上一個淘汰、手動揀人 foul（同票／冇票主頁已經有 dropdown）、本局三對題目一覽（派卡用）等完整操作。</div>
   </div>`;
 }
 
