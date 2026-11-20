@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.4.3 — 2026-11-20
+
+### Fixed — 估歌競投（用戶第三輪投訴）
+- **大mon 唔會再將非拍賣卡畫成「競投」**：`buildStageView()` 只喺 `card.type === "bid"` 先砌 bid DTO。
+  以前主持撳「競投」（純 `stage.set`）會將啱啱收咗卷嘅問答卡畫成假拍賣：假題目＋0.0 倒數＋
+  「已競投 0/N 人」，而手機根本冇競投掣（task 跟住張問答卡），永遠 0 人投。
+- **主持台「估歌」組只剩兩粒真掣**：`競投`（開下一首拍賣卡＝大mon＋手機 10 秒倒數）、
+  `競投結果`（推全部人投到嘅秒數上大mon，最少秒數先聽）。`聽歌`／`開估（揭曉歌名）` 拎走
+  —— 播歌同開估由主持自己另一部機做，唔經系統。
+- **加完分即刻可以再開**：「競投」遇到上一首已公佈排名會先 `bid.finish` 收成終態，再開下一張
+  draft 拍賣卡；如果仲有問答 round 未收就擋住＋提示（唔會再開錯）。
+- **競投唔限人數**：`eligiblePlayerIds` 唔再當「開 round 一刻 snapshot」用——ws 改為即場檢查
+  `approved`（其他卡類照舊守 eligible），手機 task 同大mon 分母都跟現時 approved 人數，
+  開卡之後先批准嘅玩家都投到。
+- **倒數完停喺競投畫面**：拍賣 round auto-close 唔再轉 `tally`，大mon 會顯示
+  「競投已完，等主持公佈排名」，等主持撳「競投結果」。
+- **零人競投唔會卡死**：10 秒內冇人撳，「競投結果」disabled、`card.open` 又會被擋——
+  而家再撳「競投」會自動 `bid.finish` 收成終態再開下一首（toast：呢首冇人競投，跳去下一首）。
+- **競投唔會提早收卷**：`tickAutoClose` 唔再用「全員交咗」收 bid round（1 人交卷＋遲批准玩家
+  會令 10 秒倒數提早結束）；拍賣只按 `endsAt`／主持收卷。
+- **void 咗嘅拍賣唔准再判分**：`bid.judge` 加 void guard（以前 void 之後仍然 +1 仲會拉返 revealed）。
+
+### Fixed — 手機入場
+- 打咗名之後再揀 emoji／顏色，個名唔會再被 re-render 清空（新增 `joinName` state＋`keepName()`）。
+
+### Fixed — 主持台
+- 「問答真流程」兩三行掣加行距（`.ctrl-quiz .btn-row + .btn-row`）。
+- `.stage-mode-grid` 入面嘅 primary 掣（例如「競投」）唔會再被 `.stage-mode-grid button` 嘅白底
+  蓋走藍底、變成一格空白（specificity 修正）。
+
+### 其他
+- 資產版本 `?v=20261120d`。
+- Tests **184 → 190**（bid guard／遲 approve／auto-close 畫面／主持掣契約／入場名）。
+
 ## v0.4.2 — 2026-11-20
 
 ### Fixed — 畫畫關「投票投臥底」唔見咗（用戶第二輪投訴）

@@ -299,6 +299,14 @@ body.stage { overflow: hidden; height: 100vh; background: var(--bg); }
   font-size: 22px; color: var(--muted); font-variant-numeric: tabular-nums;
 }
 .bid-winner { font-size: 56px; font-weight: 800; margin-top: 20px; color: var(--ink); }
+/* v0.4.4：競投結果放大（大mon 遠距離要睇得到），秒數帶單位 */
+body.stage .bid-result-prompt { font-size: 56px; }
+body.stage .bid-now { font-size: 64px; }
+body.stage .bid-rows { display: flex; flex-direction: column; gap: 14px; margin-top: 18px; }
+body.stage .bid-row { font-size: 38px; min-height: 84px; }
+body.stage .bid-row .uc-name { font-size: 38px; font-weight: 700; }
+body.stage .bid-row .uc-count { font-size: 52px; font-weight: 900; letter-spacing: .01em; }
+body.stage .bid-row .bid-unit { font-size: 34px; font-weight: 800; }
 .bid-winner b { background: var(--lime); border-radius: 12px; padding: 0 12px; }
 .role-big { font-size: 112px; font-weight: 800; text-align: center; color: var(--ink); letter-spacing: -.03em; }
 .role-sub { font-size: 44px; text-align: center; color: var(--muted); }
@@ -359,7 +367,9 @@ body.host textarea { min-height: 96px; }
 .tabbar button.active { background: var(--surface); color: var(--ink); box-shadow: var(--shadow-sm); font-weight: 750; }
 
 .host-wrap {
-  padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(560px, 1fr));
+  /* v0.4.4（用戶）：流程欄收窄、大mon 控制攞多啲位（以前兩欄一樣闊） */
+  padding: 20px; display: grid;
+  grid-template-columns: minmax(340px, 5fr) minmax(560px, 7fr);
   gap: 20px; align-items: start;
 }
 .host-wrap section h3 {
@@ -378,6 +388,10 @@ body.host textarea { min-height: 96px; }
 .pill.off { background: var(--surface-2); color: var(--muted); }
 .btn-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .btn-sm { min-height: 42px; }
+/* v0.4.3：問答真流程兩行掣太密——行與行之間留白（用戶：要隔開少少） */
+.ctrl-quiz .btn-row + .btn-row { margin-top: 14px; }
+.ctrl-quiz .btn-row { gap: 12px; }
+.ctrl-quiz .hint { margin-top: 12px; }
 
 .stage-mode-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .stage-mode-grid button {
@@ -1290,6 +1304,15 @@ body.host button, body.host button.primary, body.host button.danger { border-rad
 .ctrl-hero .hero-k { opacity: .55; }
 .stage-mode-grid button { border-radius: 14px; background: #fff; border: 1px solid var(--line); }
 .stage-mode-grid button:hover { background: #f6f8fb; border-color: var(--line-strong); }
+/* v0.4.3：grid 入面嘅「主行動掣」（例如估歌「競投」）要維持藍底白字。
+   上面 `.stage-mode-grid button` 嘅白底同 `button.primary` 同樣 specificity 但後出，
+   以前會蓋走藍底、留低白字 → 變成一格空白掣。 */
+body.host .stage-mode-grid button.primary,
+body.host .stage-mode-grid button.primary:hover {
+  background: var(--lime); border-color: var(--lime); color: #fff;
+}
+body.host .stage-mode-grid button.primary:hover { background: var(--lime-deep); border-color: var(--lime-deep); }
+body.host .stage-mode-grid button:disabled { color: #aab4c0; background: #f3f5f9; border-color: var(--line); }
 .stage-mode-grid button.active {
   background: var(--lime); border-color: var(--lime); color: #fff; box-shadow: none;
 }

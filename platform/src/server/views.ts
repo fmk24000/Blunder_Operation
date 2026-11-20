@@ -340,7 +340,9 @@ export function buildStageView(store: Store): StageView {
     }
   }
 
-  if (stage.mode === "tally" && cur) {
+  // v0.4.4：分佈畫面唔適用拍賣卡（以前會將拍賣畫成「答案分佈」＋玩家名＋秒數）。
+  // open 數字／文字題收卷後仍然要靠 tally 出「名＋答案」，所以只排除 bid。
+  if (stage.mode === "tally" && cur && cur.card.type !== "bid") {
     const { round, card } = cur;
     const subs = store.submissionsForRound(round.id).filter((s) => s.confirmed);
     const options = card.options ?? [];
@@ -449,7 +451,10 @@ export function buildStageView(store: Store): StageView {
     };
   }
 
-  if (stage.mode === "bid" && cur) {
+  // v0.4.3（P0）：一定要係 bid 卡先砌競投畫面。以前主持撳「競投」（純 stage.set）會將
+  // 任何 currentRound（例如啱啱收咗卷嘅問答卡）畫成假拍賣：假題目＋0.0 倒數＋「已競投 0/N 人」，
+  // 而手機根本冇競投掣（task 跟住張問答卡）。
+  if (stage.mode === "bid" && cur && cur.card.type === "bid") {
     const { round, card } = cur;
     const bidOrder = new Map(store.state.submissions.map((x, i) => [x.id, i]));
     const subs = store
@@ -490,7 +495,8 @@ export function buildStageView(store: Store): StageView {
       maxBid: card.maxBid ?? store.state.settings.maxBid,
       endsAt: round.endsAt,
       bidCount: subs.length,
-      eligibleCount: round.eligiblePlayerIds.length,
+      // v0.4.3：競投唔限人數——分母用「而家 approved 嘅人」，唔用開 round 一刻嘅 snapshot
+      eligibleCount: store.approvedPlayers().length,
       closed,
       settled,
       winnerName: settled ? winner?.name ?? null : null,
@@ -516,6 +522,8 @@ export function buildStageView(store: Store): StageView {
   const sab = room.gameState?.saboteur;
   if (sab) {
     const curSabRound = sab.rounds.find((r) => r.roundId === room.currentRoundId) ?? sab.rounds[sab.rounds.length - 1];
+    // v0.4.4（codex audit B7）：投票未開（open）唔准送票數／top，否則大mon DTO 會漏個人票
+    const sabVoteOpen = Boolean(curSabRound && store.round(curSabRound.roundId)?.state === "open");
     const approved = store.approvedPlayers();
     const subs2 = curSabRound ? store.submissionsForRound(curSabRound.roundId).filter((x) => x.confirmed && x.kind === "vote") : [];
     const countsMap = new Map<string, number>();
@@ -529,10 +537,12 @@ export function buildStageView(store: Store): StageView {
       caught: sab.caught,
       finished: sab.finished,
       revealedRole: sab.revealedRole,
-      validVotes: subs2.length,
-      top: [...countsMap.entries()]
-        .map(([id, count]) => ({ name: store.player(id)?.name ?? "?", count }))
-        .sort((a, b) => b.count - a.count),
+      validVotes: sabVoteOpen ? 0 : subs2.length,
+      top: sabVoteOpen
+        ? []
+        : [...countsMap.entries()]
+            .map(([id, count]) => ({ name: store.player(id)?.name ?? "?", count }))
+            .sort((a, b) => b.count - a.count),
     };
   }
   if (stage.mode === "role-reveal" && sab) {
@@ -662,7 +672,8 @@ export function buildPlayerView(store: Store, playerId: string): PlayerSelfView 
   const round = store.currentRound();
   const card = round ? store.card(round.cardId) : undefined;
   const item = store.currentItem();
-  const eligible = round ? round.eligiblePlayerIds.includes(playerId) : false;
+  // v0.4.3：競投唔限人數——approved 就投得，唔理開 round 一刻嘅 eligible snapshot
+  const eligible = round ? (card?.type === "bid" ? p?.status === "approved" : round.eligiblePlayerIds.includes(playerId)) : false;
 
   let task: PlayerSelfView["task"] = null;
   if (round && card && eligible && round.state === "open") {
@@ -730,10 +741,13 @@ export function buildPlayerView(store: Store, playerId: string): PlayerSelfView 
   }
 
   const sab = room.gameState?.saboteur;
-  const roleInfo: PlayerSelfView["roleInfo"] = p.secretRole
+  // v0.4.4（codex audit B2）：secretRole 會殘留（rundown.reset 冇清）——所以一定要有
+  // 進行中嘅搗蛋鬼局、而且當前卡係搗蛋鬼卡，先准送角色／參考答案，否則玩完搗蛋鬼去問答會漏答案。
+  const roleActive = Boolean(sab);
+  const roleInfo: PlayerSelfView["roleInfo"] = p.secretRole && roleActive
     ? {
         secretRole: p.secretRole,
-        saboteurAnswer: p.secretRole === "saboteur" && card ? card.referenceAnswer : undefined,
+        saboteurAnswer: p.secretRole === "saboteur" && card?.gameId === "saboteur" ? card.referenceAnswer : undefined,
       }
     : null;
 
@@ -761,8 +775,8 @@ export function buildPlayerView(store: Store, playerId: string): PlayerSelfView 
       status: p.status,
       score: maps.player.get(p.id) ?? 0,
       groupScore: p.groupId ? (maps.group.get(p.groupId) ?? 0) : 0,
-      secretRole: p.secretRole,
-      saboteurAnswer: p.secretRole === "saboteur" && card ? card.referenceAnswer : undefined,
+      secretRole: roleActive ? p.secretRole : undefined,
+      saboteurAnswer: roleActive && p.secretRole === "saboteur" && card?.gameId === "saboteur" ? card.referenceAnswer : undefined,
     },
     roomCode: room.code,
     ticker: stage.ticker,

@@ -12,8 +12,10 @@ let status: ConnStatus = "connecting";
 let roomCode = "";
 let token: string | null = null;
 let avatarSel = { emoji: "😀", color: COLORS[0] as string };
+// v0.4.3：入場名要留住——揀 emoji／顏色會 re-render，以前會清空打緊嘅名
+let joinName = "";
 let joinError = "";
-let selected: { choice?: number; targetId?: string } = {};
+let selected: { choice?: number; targetId?: string; numText?: string } = {};
 let submitting = false;
 let submitError = "";
 let timer: number | null = null;
@@ -43,7 +45,7 @@ function renderJoin(): void {
       <div class="play-head"><span>圍威喂</span><span>房碼 ${esc(roomCode || "…")}</span></div>
       <div class="play-card">
         <div class="play-q">你叫咩名？</div>
-        <input id="join-name" maxlength="12" placeholder="名（最多 12 字）" autocomplete="off">
+        <input id="join-name" maxlength="12" placeholder="名（最多 12 字）" autocomplete="off" value="${esc(joinName)}">
         <div class="field-label">揀個頭像</div>
         <div id="emoji-grid">${EMOJIS.map(
           (e) => `<button class="emoji-btn ${e === avatarSel.emoji ? "primary" : ""}" data-emoji="${esc(e)}">${e}</button>`,
@@ -56,14 +58,24 @@ function renderJoin(): void {
       </div>
       <div class="helptext">入場後等主持批准，大mon 會見到你個頭像。</div>
     </div>`;
+  // v0.4.3：先將打緊嘅名寫返入 state，再 re-render（揀頭像唔可以清空個名）
+  const keepName = (): void => {
+    const input = el<HTMLInputElement>("#join-name");
+    if (input) joinName = input.value.slice(0, 12);
+  };
+  el<HTMLInputElement>("#join-name")?.addEventListener("input", (ev) => {
+    joinName = (ev.target as HTMLInputElement).value.slice(0, 12);
+  });
   for (const btn of root.querySelectorAll<HTMLButtonElement>("[data-emoji]")) {
     btn.addEventListener("click", () => {
+      keepName();
       avatarSel.emoji = btn.dataset.emoji ?? "😀";
       renderJoin();
     });
   }
   for (const btn of root.querySelectorAll<HTMLButtonElement>("[data-color]")) {
     btn.addEventListener("click", () => {
+      keepName();
       avatarSel.color = btn.dataset.color ?? COLORS[0]!;
       renderJoin();
     });
@@ -76,7 +88,8 @@ function renderJoin(): void {
 
 async function doJoin(): Promise<void> {
   const nameInput = el<HTMLInputElement>("#join-name");
-  const name = (nameInput?.value ?? "").trim();
+  const name = (nameInput?.value ?? joinName).trim();
+  joinName = name;
   if (!name) {
     joinError = "打個名先";
     renderJoin();
@@ -190,7 +203,8 @@ function confirmButton(label: string, enabled: boolean): string {
 function bidSeconds(task: any): number {
   const left = live?.msLeft(task.endsAt);
   if (left === null || left === undefined) return Math.max(1, Math.min(Number(task.maxBid) || 10, 10));
-  const secs = Math.ceil(left / 1000);
+  // v0.4.4（用戶拍板）：round down——5.6 秒要當 5 秒（以前 ceil 會變 6 秒）
+  const secs = Math.floor(left / 1000);
   if (secs <= 0) return 0;
   return Math.min(secs, Number(task.maxBid) || secs);
 }
@@ -242,7 +256,8 @@ function renderTask(v: any): string {
   }
   if (task.kind === "open") {
     const isNum = task.openKind === "number";
-    const draft = isNum ? (selected.choice !== undefined ? String(selected.choice) : "") : (selected.targetId ?? "");
+    // v0.4.4：數字草稿用 string 保存，否則打「1」「.」會即刻被 Number() 食咗個小數點
+    const draft = isNum ? (selected.numText ?? "") : (selected.targetId ?? "");
     return `<div class="play-card">
       <div class="play-q">${esc(task.prompt)}</div>${clock}
       ${
@@ -359,7 +374,6 @@ function render(): void {
         <span class="myscore">${me.score} 分</span>
       </div>
     </div>
-    <div id="toast"></div>
     </div>`;
   bindTask(v);
 }
@@ -419,7 +433,8 @@ function bindTask(v: any): void {
 }
 
 async function onKey(task: any, key: string): Promise<void> {
-  const cur = selected.choice !== undefined ? String(selected.choice) : "";
+  // v0.4.4：數字鍵盤用 string 草稿（最多一位小數，8 個字），確認送出先轉 Number
+  const cur = selected.numText ?? "";
   let next: string;
   if (key === "⌫") next = cur.slice(0, -1);
   else if (key === "00") next = (cur || "0") + "00";
@@ -428,7 +443,9 @@ async function onKey(task: any, key: string): Promise<void> {
     next = (cur || "0") + ".";
   } else next = cur.length > 7 ? cur : cur + key;
   const cleaned = next.replace(/^0+(?=\d)/, "");
-  selected.choice = cleaned === "" || cleaned === "." ? undefined : Number(cleaned);
+  if (cleaned !== "" && !/^\d*(\.\d?)?$/.test(cleaned)) return; // 最多一位小數
+  selected.numText = cleaned === "" ? undefined : cleaned;
+  selected.choice = cleaned === "" || cleaned === "." ? undefined : Number(cleaned.replace(/\.$/, ""));
   lsSet(keyDraft(task.roundId), selected);
   render();
 }
@@ -436,7 +453,11 @@ async function onKey(task: any, key: string): Promise<void> {
 function payloadFor(task: any): any {
   if (task.kind === "choice") return { kind: "choice", choice: selected.choice };
   if (task.kind === "open") {
-    return task.openKind === "number" ? { kind: "open", amount: selected.choice } : { kind: "open", text: selected.targetId ?? "" };
+    if (task.openKind === "number") {
+      const raw = selected.numText ?? (selected.choice !== undefined ? String(selected.choice) : "");
+      return { kind: "open", amount: raw === "" ? undefined : Number(raw) };
+    }
+    return { kind: "open", text: selected.targetId ?? "" };
   }
   if (task.kind === "vote") {
     const isWorks = (task.voteOptions ?? []).every((o: any) => /^\d+$/.test(String(o.id)));

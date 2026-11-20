@@ -328,20 +328,20 @@ function bidHtml(v) {
     const ranking = b.ranking ?? [];
     if (ranking.length) {
         // 公佈競投結果：最少秒數排第一；而家由邊個聽
+        // v0.4.4（用戶）：結果要大大隻、有單位（秒）——主持／全場離遠都睇到
         const rows = ranking
-            .map((r, i) => `<div class="uc-cand ${r.current ? "current" : ""}">
+            .map((r, i) => `<div class="uc-cand bid-row ${r.current ? "current" : ""}">
           <span class="uc-name">${i + 1}. #${r.number} ${esc(r.name)}${r.tried ? "（試過）" : ""}</span>
-          <span class="uc-bar"><i style="width:${Math.max(6, 100 - (r.seconds / Math.max(1, b.maxBid)) * 100)}%"></i></span>
-          <b class="uc-count">${r.seconds} 秒</b></div>`)
+          <b class="uc-count">${r.seconds}<span class="bid-unit"> 秒</span></b></div>`)
             .join("");
         const now = b.currentName
-            ? `<div class="bid-winner">而家由 <b style="color:var(--accent)">${esc(b.currentName)}</b> 聽歌（${b.currentSeconds} 秒）</div>`
-            : `<div class="bid-winner">${b.settled ? "本首已完結" : "等主持開始"}</div>`;
-        return `<div class="stage-main">
+            ? `<div class="bid-winner bid-now">而家由 <b style="color:var(--accent)">${esc(b.currentName)}</b> 聽歌（${b.currentSeconds} 秒）</div>`
+            : `<div class="bid-winner bid-now">${b.settled ? "本首已完結" : "等主持開始"}</div>`;
+        return `<div class="stage-main bid-result">
       <div class="stage-mode-title">競投結果（最少秒數先聽）</div>
-      <div class="q-prompt" style="font-size:44px">${esc(b.prompt)}</div>
+      <div class="q-prompt bid-result-prompt">${esc(b.prompt)}</div>
       ${now}
-      <div class="uc-cands" style="width:100%">${rows}</div>
+      <div class="uc-cands bid-rows" style="width:100%">${rows}</div>
       <div class="helptext">仲有 ${b.remaining} 人未試；播歌位置由主持自己控制（唔經系統）</div>
       ${scoreBar(v)}
     </div>`;
