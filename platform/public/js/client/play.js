@@ -323,8 +323,8 @@ function render() {
             body += `<div class="play-card"><div class="waiting">等主持下一步…</div></div>`;
     }
     else if (v.mode === "question" && !v.task && !v.mySubmission) {
-        // v04-D：主持「只出題目」階段（未開 round）→ 手機只等，唔會見到上一題殘留嘅選項
-        body = `<div class="play-card"><div class="play-q">等主持開始作答</div><div class="waiting">大mon 已經出咗題目，主持宣佈開始之後（30 秒）先會出選項</div></div>`;
+        // v04-D：主持「出題目」階段（未開 round）→ 大mon 出題目＋選項，手機只等，唔會見到上一題殘留嘅選項
+        body = `<div class="play-card"><div class="play-q">等主持開始作答</div><div class="waiting">大mon 已經出咗題目同選項，主持宣佈開始之後（30 秒）先會喺你手機出選項</div></div>`;
     }
     else if (v.reveal) {
         body = renderReveal(v);
