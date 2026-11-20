@@ -466,7 +466,9 @@ body.host textarea { min-height: 96px; }
 .ctrl-sub { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .rd-list { display: flex; flex-direction: column; }
 .rd-list .ledger-row { min-height: 56px; font-size: 17px; }
-.ctrl-phase { display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 10px; }
+.ctrl-phase { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+/* v0.4.6（用戶）：4 粒掣排 2×2、統一高度（以前 3+1 兼且重設掣要斷行） */
+.ctrl-phase button { min-height: 68px; }
 .ctrl-phase .primary { min-height: 68px; }
 .ctrl-quick { margin-bottom: 14px; }
 .ctrl-quick button { width: 100%; min-height: 72px; font-size: 20px; font-weight: 750; letter-spacing: .02em; }

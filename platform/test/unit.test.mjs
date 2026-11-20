@@ -1687,7 +1687,7 @@ test("uc.eliminate：大mon 即刻講中／唔中；uc.eliminate.undo 還原", (
   assert.deepEqual(store.state.room.gameState.undercover.eliminatedIds, [uc1]);
 });
 
-test("一圖多人計分：好人勝 → 好人 +1、留到最後 +2（疊加）；臥底 0", () => {
+test("一圖多人計分：好人勝 → 好人 +1；「留到最後 +2」只俾臥底（好人冇）", () => {
   const { store } = ucSetup("ucm-good-win", 6);
   run(store, "uc.match.start");
   const st0 = store.state.room.gameState.undercover;
@@ -1698,7 +1698,7 @@ test("一圖多人計分：好人勝 → 好人 +1、留到最後 +2（疊加）
   const res = run(store, "uc.match.next");
   assert.equal(res.result.settled, true);
   const goodIds = st0.participantIds.filter((id) => !st0.undercoverIds.includes(id));
-  for (const id of goodIds) assert.equal(store.playerScore(id), 3, "好人 +1 再留到最後 +2");
+  for (const id of goodIds) assert.equal(store.playerScore(id), 1, "好人只有 +1（留到最後 +2 只屬臥底）");
   for (const id of st0.undercoverIds) assert.equal(store.playerScore(id), 0, "出局臥底 0 分");
   // 大mon 出結算
   const sv = buildStageView(store);
@@ -1707,10 +1707,10 @@ test("一圖多人計分：好人勝 → 好人 +1、留到最後 +2（疊加）
   const ev = store.state.ledger.filter((e) => e.matchId === store.state.room.gameState.undercover.matchUid);
   assert.ok(ev.every((e) => e.gameId === "draw"));
   assert.ok(ev.some((e) => e.reason === "一圖多人・好人勝"));
-  assert.ok(ev.some((e) => e.reason === "一圖多人・留到最後"));
+  assert.equal(ev.some((e) => e.reason.includes("留到最後")), false, "好人留到最後唔應該 +2");
 });
 
-test("一圖多人：3 題上限（未 foul 晒）→ 臥底勝，臥底 +1、留到最後 +2", () => {
+test("一圖多人：3 題上限（未 foul 晒）→ 臥底勝，臥底 +1、留到最後 +2；好人 0", () => {
   const { store } = ucSetup("ucm-uc-win", 6);
   run(store, "uc.match.start");
   const st0 = store.state.room.gameState.undercover;
@@ -1727,7 +1727,7 @@ test("一圖多人：3 題上限（未 foul 晒）→ 臥底勝，臥底 +1、�
   assert.equal(store.state.room.gameState.undercover.settled, true);
   for (const id of st0.undercoverIds) assert.equal(store.playerScore(id), 3, "臥底 +1 留到最後 +2");
   for (const id of [goods[0], goods[1], goods[2]]) assert.equal(store.playerScore(id), 0, "出局好人 0 分");
-  assert.equal(store.playerScore(goods[3]), 2, "未出局好人只有留到最後 +2");
+  assert.equal(store.playerScore(goods[3]), 0, "未出局好人唔會再有 +2");
 });
 
 test("uc.match.settle：冪等（重複撳唔會重複加分）", () => {
@@ -4049,4 +4049,32 @@ test("v045-B1：舊 payload（showOptions:false、冇 preview）都要照樣出�
   assert.equal(v.question.preview, true);
   assert.deepEqual(v.question.options, ["A", "B", "C", "D"], "舊 payload 都要帶選項");
   assert.equal(v.question.endsAt, null);
+});
+
+
+test("v046-1：「你已出局」只喺本局進行中先出現，結算／過關後消失", () => {
+  const { store } = ucSetup("v046-1", 5);
+  store.commit([{ t: "rundown.set", d: { rundown: [
+    { id: "rd_draw_t", index: 0, gameId: "draw", title: "第 1 關・一圖多人畫畫猜", state: "running", cardIds: [] },
+    { id: "rd_quiz_t", index: 1, gameId: "quiz", title: "第 2 關・問答", state: "todo", cardIds: [] },
+  ], currentItemId: "rd_draw_t", phase: "playing" } }]);
+  run(store, "uc.match.start");
+  const st0 = store.state.room.gameState.undercover;
+  const good = st0.participantIds.find((id) => !st0.undercoverIds.includes(id));
+  ucFoul(store, good);
+  const live = buildPlayerView(store, good);
+  assert.equal(live.undercoverMatch?.eliminated, true, "本局進行中照樣要見到出局提示");
+  run(store, "uc.match.next");
+  ucFoul(store, st0.undercoverIds[0]);
+  run(store, "uc.match.next");
+  ucFoul(store, st0.undercoverIds[1]);
+  run(store, "uc.match.settle");
+  assert.equal(store.state.room.gameState.undercover.settled, true);
+  assert.equal(buildPlayerView(store, good).undercoverMatch, null, "結算後唔准再出「你已出局」");
+});
+
+test("v046-2：主持台 4 粒流程掣排 2×2（CSS 契約）", () => {
+  const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
+  assert.match(css, /\.ctrl-phase \{ display: grid; grid-template-columns: repeat\(2, 1fr\);/, "要 2 欄");
+  assert.match(css, /\.ctrl-phase button \{ min-height: 68px; \}/, "4 粒掣要統一高度");
 });

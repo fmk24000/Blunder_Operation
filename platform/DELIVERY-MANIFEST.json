@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-20T08:58:46.208Z",
+  "generatedAt": "2026-11-20T09:16:22.917Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -109,12 +109,12 @@
     {
       "path": "package.json",
       "bytes": 1027,
-      "sha256": "2bb8a716deeff76d2fea3d75c8cc5a0fc296d7e71abaab60297f56e105e07c4a"
+      "sha256": "dbc8c574d79f8efef7b3e38398e3a9d218eb0ada67053c29d6a13d999a145d1f"
     },
     {
       "path": "public/app.css",
-      "bytes": 76395,
-      "sha256": "7b3ece85b566a938f03df7c9b480c5166a960dfe314231a7d0900938c24570c2"
+      "bytes": 76537,
+      "sha256": "2c13421954cf7d64887cfd9bb56704f79b4cef54622f882ea386753380e72034"
     },
     {
       "path": "public/fonts/line-seed-tw-bd.woff2",
@@ -134,7 +134,7 @@
     {
       "path": "public/host.html",
       "bytes": 499,
-      "sha256": "959f071c97f7fadcbce4fbb07bbac4fe7790276cc929a7ce1495683f73ddaacd"
+      "sha256": "b8c45454acc3e310778db9bd8288adfb4e1994cdc8c9c8439f09778f4ac733ff"
     },
     {
       "path": "public/icon.svg",
@@ -144,7 +144,7 @@
     {
       "path": "public/index.html",
       "bytes": 1445,
-      "sha256": "d948e505de08bb5b867519054f36eb5f7a39eaeb2ee8e120f6edaf6106c7886e"
+      "sha256": "09795cc6e1f7a86034890a942bc00ddb8880c637e88335412ddf501a3598ab99"
     },
     {
       "path": "public/js/client/common.js",
@@ -184,7 +184,7 @@
     {
       "path": "public/play.html",
       "bytes": 680,
-      "sha256": "cdd48a644381eb78711d957c2d2a5a2677eb02c252798419aee23215b7bf63ef"
+      "sha256": "f320c1f7dfceebfcbe3b7d9fe03c37002be86e585069c46006587180f9f606a8"
     },
     {
       "path": "public/quiz-legacy-mc.json",
@@ -194,7 +194,7 @@
     {
       "path": "public/stage.html",
       "bytes": 602,
-      "sha256": "311165a839ecece850b90666a7fa45cdcbc96e5b59350b2b211934b6fc1acc5a"
+      "sha256": "8ec4b8acbe3b068485e5257a3ef3d2deae4296ea9f2381d0d53bd1539cc74ec3"
     },
     {
       "path": "scripts/make-manifest.mjs",
@@ -253,8 +253,8 @@
     },
     {
       "path": "src/server/commands.ts",
-      "bytes": 168952,
-      "sha256": "12ec747e2fd8d593fb8b005adfc1d383426972f3b6ef60a82abff01da45ac543"
+      "bytes": 169088,
+      "sha256": "cc944f50b2ec0a545999a62efa236c851518b78ad3d43a4be5ad04a17fedad60"
     },
     {
       "path": "src/server/env.ts",
@@ -293,8 +293,8 @@
     },
     {
       "path": "src/server/views.ts",
-      "bytes": 34299,
-      "sha256": "9b6eccbcd14206c09079442e08334ee903913cfcc41260ba97bba576a33109f1"
+      "bytes": 34640,
+      "sha256": "75443caad708afbfdb0d8b8520f145f91e55b7d9f5a40f7919b507ad3a2dd12d"
     },
     {
       "path": "src/server/ws.ts",
@@ -318,8 +318,8 @@
     },
     {
       "path": "test/unit.test.mjs",
-      "bytes": 219494,
-      "sha256": "921119da422c6ff74f1790789c87bc540cd8763e193cb2d0d0091412939d92bb"
+      "bytes": 221107,
+      "sha256": "92f8d4c0c3aceecddb94e97591dcb2599fe22838965def907b5c857eb0a309be"
     },
     {
       "path": "tsconfig.client.json",
