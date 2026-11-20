@@ -512,8 +512,8 @@ body.host textarea { min-height: 96px; }
   .ctrl-hero .hero-v { font-size: 26px; }
   .ctrl-sub button { min-height: 60px; }
   .rd-list .ledger-row { min-height: 60px; font-size: 18px; }
-  .ctrl-phase .primary { min-height: 76px; font-size: 19px; }
-  .ctrl-phase button { min-height: 60px; }
+  /* v0.4.6：2×2 之後 primary 同其他掣要同一高度（以前 76 vs 60 兩行唔齊） */
+  .ctrl-phase button, .ctrl-phase .primary { min-height: 76px; font-size: 18px; }
   .mode-group .stage-mode-grid button { min-height: 72px; font-size: 17px; }
   .ctrl-emergency button { min-height: 66px; }
   .ctrl-emergency .danger { min-height: 84px; font-size: 22px; }

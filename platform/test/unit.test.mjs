@@ -4071,10 +4071,15 @@ test("v046-1：「你已出局」只喺本局進行中先出現，結算／過�
   run(store, "uc.match.settle");
   assert.equal(store.state.room.gameState.undercover.settled, true);
   assert.equal(buildPlayerView(store, good).undercoverMatch, null, "結算後唔准再出「你已出局」");
+  run(store, "room.phase", { phase: "final" });
+  assert.equal(buildPlayerView(store, good).undercoverMatch, null, "去咗結算 phase 都唔准再出");
+  run(store, "room.phase", { phase: "lobby" });
+  assert.equal(buildPlayerView(store, good).undercoverMatch, null, "返大堂都唔准再出");
 });
 
 test("v046-2：主持台 4 粒流程掣排 2×2（CSS 契約）", () => {
   const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
   assert.match(css, /\.ctrl-phase \{ display: grid; grid-template-columns: repeat\(2, 1fr\);/, "要 2 欄");
   assert.match(css, /\.ctrl-phase button \{ min-height: 68px; \}/, "4 粒掣要統一高度");
+  assert.match(css, /\.ctrl-phase button, \.ctrl-phase \.primary \{ min-height: 76px/, "≤1100px 兩行要同一高度");
 });

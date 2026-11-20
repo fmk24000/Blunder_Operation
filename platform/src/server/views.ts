@@ -276,6 +276,7 @@ function playerUndercoverMatch(store: Store, playerId: string): PlayerSelfView["
   // 只喺「一圖多人本局進行中、未結算」先送出去；過咗關／結算咗就唔再提。
   const item = store.currentItem();
   if (!item || item.gameId !== "draw") return null;
+  if (store.state.room.phase !== "playing") return null; // 去咗結算／返大堂都唔應該再提「你已出局」
   if (st.settled || st.result) return null;
   return {
     matchNo: st.matchNo,
