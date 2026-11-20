@@ -466,7 +466,13 @@ function gradeClosestRound(ctx: Ctx, round: Round, card: Card, actual: number): 
   if (already) return;
   const subs = ctx.store.submissionsForRound(round.id).filter((s) => s.confirmed && typeof s.amount === "number");
   if (!subs.length) return;
-  const ranked = [...subs]
+  // 規則講「3 個人」，同一玩家只計最後一筆（正常 WS 已擋一人一筆，呢度係防禦）
+  const latest = new Map<string, Submission>();
+  for (const s of subs) {
+    const prev = latest.get(s.playerId);
+    if (!prev || s.ts >= prev.ts) latest.set(s.playerId, s);
+  }
+  const ranked = [...latest.values()]
     .sort((a, b) => {
       const da = Math.abs((a.amount ?? 0) - actual);
       const db = Math.abs((b.amount ?? 0) - actual);
@@ -1558,6 +1564,9 @@ export function executeCommand(
       if (!roundId) throw new CmdError("W_BAD_SCHEMA", "冇 round");
       const round = store.round(roundId);
       if (!round) throw new CmdError("W_BAD_SCHEMA", "冇呢個 round");
+      if (round.state === "open") throw new CmdError("W_ALREADY_STATE", "回合仲開緊：先收卷，再入真實答案");
+      if (round.state === "void") throw new CmdError("W_ALREADY_STATE", "回合已作廢，唔可以再入答案");
+      if (round.state === "revealed") throw new CmdError("W_ALREADY_STATE", "回合已揭曉，唔可以再改答案");
       const card = store.card(round.cardId);
       if (!card) throw new CmdError("W_BAD_SCHEMA", "冇呢張卡");
       if (card.autoAnswer) throw new CmdError("W_ALREADY_STATE", "時間題 actualAnswer 由 server 自動計，唔可以手改（要改就 void／reopen，§3.1）");
@@ -1922,7 +1931,7 @@ export function executeCommand(
         version: 1,
         state: "draft",
       };
-      for (const k of ["category", "imageUrl", "mediaUrl", "explanation", "referenceAnswer", "hint", "openKind", "maxBid", "songId", "voteMode", "undercoverPrompt", "tolerance", "actualAnswer"] as const) {
+      for (const k of ["category", "imageUrl", "mediaUrl", "explanation", "referenceAnswer", "hint", "openKind", "maxBid", "songId", "voteMode", "undercoverPrompt", "tolerance", "closestCount", "closestPoints", "actualAnswer"] as const) {
         if (cardIn[k] !== undefined) (card as unknown as Record<string, unknown>)[k] = cardIn[k];
       }
       if (cardIn.options) card.options = cardIn.options;
@@ -2349,7 +2358,7 @@ export function executeCommand(
         push(ctx, { t: "round.update", d: { roundId: round.id, patch: { state: "revealed" } } });
         if (card.type === "choice") gradeChoiceRound(ctx, round, card);
         if (card.type === "vote" && card.voteMode === "works") gradeDrawRound(ctx, round, card);
-        // v0.3.3：容差題（Q12）同「到午夜幾分鐘」題嘅自動評分搬到呢度（收卷唔再派分）
+        // v0.3.3：容差題／最近 N 名／「到午夜幾分鐘」題嘅自動評分搬到呢度（收卷唔再派分）
         if (typeof card.tolerance === "number") {
           const actual = round.actualAnswer ?? card.actualAnswer;
           if (typeof actual === "number") gradeToleranceRound(ctx, round, card, actual);

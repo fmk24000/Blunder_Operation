@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.8 — 2026-11-20
+
+### Fixed — 獨立 review（GLM-5.3）＋ Codex audit
+- **`quiz.setActualAnswer` 加回合狀態 gate**：只准 `closed`／`tally`；`open`（未收卷）、`void`（已作廢）、`revealed` 一律拒。修正「主持提早入答案 → top-3 名單鎖死 → 後交更近答案漏派」同「void 回合仍可重新派分」兩個 P1。
+- **`gradeClosestRound` 按玩家去重**：同一玩家只計最後一筆提交，避免一人佔多個 top-3 位（正常 WS 已擋一人一筆，呢層係防禦）。
+- **q14 補 double-award 測試**：入完真實答案再按揭曉，唔會再派一次容差分。
+- **問答規則頁同步**：Q14 一匹布 ±3 尺、Q15 統計題最近 3 人各 +1（之前仲寫住 Q12 ±2／Q13 主持輸入）。
+- `card.create` whitelist 補 `closestCount`／`closestPoints`；q7 category 記回「情感題」。
+
+### 其他
+- 資產版本 `?v=20261120i`。
+- Tests **216 → 219**（open／void gate、q14 reveal-after-actual、top-3 同一玩家去重）。
+
 ## v0.4.7 — 2026-11-20
 
 ### Added — 題目更新（用戶）

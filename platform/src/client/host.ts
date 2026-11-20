@@ -1288,7 +1288,7 @@ function openGradingHtml(v: any): string {
     card.openKind === "number"
       ? `<div class="row wrap"><span class="pill">估數字</span>
         <input id="actual-answer" type="number" step="any" placeholder="真實答案" value="${round.actualAnswer ?? card.actualAnswer ?? ""}" style="width:140px">
-        <button class="primary" data-act="judge.actual">入真實答案＋按容差加分</button>
+        <button class="primary" data-act="judge.actual" ${round.state !== "closed" && round.state !== "tally" ? "disabled" : ""} title="${round.state === "open" ? "先收卷，再入真實答案" : "入真實答案＋按容差／最近 N 名加分"}">入真實答案＋按容差加分</button>
         <span class="muted">${round.actualAnswer !== undefined ? `actualAnswer=${round.actualAnswer}` : "未入"}</span></div>`
       : "";
   return `<div style="border-top:1px solid var(--line);padding-top:10px">

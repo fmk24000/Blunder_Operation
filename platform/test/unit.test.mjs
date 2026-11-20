@@ -2120,6 +2120,59 @@ test("最近 3 名：Q15 統計題 355 → 350/355/360 各 +1、第 4 名唔加"
   assert.deepEqual(players.map((p) => store.playerScore(p.id)), [1, 1, 1, 0, 0]);
 });
 
+test("Q14：入完真實答案再按揭曉唔會 double-award", () => {
+  const { store, players } = ucSetup("q14-reveal-after-actual", 5);
+  const q14 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q14");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q14)] } }]);
+  run(store, "card.open", {}, "q14");
+  const round = store.currentRound();
+  [37, 40, 43, 36, 44].forEach((amount, i) => {
+    store.commit([{
+      t: "submission.add",
+      d: { submission: { id: `q14ra_${i}`, roundId: round.id, cardId: "q14", playerId: players[i].id, ts: 1000 + i, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+    }]);
+  });
+  run(store, "card.close");
+  run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 40 });
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [2, 2, 2, 0, 0]);
+  run(store, "card.reveal");
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [2, 2, 2, 0, 0], "揭曉唔可以再派一次");
+  assert.equal(store.state.ledger.filter((e) => !e.voided && e.reason === "問答 Q14・容差").length, 3);
+});
+
+test("quiz.setActualAnswer 只准 closed／tally：open／void 要拒", () => {
+  const { store, players } = ucSetup("actual-gate", 3);
+  const q15 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q15");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q15)] } }]);
+  run(store, "card.open", {}, "q15");
+  const round = store.currentRound();
+  assert.throws(() => run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 355 }), isCmdError("W_ALREADY_STATE", /收卷/));
+  run(store, "card.close");
+  run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 355 });
+  run(store, "quiz.reset", { clearScores: true });
+  assert.throws(() => run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 355 }), isCmdError("W_ALREADY_STATE", /作廢/));
+});
+
+test("最近 3 名：同一玩家多筆提交只計最後一筆（唔會霸兩個位）", () => {
+  const { store, players } = ucSetup("q15-dedupe", 4);
+  const q15 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q15");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q15)] } }]);
+  run(store, "card.open", {}, "q15");
+  const round = store.currentRound();
+  const add = (id, playerId, amount, ts) => store.commit([{
+    t: "submission.add",
+    d: { submission: { id, roundId: round.id, cardId: "q15", playerId, ts, kind: "open", amount, confirmed: true, payloadHash: "h" } },
+  }]);
+  add("d_p0_a", players[0].id, 355, 1000);
+  add("d_p0_b", players[0].id, 354, 1001); // 同一玩家最後答案
+  add("d_p1", players[1].id, 353, 1002);
+  add("d_p2", players[2].id, 352, 1003);
+  add("d_p3", players[3].id, 999, 1004);
+  run(store, "card.close");
+  run(store, "quiz.setActualAnswer", { roundId: round.id, actualAnswer: 355 });
+  assert.deepEqual(players.map((p) => store.playerScore(p.id)), [1, 1, 1, 0], "p0 只佔一個位，p2 補上第 3");
+});
+
 test("最近 3 名：直接按「揭曉」（主持未手動入答案）都會用 card.actualAnswer 評分", () => {
   const { store, players } = ucSetup("quiz-q15-reveal", 5);
   const q15 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q15");
