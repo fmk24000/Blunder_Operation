@@ -830,7 +830,7 @@ function undercoverMatchPanel(v: any): string {
   const questionDone = Object.values(st.eliminatedByQuestion ?? {}).some((q: any) => q === st.questionNo);
   // FIX-8：勝負未定唔准結算（同 server 前置檢查一致）
   // v0.4.1（codex audit INT）：第三題都要 foul 咗一個先准結算，否則粒掣撳完必然 W_WRONG_PHASE
-  const canSettle = remaining === 0 || st.result === "good" || (st.questionNo >= 2 && questionDone);
+  const canSettle = remaining === 0 || (st.questionNo >= 2 && questionDone);
   // 票數／票軌／進度：全部嚟自 host view（唔自己計）
   const u = v.undercover;
   const voting = !st.settled && u?.phase === "voting";
@@ -1018,7 +1018,9 @@ function drawFlowBlock(v: any): string {
         ? "只換身份，其他狀態不變（未公佈題目、未開始投票先准）"
         : "已經公佈／開始投票：要換身份請開新一局";
   // 分數結算：同 undercoverMatchPanel／server（commands.ts 嘅 uc.match.settle）同一條規則
-  const canSettle = active && !settled && (remaining === 0 || st.result === "good" || (st.questionNo >= 2 && questionDone));
+  // v0.4.3（CHECK-R2 P2）：同 R1 server 對齊——只認「臥底出局晒」或「第 3 題 foul 過」，
+  // 唔再靠 result==="good"（R1 會擋「result=good 但仲有臥底」嘅矛盾狀態）。
+  const canSettle = active && !settled && (remaining === 0 || (st.questionNo >= 2 && questionDone));
   const settleTitle = !active
     ? "未開局：未有嘢可以結算"
     : st.settled
@@ -1070,14 +1072,17 @@ function drawFlowBlock(v: any): string {
       : voting
         ? "投票進行中：等開票先換題目"
         : "用 dropdown 揀嗰一對做本題題目（會重新公佈）";
-  const revealDisabled = settled;
+  // v0.4.3（CHECK-R2 P1）：投票進行中 server 會擋公佈（避免大mon 由倒數畫面被換走），UI 要一致
+  const revealDisabled = settled || voting;
   const revealTitle = !active
     ? "未開局：先撳「開新一局」"
     : st.settled
       ? "本局已結算（撳「清走本局」再開一局）"
-      : st.promptRevealed
-        ? "已經公佈咗（再撳會再推一次上大mon）"
-        : "只推好人題目上大mon；臥底題永遠唔會出手機／大mon";
+      : voting
+        ? "投票進行中：等開票先再公佈（唔好蓋走大mon 倒數）"
+        : st.promptRevealed
+          ? "已經公佈咗（再撳會再推一次上大mon）"
+          : "只推好人題目上大mon；臥底題永遠唔會出手機／大mon";
   let voteBtn: string;
   if (!active || st.settled) {
     voteBtn = `<button class="primary" data-act="ucm.vote" disabled title="${!active ? "未開局：先撳「開新一局」" : "本局已結算"}">③ 開始投票（10 秒）</button>`;

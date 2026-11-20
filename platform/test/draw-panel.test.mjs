@@ -69,7 +69,7 @@ test("R2-3：重抽臥底 disabled 條件同 server 一致（未公佈／未投�
 test("R2-4：分數結算 disabled 條件同 server／進階面板一致（questionNo >= 2＋questionDone）", () => {
   assert.match(drawFlow, /questionNo >= 2/, "第 3 題先准結算");
   assert.match(drawFlow, /questionDone/, "要計本題有冇 foul 過");
-  assert.match(drawFlow, /remaining === 0 \|\| st\.result === "good"/, "兩臥底出局／已定 good 可以即結算");
+  assert.match(drawFlow, /remaining === 0 \|\| \(st\.questionNo >= 2 && questionDone\)/, "兩臥底出局／第 3 題 foul 過可以即結算（同 R1 server 一致）");
   assert.match(drawFlow, /data-act="ucm\.settle" \$\{canSettle \? "" : "disabled"\}/, "結算掣要跟 canSettle");
   assert.match(drawFlow, /title="\$\{esc\(settleTitle\)\}"/, "結算掣要 title 講原因");
   // 唔准無條件 enabled（撳完必然 W_WRONG_PHASE）
@@ -91,4 +91,21 @@ test("R2-6：底部 hint 老實描述，唔再寫「呢度就係全部」", () =
   assert.match(hint, /進階 → 畫畫/, "hint 要講清楚「進階 → 畫畫」仲有咩");
   assert.match(hint, /取消上一個淘汰/, "進階獨有嘅操作要寫明");
   assert.match(hint, /手動揀人/, "手動 foul 入口要寫明");
+});
+
+/* v0.4.3 整合修正（CHECK-R2 P1／P2） */
+
+test("v043-i1：投票進行中，「公佈好人題目」掣要 disabled（同 server 一致）", () => {
+  const block = src.slice(src.indexOf("function drawFlowBlock("));
+  assert.match(block, /const revealDisabled = settled \|\| voting/, "revealDisabled 要計 voting");
+  assert.match(block, /投票進行中：等開票先再公佈/, "title 要講清楚原因");
+});
+
+test("v043-i2：分數結算 enabled 條件同 server 對齊（唔再靠 stale result=good）", () => {
+  const block = src.slice(src.indexOf("function drawFlowBlock("));
+  assert.match(block, /const canSettle = active && !settled && \(remaining === 0 \|\| \(st\.questionNo >= 2 && questionDone\)\)/);
+  const panelStart = src.indexOf("function undercoverMatchPanel(");
+  const panel = src.slice(panelStart, src.indexOf("\nfunction ", panelStart + 10));
+  assert.match(panel, /const canSettle = remaining === 0 \|\| \(st\.questionNo >= 2 && questionDone\)/);
+  assert.ok(!/canSettle[^;]*st\.result === "good"/.test(src), "唔可以再用 result===\"good\" 開結算掣");
 });

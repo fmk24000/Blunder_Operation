@@ -1,6 +1,6 @@
 {
   "app": "hbd-game-platform",
-  "generatedAt": "2026-11-19T17:07:08.651Z",
+  "generatedAt": "2026-11-20T04:44:31.935Z",
   "node": "v26.8.1",
   "engines": ">=26 <27",
   "note": "Docker runtime: node:26-alpine（實際容器 v26.13.1；本機 v26.8.1，同屬 Node 26 LTS major）",
@@ -153,8 +153,8 @@
     },
     {
       "path": "public/js/client/host.js",
-      "bytes": 135976,
-      "sha256": "15adc68f0c8bbe755350aad22172d90c6018c4913b9e5d199013f451c7ae1ba4"
+      "bytes": 141101,
+      "sha256": "916a1ba31beacb53cac3e43e884a87344261db0e2e2a8830b760c41ebb03deb6"
     },
     {
       "path": "public/js/client/play.js",
@@ -233,8 +233,8 @@
     },
     {
       "path": "src/client/host.ts",
-      "bytes": 134356,
-      "sha256": "ab14241f7fe268ad7d7075c8b6802660b36378486fb48543cb69229a7adb3e46"
+      "bytes": 139383,
+      "sha256": "223d4ecfb71ab0727d464d7f940ceef9534f18c79181a9c31bcdd72ab1117c5b"
     },
     {
       "path": "src/client/play.ts",
@@ -253,8 +253,8 @@
     },
     {
       "path": "src/server/commands.ts",
-      "bytes": 160197,
-      "sha256": "20ee9afb07d225fc311e0b4119ee14e510e3bbdb5ecbc21beafb7a7864428013"
+      "bytes": 162931,
+      "sha256": "41d1c7dcf2a9e8529a70cda235e424d560e570344400144b9a855611f31cabcc"
     },
     {
       "path": "src/server/env.ts",
@@ -312,9 +312,14 @@
       "sha256": "7aee325c05beda9ddf3ccba8c54c6482d82d2168c4975e9743840a31737cbec7"
     },
     {
+      "path": "test/draw-panel.test.mjs",
+      "bytes": 6437,
+      "sha256": "0730ca16eb05d98b332259744ef102f71768bc570433223839a68ca9f01d1b98"
+    },
+    {
       "path": "test/unit.test.mjs",
-      "bytes": 184392,
-      "sha256": "a1e45e329d05eb953d19999c1fa95e9d0c0f9fac44f941771960262104cad717"
+      "bytes": 196727,
+      "sha256": "847abc932dd890d0362ed10649029851a9297ae1225fa4eb6576817446859ca2"
     },
     {
       "path": "tsconfig.client.json",
