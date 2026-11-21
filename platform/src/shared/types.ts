@@ -478,6 +478,7 @@ export type StageView = {
   question: {
     roundId: string;
     cardId: string;
+    category?: string;
     prompt: string;
     imageUrl?: string;
     options?: string[];

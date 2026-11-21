@@ -320,6 +320,7 @@ export function buildStageView(store: Store): StageView {
       question = {
         roundId: "",
         cardId: previewCard.id,
+        category: previewCard.category,
         prompt: previewCard.prompt,
         imageUrl: previewCard.imageUrl,
         options: previewCard.options,
@@ -337,6 +338,7 @@ export function buildStageView(store: Store): StageView {
       question = {
         roundId: round.id,
         cardId: card.id,
+        category: card.category,
         prompt: card.prompt,
         imageUrl: card.imageUrl,
         options: card.options,

@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.4.9 — 2026-11-21
+
+### Fixed — 大mon 一屏自適應（DPI／browser zoom）
+- stage 改固定 **1600×1000 設計畫布**，由 `stage.ts` 按 `window.innerWidth/innerHeight` 計 `scale = min(w/1600, h/1000)` 等比縮放並置中；`#stage-fit` letterbox 用主題底色（黑屏時全黑）。
+- 修正 2K@150%（約 1707×960）、1080p@150%（1280×720）、1366×768、4K@300%／browser zoom 下規則頁計分表、頒獎第三獎被切走。1600×1000、1920×1080、4K@100/200% 正常。
+- 監聽 `resize`＋`visualViewport.resize`，browser zoom 會重算；唔用 devicePixelRatio 排版。
+- `#toast` 跟 scale＋底部 letterbox 調整 bottom，4K／16:10 放大 ticker 都唔會疊住 toast。
+
+### Changed — 競投秒數 round up
+- 手機競投由 round down 改 **round up**（5.6 秒顯示／提交 6 秒）；server `bidSecondsAllowed` 同步用 ceil＋250ms 亞秒網絡 grace，避免合法 tap 因延遲被拒。
+
+### Changed — 入場名 10 字＋撞名拒絕
+- 名上限由 12 改 **10 個 grapheme**（emoji 當 1 字）；join／主持改名都用同一正規化（trim、NFC、NFKC＋case-insensitive 比較）；打字保留空格，提交先 trim。
+- pending／approved 撞名 → `W_NAME_TAKEN`（HTTP 409）「呢個名有人用咗，請改另一個名」；kicked 個名可以重用。
+
+### Changed — 問答畫面（用戶）
+- 出題目／開始作答時，大mon 喺題目**上面**顯示 `category`（分類），字級同題目一樣（72px）。
+- 揭曉解釋字由 24px 加大到 **34px**，顏色由 muted 灰改深色 `--ink`；行數上限放寬到 9 行，避免長解釋（Q4）被切太多。
+- 問答題目（category／圖／4 個長選項）如果高過 1000px 畫布，`q-fit` 會量度後等比縮細，選項唔會被 ticker 蓋住；圖片／字體載入後會再量一次。
+
+### Fixed — 手機 8 人投票
+- 7 個候選加 `vote-many` compact 樣式＋`100dvh`；390×844、430×900 一屏見到倒數＋全部候選＋確認掣，最後候選唔再貼住 fixed 底欄；30 人極端仍可 scroll。
+
+### Fixed — `/play?room=`
+- `play.ts` 同時接受 `?code=`（正式 QR）同 `?room=`（舊 link）。
+
+### 其他
+- 資產版本 `?v=20261121a`。
+- Tests **219 → 227**（名／grapheme／撞名／restore、競投 ceil＋grace、stage scale 契約、手機 compact／?room、問答分類／解釋字、q-fit）。
+
 ## v0.4.8 — 2026-11-20
 
 ### Fixed — 獨立 review（GLM-5.3）＋ Codex audit

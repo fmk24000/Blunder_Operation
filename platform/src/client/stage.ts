@@ -130,7 +130,7 @@ function rulesHtml(v: any): string {
     <div><span class="rules-badge">${esc(badge)}</span></div>
     <div class="rules-title">${esc(title)}</div>
     <div class="rules-sub">${esc(subtitle)}</div>
-    <div class="rules-body">${body}</div>
+    <div class="rules-body"><div class="rules-inner">${body}</div></div>
     ${pageNum}
     ${scoreBar(v)}
   </div>`;
@@ -139,7 +139,7 @@ function rulesHtml(v: any): string {
 /** B5：26–30 人都要睇得齊 —— 超過 12 人自動分 2／3 欄＋縮字，唔再 slice */
 function scoreRowsHtml(entries: any[], avatarSize = 48): string {
   const n = entries.length;
-  const cls = n > 20 ? "multi cols-3" : n > 12 ? "multi cols-2" : "";
+  const cls = n > 20 ? "multi cols-3" : n >= 10 ? "multi cols-2" : "";
   return `<div class="scoreboard-list ${cls}">${entries
     .map(
       (s: any, i: number) =>
@@ -178,10 +178,12 @@ function questionHtml(v: any): string {
   if (q.preview === true) {
     const opts = q.options ?? [];
     return `
-  <div class="stage-main">
+  <div class="stage-main q-main">
+    <div class="q-fit">
     <div class="row" style="justify-content:space-between;align-items:baseline">
       <div class="stage-mode-title">題目（未開始作答）</div>
     </div>
+    ${q.category ? `<div class="q-category">${esc(q.category)}</div>` : ""}
     <div class="q-prompt">${esc(q.prompt ?? "")}</div>
     ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:180px;max-width:100%;margin-top:12px;border-radius:14px">` : ""}
     ${
@@ -195,16 +197,19 @@ function questionHtml(v: any): string {
         : ""
     }
     <div class="helptext" style="margin-top:20px">等主持開始作答…（撳「開始 30 秒作答」之後先開始 30 秒倒數，手機同步出選項）</div>
+    </div>
     ${scoreBar(v)}
   </div>`;
   }
   const opts = q.options ?? [];
   return `
-  <div class="stage-main">
+  <div class="stage-main q-main">
+    <div class="q-fit">
     <div class="row" style="justify-content:space-between;align-items:baseline">
       <div class="stage-mode-title">${esc(MODE_LABEL[v.stage.mode] ?? "")}</div>
       <div class="countdown" data-countdown="1">--</div>
     </div>
+    ${q.category ? `<div class="q-category">${esc(q.category)}</div>` : ""}
     <div class="q-prompt">${esc(q.prompt)}</div>
     ${q.imageUrl ? `<img src="${esc(q.imageUrl)}" style="max-height:180px;max-width:100%;margin-top:12px;border-radius:14px">` : ""}
     ${
@@ -218,6 +223,7 @@ function questionHtml(v: any): string {
         : `<div class="helptext" style="margin-top:20px">開放題：用手機輸入答案</div>`
     }
     <div class="q-meta"><div class="answered" data-answered="1">已答 ${q.answeredCount}/${q.eligibleCount}</div></div>
+    </div>
     ${scoreBar(v)}
   </div>`;
 }
@@ -522,6 +528,84 @@ function errorHtml(v: any): string {
   </div>`;
 }
 
+/** v0.4.9：固定 1600×1000 設計畫布，按 CSS viewport 等比縮放（DPI／browser zoom 都當 CSS px）。 */
+const STAGE_DESIGN_W = 1600;
+const STAGE_DESIGN_H = 1000;
+let fitRaf = 0;
+
+function fitStage(): void {
+  const root = el<HTMLDivElement>("#stage-root");
+  if (!root) return;
+  const scale = Math.min(window.innerWidth / STAGE_DESIGN_W, window.innerHeight / STAGE_DESIGN_H);
+  const safe = Number.isFinite(scale) && scale > 0 ? scale : 1;
+  root.style.transform = `scale(${safe})`;
+  // toast 喺 #stage-fit 外面（唔想被裁），要跟 ticker 縮放後高度＋底部 letterbox 移返上
+  const toast = document.querySelector<HTMLElement>("#toast");
+  if (toast) {
+    const letterboxBottom = Math.max(0, (window.innerHeight - STAGE_DESIGN_H * safe) / 2);
+    toast.style.bottom = `${Math.round(letterboxBottom + 108 * safe)}px`;
+  }
+}
+
+function scheduleFit(): void {
+  if (fitRaf) return;
+  fitRaf = window.requestAnimationFrame(() => {
+    fitRaf = 0;
+    fitStage();
+  });
+}
+
+function bindStageFit(): void {
+  fitStage();
+  window.addEventListener("resize", scheduleFit, { passive: true });
+  window.visualViewport?.addEventListener("resize", scheduleFit, { passive: true });
+}
+
+/** 問答題目（有 category／圖／4 個長選項）如果高過畫布，等比縮細成個內容，保證選項唔會被 ticker 蓋住。 */
+function fitQuestion(): void {
+  const main = document.querySelector<HTMLElement>(".stage-main.q-main");
+  const fit = main?.querySelector<HTMLElement>(".q-fit");
+  if (!main || !fit) return;
+  fit.style.transform = "";
+  const cs = window.getComputedStyle(main);
+  const avail = main.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+  if (avail <= 0) return;
+  const h = fit.scrollHeight;
+  if (h > avail) {
+    const scale = Math.max(0.15, avail / h);
+    fit.style.transform = `scale(${scale})`;
+  }
+}
+
+/** 規則頁：rules-body 係 flex + overflow hidden；內容過長要縮 rules-inner，唔好淨係靠底部 fade 切走。 */
+function fitRules(): void {
+  const body = document.querySelector<HTMLElement>(".rules-body");
+  const inner = body?.querySelector<HTMLElement>(".rules-inner");
+  if (!body || !inner) return;
+  inner.style.transform = "";
+  inner.style.width = "100%";
+  const cs = window.getComputedStyle(body);
+  const avail = body.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+  if (avail <= 0) return;
+  const h = inner.scrollHeight;
+  const clearMask = (): void => {
+    body.style.webkitMaskImage = "none";
+    body.style.maskImage = "none";
+  };
+  if (h <= avail) {
+    // 內容本身放得落：唔好再靠底部 fade 切走最後一行（Q15 分數）
+    clearMask();
+    return;
+  }
+  const first = Math.max(0.35, avail / h);
+  inner.style.width = `${100 / first}%`;
+  const h2 = inner.scrollHeight;
+  // 唔可以大過 first：否則 width = 100/first% 再放大，會超出 rules-body 右邊被裁
+  const scale = Math.max(0.35, Math.min(first, 1, avail / h2));
+  inner.style.transform = `scale(${scale})`;
+  if (h2 * scale <= avail) clearMask();
+}
+
 function render(): void {
   const root = el<HTMLDivElement>("#stage-root");
   if (!root) return;
@@ -543,6 +627,17 @@ function render(): void {
     console.warn("[stage] 寫入畫面失敗，改用純文字錯誤畫面", err);
     const plain = v?.stage?.mode === "blackout" ? " " : "大mon 出錯：等主持撳「大mon 返 QR」。";
     root.textContent = plain;
+  }
+  fitQuestion();
+  fitRules();
+  // 圖片／字體遲過第一次 render 載入：載入完再量一次，否則 q4 有圖嘅題目會以為唔高
+  try {
+    for (const img of root.querySelectorAll<HTMLImageElement>("img")) {
+      if (!img.complete) img.addEventListener("load", () => { fitQuestion(); fitRules(); }, { once: true });
+    }
+    void document.fonts?.ready.then(() => { fitQuestion(); fitRules(); });
+  } catch {
+    /* ignore */
   }
   updateTimers();
 }
@@ -728,6 +823,7 @@ async function boot(): Promise<void> {
       }
     },
   });
+  bindStageFit();
   live.connect();
   if (timer) window.clearInterval(timer);
   timer = window.setInterval(updateTimers, 100);

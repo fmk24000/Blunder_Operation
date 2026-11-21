@@ -25,6 +25,7 @@ const STATUS_FOR: Partial<Record<ErrorCode, number>> = {
   W_STAGE_LOCKED: 423,
   W_RATE_LIMIT: 429,
   W_UPLOAD_REJECTED: 415,
+  W_NAME_TAKEN: 409,
 };
 
 function sendErr(reply: FastifyReply, code: ErrorCode, message: string, extra: Record<string, unknown> = {}): FastifyReply {

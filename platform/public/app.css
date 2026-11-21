@@ -1487,3 +1487,69 @@ body.stage #toast { bottom: 108px; }
 .scoreboard-list.multi .sb-row { font-size: 26px; padding: 4px 14px; gap: 14px; }
 .scoreboard-list.multi .sb-row .num { font-size: 20px; width: 40px; }
 .scoreboard-list.multi .sb-row .name { font-size: 24px; }
+
+/* ───────────────── v0.4.9：大mon 固定 1600×1000 + scale-to-fit ───────────────── */
+/* 唔再用 100vw/vh 排版：stage 永遠係 1600×1000 設計畫布，由 stage.ts 按 CSS viewport 等比縮放。
+   咁樣 2K@150%（~1707×960）、1080p@150%（1280×720）、4K@300%、browser zoom 都唔會切走內容。 */
+body.stage { height: 100vh; height: 100dvh; }
+#stage-fit {
+  position: fixed; inset: 0; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+}
+#stage-root {
+  position: relative;
+  width: 1600px; height: 1000px;
+  min-height: 0; flex: 0 0 auto;
+  display: flex; flex-direction: column;
+  transform-origin: center center;
+}
+body.is-blackout,
+body.is-blackout #stage-fit { background: #000; }
+
+/* ───────────────── v0.4.9：手機 8 人投票 compact（7 個候選一屏） ───────────────── */
+body.play { min-height: 100vh; min-height: 100dvh; }
+.play-wrap { min-height: 100vh; min-height: 100dvh; }
+.play-card.vote-many { padding: 16px; gap: 10px; }
+.vote-many .play-q { font-size: 24px; line-height: 1.25; }
+.vote-many .play-options { gap: 7px; }
+.vote-many .play-option { padding: 9px 12px; font-size: 17px; gap: 10px; border-radius: 14px; min-height: 0; }
+.vote-many .play-option .letter { width: 34px; height: 34px; font-size: 15px; }
+.vote-many .play-option .av { width: 30px; height: 30px; }
+
+/* ───────────────── v0.4.9：問答分類／解釋字（用戶） ───────────────── */
+/* 出題目時，分類要同題目一樣大，放喺題目上面 */
+.q-category {
+  font-size: 72px; font-weight: 800; line-height: 1.18; letter-spacing: -.025em;
+  color: var(--accent); margin: 0 0 2px;
+}
+/* 揭曉解釋：比原本大隻＋深色，唔好再用 muted 灰 */
+.reveal-explain {
+  font-size: 34px; line-height: 1.45; font-weight: 500;
+  color: var(--ink);
+  -webkit-line-clamp: 9;
+}
+
+/* 問答題目內容如果高過畫布，由 stage.ts 量度後等比縮細（category／圖／4 個長選項都唔會被 ticker 蓋） */
+.q-main { overflow: hidden; }
+.q-fit { transform-origin: top center; }
+
+/* 規則頁內容如果高過 rules-body，由 stage.ts 量度後縮 rules-inner（唔再只靠底部 fade 切走） */
+.rules-inner { transform-origin: top left; }
+
+/* v0.4.9 review：長 URL／連續英文字要喺格內斷行，唔好撐爆 q-option／規則頁 */
+.q-category, .q-prompt, .q-option, .q-option > span,
+.rb-heading, .rb-text, .rb-list li, .rb-callout { overflow-wrap: anywhere; word-break: break-word; }
+
+/* v0.4.9 review：固定 canvas 內嘅多欄分數板要自己 scroll，唔可以跟 viewport 無限高 */
+.scoreboard-list.multi { max-height: 680px; }
+/* 防止 rules-inner 第一個 heading 的 margin collapse 令 scrollHeight 少計 */
+.rules-inner { display: flow-root; }
+
+/* v0.4.9 review：30 人 finale 3 欄，名要單行 ellipsis，唔好 wrap 到行高爆炸 */
+.finale-grid .sb-row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* v0.4.9 final audit：8 人投票就算 10 個 emoji 名都要單行，唔好 wrap 到爆高度 */
+.vote-many .play-option { min-width: 0; }
+.vote-many .play-option > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 規則頁 score-table cell 都要斷行，否則長字串會橫向被裁 */
+.rb-table .r, .rb-table .r span, .rb-table td { overflow-wrap: anywhere; word-break: break-word; }

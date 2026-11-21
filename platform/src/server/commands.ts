@@ -28,6 +28,7 @@ import type {
 import type { Mutation } from "./journal.js";
 import type { Store } from "./store.js";
 import { newId, uuidv4 } from "./store.js";
+import { NAME_MAX, isValidName, nameKey, normalizeName } from "../shared/names.js";
 import { questionToCard } from "./seed.js";
 
 export class CmdError extends Error {
@@ -603,12 +604,13 @@ export function roundExpired(endsAt: number | null, nowMs: number): boolean {
   return endsAt !== null && nowMs > endsAt;
 }
 
-/** P1-f：競投秒數唔可以多過剩餘秒數（明確規則：容許 +1 秒網絡誤差） */
+/** P1-f：競投秒數唔可以多過剩餘秒數（v0.4.9：UI 同 server 都用 ceil，唔再加 +1 秒） */
 export function bidSecondsAllowed(amount: number, endsAt: number | null, nowMs: number): boolean {
   if (endsAt === null) return true;
-  // v0.4.4：同手機一致用 floor（5.6 秒＝5 秒），只保留 +1 秒網絡容差（以前 ceil＋1 等於容許多 2 秒）
-  const remaining = Math.floor(Math.max(0, endsAt - nowMs) / 1000);
-  return amount <= remaining + 1;
+  // v0.4.9（用戶）：同手機一致用 ceil（5.6 秒＝6 秒）；加 250ms 亞秒網絡 grace，
+  // 抵銷「手機撳掣時 ceil 6、到 server 時只剩 4.97 秒」嘅合法 bid 被拒（唔會實質多聽一秒）。
+  const remaining = Math.ceil(Math.max(0, endsAt - nowMs + 250) / 1000);
+  return amount <= remaining;
 }
 
 function bidWinner(store: Store, roundId: string): { submission: Submission | undefined; second: Submission | undefined } {
@@ -1192,6 +1194,13 @@ function openCardRound(ctx: Ctx, card: Card): Round {
 
 export type ExecuteResult = ApiResult<unknown>;
 
+/** v0.4.9：pending／approved 名唔可以撞（rename／approve／restore 都要過）。 */
+function assertNameFree(store: Store, playerId: string, name: string): void {
+  const key = nameKey(name);
+  if (store.state.room.players.some((x) => x.id !== playerId && (x.status === "pending" || x.status === "approved") && nameKey(x.name) === key))
+    throw new CmdError("W_NAME_TAKEN", "呢個名有人用咗，請改另一個名");
+}
+
 export function executeCommand(
   store: Store,
   hostId: string,
@@ -1245,6 +1254,7 @@ export function executeCommand(
         if (player.status === "approved") throw new CmdError("W_ALREADY_STATE", "已經 approved");
         const approved = store.approvedPlayers().length;
         if (approved >= 30) throw new CmdError("W_ROOM_FULL", "approved 名額已滿（30）");
+        assertNameFree(store, player.id, player.name);
         patch.status = "approved";
       } else if (cmd.kind === "player.kick") {
         patch.status = "kicked";
@@ -1253,8 +1263,9 @@ export function executeCommand(
         toast(ctx, `踢走咗 ${player.name}`);
       } else {
         if (typeof p.name === "string") {
-          const name = p.name.trim();
-          if (name.length === 0 || name.length > 12) throw new CmdError("W_BAD_SCHEMA", "名要 1–12 字");
+          const name = normalizeName(p.name);
+          if (!isValidName(name)) throw new CmdError("W_BAD_SCHEMA", `名要 1–${NAME_MAX} 字`);
+          assertNameFree(store, player.id, name);
           patch.name = name;
         }
         if (p.number !== undefined) {
@@ -1269,6 +1280,7 @@ export function executeCommand(
           if (st !== "pending" && st !== "approved" && st !== "kicked") throw new CmdError("W_BAD_SCHEMA", "status 唔合法");
           if (st === "approved" && player.status !== "approved" && store.approvedPlayers().length >= 30)
             throw new CmdError("W_ROOM_FULL", "approved 名額已滿（30）");
+          if (st === "pending" || st === "approved") assertNameFree(store, player.id, patch.name ?? player.name);
           patch.status = st;
           if (st === "kicked") {
             patch.connected = false;

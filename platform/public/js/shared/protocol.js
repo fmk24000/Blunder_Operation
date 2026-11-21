@@ -25,6 +25,8 @@ export const ERROR_CODES = [
     /** v0.4.0：投票 foul 最高票（同票／冇人投票由主持決定） */
     "W_TIE",
     "W_NO_VOTES",
+    /** v0.4.9：入場／改名撞名 */
+    "W_NAME_TAKEN",
 ];
 export const CAPS = {
     rooms: 1,

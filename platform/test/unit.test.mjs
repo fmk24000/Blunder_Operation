@@ -12,6 +12,8 @@ import { buildStageView, buildPlayerView, buildHostView } from "../dist/server/v
 import { Store } from "../dist/server/store.js";
 import { loadQuizSeed, loadUndercoverSeed, loadRulePagesSeed, questionToCard, undercoverTopicToCard, bootstrapMutations, defaultRundown } from "../dist/server/seed.js";
 import { Journal } from "../dist/server/journal.js";
+import { joinRoom } from "../dist/server/auth.js";
+import { nameKey, nameLength, normalizeName, truncateName } from "../dist/shared/names.js";
 
 function tmpDir(tag) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `hbd-${tag}-`));
@@ -2698,13 +2700,18 @@ test("P1-f：到期一律拒提交＋競投秒數唔可以大過剩餘秒數（+
   assert.equal(roundExpired(null, t0), false, "冇 endsAt 唔會過期");
   assert.equal(roundExpired(t0 + 5000, t0), false);
   assert.equal(roundExpired(t0 - 1, t0), true, "過咗 endsAt 就過期");
-  // endsAt 仲有 5 秒：剩餘 5 → 最多准 6（+1 秒網絡誤差）
+  // v0.4.9：同手機一致用 ceil＋250ms 亞秒 grace（抵銷網絡延遲）
   assert.equal(bidSecondsAllowed(5, t0 + 5000, t0), true);
-  assert.equal(bidSecondsAllowed(6, t0 + 5000, t0), true);
-  assert.equal(bidSecondsAllowed(7, t0 + 5000, t0), false, "唔可以偷多幾秒");
-  // v0.4.4：同手機一致用 floor —— 剩 0.4 秒＝0 秒，只准 0+1 網絡容差
+  assert.equal(bidSecondsAllowed(6, t0 + 5000, t0), true, "5.25 秒 ceil = 6（250ms grace）");
+  assert.equal(bidSecondsAllowed(7, t0 + 5000, t0), false, "唔可以偷多過 1 秒");
+  // 剩 5.6 秒：ceil(5.85) = 6，准 6、唔准 7
+  assert.equal(bidSecondsAllowed(6, t0 + 5600, t0), true);
+  assert.equal(bidSecondsAllowed(7, t0 + 5600, t0), false, "唔可以偷多幾秒");
+  // 剩 0.4 秒：ceil(0.65) = 1，准 1、唔准 2
   assert.equal(bidSecondsAllowed(1, t0 + 400, t0), true);
   assert.equal(bidSecondsAllowed(2, t0 + 400, t0), false);
+  // 撳掣時剩 5.01 秒（UI 顯示 6）→ 40ms 後到 server 只剩 4.97 秒，仍然要收
+  assert.equal(bidSecondsAllowed(6, t0 + 5010, t0 + 40), true, "網絡 delay 40ms 唔可以彈合法 bid");
   // ws 真係用呢兩個 helper（source-level 保證）
   const wsSrc = fs.readFileSync(path.join(APP_ROOT, "src/server/ws.ts"), "utf8");
   assert.match(wsSrc, /roundExpired\(round\.endsAt, Date\.now\(\)\)/, "到期要一律拒（唔再淨係 draw 卡）");
@@ -3896,7 +3903,7 @@ test("v043-B4：入場打咗名再揀 emoji／顏色，輸入框唔會清空", (
   const grid = src.slice(src.indexOf('"[data-emoji]"'), src.indexOf('"#join-btn"'));
   assert.match(grid, /keepName\(\);\s*\n\s*avatarSel\.emoji/, "揀 emoji 之前要 keepName()");
   assert.match(grid, /keepName\(\);\s*\n\s*avatarSel\.color/, "揀顏色之前要 keepName()");
-  assert.match(src, /const name = \(nameInput\?\.value \?\? joinName\)\.trim\(\)/, "doJoin 要讀 input／state");
+  assert.match(src, /const name = truncateName\(nameInput\?\.value \?\? joinName\)/, "doJoin 要讀 input／state 並按 grapheme 截名");
 });
 
 test("v043-B5：拍賣倒數完（auto-close）大mon 留喺競投畫面，唔會跳去「分佈」", () => {
@@ -3933,10 +3940,10 @@ test("v043-B7：void 咗嘅拍賣 round 唔可以再 bid.judge（唔會派分／
 
 /* ───────── v0.4.4：競投結果字體／floor／唔限首數＋古怪 code ───────── */
 
-test("v044-1：競投秒數 round down（5.6 秒 → 5 秒）＋結果畫面大字＋單位", () => {
+test("v049-1：競投秒數 round up（5.6 秒 → 6 秒）＋結果畫面大字＋單位", () => {
   const play = clientSrc("play.ts");
-  assert.match(play, /Math\.floor\(left \/ 1000\)/, "bidSeconds 要用 floor（ceil 會將 5.6 變 6 秒）");
-  assert.equal(/Math\.ceil\(left \/ 1000\)/.test(play), false, "唔准再用 ceil");
+  assert.match(play, /Math\.ceil\(left \/ 1000\)/, "bidSeconds 要用 ceil（5.6 秒 → 6 秒）");
+  assert.equal(/Math\.floor\(left \/ 1000\)/.test(play), false, "唔准再用 floor");
   const stage = clientSrc("stage.ts");
   assert.match(stage, /bid-result/, "競投結果要有自己嘅大版樣式");
   assert.match(stage, /bid-unit/, "秒數要有單位");
@@ -4199,4 +4206,112 @@ test("v046-2：主持台 4 粒流程掣排 2×2（CSS 契約）", () => {
   assert.match(css, /\.ctrl-phase \{ display: grid; grid-template-columns: repeat\(2, 1fr\);/, "要 2 欄");
   assert.match(css, /\.ctrl-phase button \{ min-height: 68px; \}/, "4 粒掣要統一高度");
   assert.match(css, /\.ctrl-phase button, \.ctrl-phase \.primary \{ min-height: 76px/, "≤1100px 兩行要同一高度");
+});
+
+/* ───────── v0.4.9：名／撞名／10 字、大mon scale-to-fit、手機 compact ───────── */
+
+test("v049-2：名 normalize／grapheme 長度／NFKC 撞名 key", () => {
+  assert.equal(normalizeName("  阿   明  "), "阿 明");
+  assert.equal(nameLength("一二三四五六七八九十"), 10);
+  assert.equal(nameLength("😀".repeat(10)), 10, "emoji 每個當 1 grapheme");
+  assert.equal(nameKey("Ｋｅｎ"), nameKey("ken"), "全形＋大小楷要當同名");
+  assert.equal(nameKey("  Ken  "), nameKey("ken"));
+  assert.equal(nameKey("ΟΣ"), nameKey("οσ"), "Greek final sigma 都要當同一個 case");
+  assert.equal(nameLength(truncateName("😀".repeat(11))), 10, "client 截名要按 grapheme，唔可以切 surrogate");
+  assert.equal(nameLength(truncateName("一二三四五六七八九十一")), 10);
+});
+
+test("v049-3：join 撞名拒絕、kicked 可以重用、10 字上限", () => {
+  const opts = { autoApprove: false, ttlMs: 60000 };
+  const avatar = { kind: "emoji", emoji: "🐶", color: "#3b82f6" };
+  const { store } = makeStore("v049-join");
+  const a = joinRoom(store, "1234", "阿明", avatar, opts);
+  assert.equal(a.status, "pending");
+  assert.throws(() => joinRoom(store, "1234", "阿明", avatar, opts), (e) => e.code === "W_NAME_TAKEN");
+  assert.throws(() => joinRoom(store, "1234", "  阿明 ", avatar, opts), (e) => e.code === "W_NAME_TAKEN");
+  assert.throws(() => joinRoom(store, "1234", "一二三四五六七八九十一", avatar, opts), (e) => e.code === "W_BAD_SCHEMA");
+  // kick 走之後可以重用個名（唔想朋友 refresh 唔到）
+  run(store, "player.kick", {}, a.playerId);
+  assert.doesNotThrow(() => joinRoom(store, "1234", "阿明", avatar, opts));
+});
+
+test("v049-4：join 支援 10 個 emoji、11 個拒絕", () => {
+  const opts = { autoApprove: false, ttlMs: 60000 };
+  const avatar = { kind: "emoji", emoji: "🐶", color: "#3b82f6" };
+  const { store } = makeStore("v049-emoji");
+  assert.doesNotThrow(() => joinRoom(store, "1234", "😀".repeat(10), avatar, opts));
+  const { store: store2 } = makeStore("v049-emoji2");
+  assert.throws(() => joinRoom(store2, "1234", "😀".repeat(11), avatar, opts), (e) => e.code === "W_BAD_SCHEMA");
+});
+
+test("v049-5：host rename 撞名拒絕、10 字上限", () => {
+  const { store } = makeStore("v049-rename");
+  addPlayers(store, 2);
+  assert.throws(() => run(store, "player.update", { name: "玩家2" }, "p1"), (e) => e.code === "W_NAME_TAKEN");
+  assert.throws(() => run(store, "player.update", { name: "一二三四五六七八九十一" }, "p1"), (e) => e.code === "W_BAD_SCHEMA");
+  assert.doesNotThrow(() => run(store, "player.update", { name: "一二三四五六七八九十" }, "p1"));
+  assert.equal(store.player("p1").name, "一二三四五六七八九十");
+});
+
+test("v049-6：大mon 固定 1600×1000 + scale-to-fit（CSS／stage.ts／stage.html 契約）", () => {
+  const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
+  assert.match(css, /#stage-fit\s*\{[^}]*position:\s*fixed/, "要有 stage-fit wrapper");
+  assert.match(css, /#stage-root\s*\{[^}]*width:\s*1600px[^}]*height:\s*1000px/s, "stage 設計畫布 1600×1000");
+  const stage = clientSrc("stage.ts");
+  assert.match(stage, /Math\.min\(window\.innerWidth \/ STAGE_DESIGN_W, window\.innerHeight \/ STAGE_DESIGN_H\)/, "按 viewport 等比縮放");
+  assert.match(stage, /visualViewport\?\.addEventListener\("resize"/, "browser zoom 要重算");
+  assert.match(stage, /toast\.style\.bottom = `\$\{Math\.round\(letterboxBottom \+ 108 \* safe\)\}px`/, "toast 要跟 ticker 縮放＋letterbox 移返上");
+  const html = fs.readFileSync(path.join(APP_ROOT, "public/stage.html"), "utf8");
+  assert.match(html, /<div id="stage-fit"><div id="stage-root">/, "stage.html 要有 wrapper");
+});
+
+test("v049-7：手機 8 人投票 compact／100dvh／?room 兼容", () => {
+  const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
+  assert.match(css, /\.play-card\.vote-many/, "7 個候選要有 compact class");
+  assert.match(css, /\.vote-many \.play-option/, "compact option 樣式");
+  assert.match(css, /100dvh/, "手機要用 dvh");
+  const play = clientSrc("play.ts");
+  assert.match(play, /opts\.length >= 7 \? " vote-many" : ""/, "vote 卡要按候選數加 class");
+  assert.match(play, /params\.get\("code"\) \?\? params\.get\("room"\)/, "?room= 要向後兼容");
+});
+
+test("v049-8：問答分類上大mon（同題目大小）＋ reveal 解釋字更大更深", () => {
+  const { store } = makeStore("v049-quiz-category");
+  addPlayers(store, 4);
+  run(store, "room.start");
+  const q13 = loadQuizSeed(APP_ROOT).find((q) => q.id === "q13");
+  assert.equal(q13.category, "張家輝題");
+  store.commit([{ t: "quiz.set", d: { cards: [questionToCard(q13)] } }]);
+  run(store, "quiz.show", {}, "q13");
+  const sv = buildStageView(store);
+  assert.equal(sv.question?.category, "張家輝題", "stage question DTO 要帶 category");
+  const stage = clientSrc("stage.ts");
+  assert.match(stage, /class="q-category">\$\{esc\(q\.category\)\}/, "大mon 要喺題目上面出 category");
+  assert.match(stage, /class="stage-main q-main">[\s\S]*class="q-fit"/, "題目要有 q-fit 自動縮細 wrapper");
+  assert.match(stage, /fitQuestion\(\)/, "要量度題目高度並縮細");
+  assert.match(stage, /class="rules-inner"/, "規則頁要有 rules-inner 自動縮細");
+  assert.match(stage, /fitRules\(\)/, "規則頁要量度高度");
+  const css = fs.readFileSync(path.join(APP_ROOT, "public/app.css"), "utf8");
+  assert.match(css, /\.q-category\s*\{[^}]*font-size:\s*72px/s, "category 同題目一樣大（72px）");
+  assert.match(css, /\.reveal-explain\s*\{[^}]*font-size:\s*34px/s, "解釋字要加大");
+  assert.match(css, /\.reveal-explain\s*\{[^}]*color:\s*var\(--ink\)/s, "解釋字要用深色 ink");
+  assert.match(css, /\.reveal-explain\s*\{[^}]*-webkit-line-clamp:\s*9/s, "大字解釋要放寬到 9 行");
+});
+
+test("v049-9：打字保留空格（clampName）＋ restore kicked 撞名要拒", () => {
+  const play = clientSrc("play.ts");
+  assert.match(play, /nameLength\(normalizeName\(raw\)\) > NAME_MAX/, "用 normalize 後長度判限");
+  assert.match(play, /joinName = raw;/, "未超限時保留 raw 空白");
+  assert.match(play, /compositionstart/, "IME 組字中要暫停截名");
+  assert.match(play, /isComposing/, "IME 組字中唔可以改 value");
+  const opts = { autoApprove: false, ttlMs: 60000 };
+  const avatar = { kind: "emoji", emoji: "🐶", color: "#3b82f6" };
+  const { store } = makeStore("v049-restore");
+  const first = joinRoom(store, "1234", "阿明", avatar, opts);
+  run(store, "player.kick", {}, first.playerId);
+  const second = joinRoom(store, "1234", "阿明", avatar, opts);
+  assert.notEqual(first.playerId, second.playerId);
+  assert.throws(() => run(store, "player.approve", {}, first.playerId), (e) => e.code === "W_NAME_TAKEN");
+  // 第二個 pending 可以正常 approve
+  assert.doesNotThrow(() => run(store, "player.approve", {}, second.playerId));
 });

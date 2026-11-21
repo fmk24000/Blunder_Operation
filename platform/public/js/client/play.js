@@ -1,5 +1,6 @@
 /** 手機 /play（單向提交；PLAN-v3.1 §8.3／§9.4.1 D28） */
 import { Live, api, esc, avatarHtml, connBanner, fmtClock, el, lsGet, lsSet, lsDel } from "./common.js";
+import { NAME_MAX, nameLength, normalizeName, truncateName } from "../shared/names.js";
 const EMOJIS = ["😀", "😎", "🤩", "🥳", "😺", "🐶", "🐱", "🦊", "🐼", "🐨", "🦁", "🐯", "🐸", "🐵", "🦄", "🐮", "🐷", "🐔", "🐧", "🐦", "🦉", "🦋", "🐝", "🐢", "🐙", "🦀", "🐬", "🐳", "🦖", "🦕", "🌞", "🌙", "⭐", "🌈", "🍕", "🍔", "🍟", "🍣", "🍜", "🍩", "🍰", "🍦", "🍎", "🍉", "⚽", "🏀", "🎮", "🎸"];
 const COLORS = ["#ef4444", "#f97316", "#f59e0b", "#22c55e", "#14b8a6", "#3b82f6", "#a855f7", "#ec4899"];
 let live = null;
@@ -38,7 +39,7 @@ function renderJoin() {
       <div class="play-head"><span>圍威喂</span><span>房碼 ${esc(roomCode || "…")}</span></div>
       <div class="play-card">
         <div class="play-q">你叫咩名？</div>
-        <input id="join-name" maxlength="12" placeholder="名（最多 12 字）" autocomplete="off" value="${esc(joinName)}">
+        <input id="join-name" placeholder="名（最多 10 字）" autocomplete="off" value="${esc(joinName)}">
         <div class="field-label">揀個頭像</div>
         <div id="emoji-grid">${EMOJIS.map((e) => `<button class="emoji-btn ${e === avatarSel.emoji ? "primary" : ""}" data-emoji="${esc(e)}">${e}</button>`).join("")}</div>
         <div id="color-grid">${COLORS.map((c) => `<button data-color="${c}" style="background:${c};${c === avatarSel.color ? "outline:2px solid #16150f;outline-offset:2px" : ""}"></button>`).join("")}</div>
@@ -51,10 +52,33 @@ function renderJoin() {
     const keepName = () => {
         const input = el("#join-name");
         if (input)
-            joinName = input.value.slice(0, 12);
+            joinName = input.value;
     };
+    let composing = false;
+    const applyNameLimit = (input) => {
+        const raw = input.value;
+        // 用 normalize 後嘅長度判限，保留 raw 嘅頭尾／中間空白（submit 先 trim）
+        if (nameLength(normalizeName(raw)) > NAME_MAX) {
+            joinName = truncateName(raw);
+            input.value = joinName;
+        }
+        else {
+            joinName = raw;
+        }
+    };
+    el("#join-name")?.addEventListener("compositionstart", () => {
+        composing = true;
+    });
+    el("#join-name")?.addEventListener("compositionend", (ev) => {
+        composing = false;
+        applyNameLimit(ev.target);
+    });
     el("#join-name")?.addEventListener("input", (ev) => {
-        joinName = ev.target.value.slice(0, 12);
+        const input = ev.target;
+        // IME 組字中唔可以改 value，否則會拆散輸入（例如打「你」會變 n）
+        if (composing || ev.isComposing)
+            return;
+        applyNameLimit(input);
     });
     for (const btn of root.querySelectorAll("[data-emoji]")) {
         btn.addEventListener("click", () => {
@@ -78,7 +102,7 @@ function renderJoin() {
 }
 async function doJoin() {
     const nameInput = el("#join-name");
-    const name = (nameInput?.value ?? joinName).trim();
+    const name = truncateName(nameInput?.value ?? joinName);
     joinName = name;
     if (!name) {
         joinError = "打個名先";
@@ -196,8 +220,8 @@ function bidSeconds(task) {
     const left = live?.msLeft(task.endsAt);
     if (left === null || left === undefined)
         return Math.max(1, Math.min(Number(task.maxBid) || 10, 10));
-    // v0.4.4（用戶拍板）：round down——5.6 秒要當 5 秒（以前 ceil 會變 6 秒）
-    const secs = Math.floor(left / 1000);
+    // v0.4.9（用戶拍板）：round up——5.6 秒當 6 秒
+    const secs = Math.ceil(left / 1000);
     if (secs <= 0)
         return 0;
     return Math.min(secs, Number(task.maxBid) || secs);
@@ -260,7 +284,7 @@ function renderTask(v) {
     }
     if (task.kind === "vote") {
         const opts = task.voteOptions ?? [];
-        return `<div class="play-card">
+        return `<div class="play-card${opts.length >= 7 ? " vote-many" : ""}">
       <div class="play-q">${esc(task.prompt)}</div>${clock}
       <div class="play-options">${opts
             .map((o, i) => `<button class="play-option ${/^\d+$/.test(String(o.id)) ? (selected.choice === Number(o.id) ? "selected" : "") : selected.targetId === String(o.id) ? "selected" : ""}" data-vote="${esc(o.id)}" data-vote-index="${i}"><span class="letter">${i + 1}</span>${o.avatar ? avatarHtml(o.avatar, 34) : ""}<span>${esc(o.label)}</span></button>`)
@@ -490,7 +514,9 @@ async function sendSubmit(payload, submissionId) {
 async function boot() {
     const params = new URLSearchParams(location.search);
     const saved = lsGet("hbd.playerToken");
-    roomCode = params.get("code") ?? saved?.roomCode ?? "";
+    // v0.4.9：QR／舊文件同時支援 ?code=（正式）同 ?room=（舊 link）
+    const qrCode = params.get("code") ?? params.get("room");
+    roomCode = qrCode ?? saved?.roomCode ?? "";
     if (!roomCode) {
         try {
             const ready = await api("/api/ready");
@@ -502,7 +528,6 @@ async function boot() {
     }
     // v0.3.2：QR 帶咗房碼，但 localStorage 嗰個 token 係另一間房（例如房碼重置過／換房）
     // → 直接丟，唔好連上去等 server 回 W_TOKEN_EXPIRED／W_ROOM_LOCKED
-    const qrCode = params.get("code");
     if (saved?.token && qrCode && saved.roomCode !== qrCode) {
         lsDel("hbd.playerToken");
         submitError = "";

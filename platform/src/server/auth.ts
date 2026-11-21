@@ -5,6 +5,7 @@ import type { Avatar, Player, Session } from "../shared/types.js";
 import type { Store } from "./store.js";
 import { newId, now } from "./store.js";
 import { scryptVerify } from "./env.js";
+import { NAME_MAX, isValidName, nameKey, normalizeName } from "../shared/names.js";
 
 export function randomToken(): string {
   return crypto.randomBytes(32).toString("base64url"); // ≥256-bit
@@ -78,8 +79,11 @@ export function joinRoom(
 ): { token: string; playerId: string; number: number; status: Player["status"] } {
   const room = store.state.room;
   if (code !== room.code) throw new AuthError("W_ROOM_LOCKED", "房碼唔啱");
-  const trimmed = (name ?? "").trim();
-  if (trimmed.length === 0 || trimmed.length > 12) throw new AuthError("W_BAD_SCHEMA", "名要 1–12 字");
+  const trimmed = normalizeName(name);
+  if (!isValidName(trimmed)) throw new AuthError("W_BAD_SCHEMA", `名要 1–${NAME_MAX} 字`);
+  const key = nameKey(trimmed);
+  if (room.players.some((p) => (p.status === "pending" || p.status === "approved") && nameKey(p.name) === key))
+    throw new AuthError("W_NAME_TAKEN", "呢個名有人用咗，請改另一個名");
   const pending = room.players.filter((p) => p.status === "pending").length;
   const approved = room.players.filter((p) => p.status === "approved").length;
   const willApprove = opts.autoApprove;
